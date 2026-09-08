@@ -1,0 +1,23 @@
+[project]
+name = "combo-discovery"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Larry Rennoldson", email = "rennoldsonlarry@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "grpcio>=1.83.1",
+    "protobuf>=7.36.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.11,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "grpcio-tools>=1.83.1",
+    "pytest>=9.1.1",
+]
