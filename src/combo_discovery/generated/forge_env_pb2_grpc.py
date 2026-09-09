@@ -44,37 +44,42 @@ class ForgeEnvStub:
                 _registered_method=True)
         self.GetDecision = channel.unary_unary(
                 '/forgeenv.ForgeEnv/GetDecision',
-                request_serializer=forge__env__pb2.Empty.SerializeToString,
+                request_serializer=forge__env__pb2.GameQuery.SerializeToString,
                 response_deserializer=forge__env__pb2.DecisionRequest.FromString,
                 _registered_method=True)
         self.SubmitDecision = channel.unary_unary(
                 '/forgeenv.ForgeEnv/SubmitDecision',
-                request_serializer=forge__env__pb2.DecisionResponse.SerializeToString,
+                request_serializer=forge__env__pb2.DecisionSubmit.SerializeToString,
                 response_deserializer=forge__env__pb2.StepResult.FromString,
                 _registered_method=True)
         self.GetState = channel.unary_unary(
                 '/forgeenv.ForgeEnv/GetState',
-                request_serializer=forge__env__pb2.Empty.SerializeToString,
+                request_serializer=forge__env__pb2.GameQuery.SerializeToString,
                 response_deserializer=forge__env__pb2.FullState.FromString,
+                _registered_method=True)
+        self.PollEvents = channel.unary_unary(
+                '/forgeenv.ForgeEnv/PollEvents',
+                request_serializer=forge__env__pb2.PollRequest.SerializeToString,
+                response_deserializer=forge__env__pb2.EventBatch.FromString,
                 _registered_method=True)
         self.Snapshot = channel.unary_unary(
                 '/forgeenv.ForgeEnv/Snapshot',
-                request_serializer=forge__env__pb2.Empty.SerializeToString,
+                request_serializer=forge__env__pb2.GameQuery.SerializeToString,
                 response_deserializer=forge__env__pb2.StateToken.FromString,
                 _registered_method=True)
         self.Restore = channel.unary_unary(
                 '/forgeenv.ForgeEnv/Restore',
-                request_serializer=forge__env__pb2.StateToken.SerializeToString,
+                request_serializer=forge__env__pb2.RestoreRequest.SerializeToString,
                 response_deserializer=forge__env__pb2.Empty.FromString,
                 _registered_method=True)
         self.IsGameOver = channel.unary_unary(
                 '/forgeenv.ForgeEnv/IsGameOver',
-                request_serializer=forge__env__pb2.Empty.SerializeToString,
+                request_serializer=forge__env__pb2.GameQuery.SerializeToString,
                 response_deserializer=forge__env__pb2.GameOver.FromString,
                 _registered_method=True)
         self.StopGame = channel.unary_unary(
                 '/forgeenv.ForgeEnv/StopGame',
-                request_serializer=forge__env__pb2.Empty.SerializeToString,
+                request_serializer=forge__env__pb2.GameQuery.SerializeToString,
                 response_deserializer=forge__env__pb2.Empty.FromString,
                 _registered_method=True)
         self.Ping = channel.unary_unary(
@@ -88,14 +93,14 @@ class ForgeEnvServicer:
     """Missing associated documentation comment in .proto file."""
 
     def StartGame(self, request, context):
-        """Start a new game. Fails if a game is already active (stop it first).
+        """Start a new game. Fails with FAILED_PRECONDITION if a game is already active (stop it first).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def GetDecision(self, request, context):
-        """Block until the acting player has a decision pending, then return options.
+        """Block until the acting player of this game has a decision pending, then return options.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -109,14 +114,22 @@ class ForgeEnvServicer:
         raise NotImplementedError('Method not implemented!')
 
     def GetState(self, request, context):
-        """Full state snapshot of current game.
+        """Full state inspection of current game.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PollEvents(self, request, context):
+        """Poll events with seq > cursor. cursor=0 returns from the first event.
+        Valid while the game exists (including after game over, until StopGame).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Snapshot(self, request, context):
-        """MCTS support: opaque state tokens (only valid within same game/session).
+        """MCTS support: opaque state tokens (only valid within same game).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -136,7 +149,7 @@ class ForgeEnvServicer:
         raise NotImplementedError('Method not implemented!')
 
     def StopGame(self, request, context):
-        """Stop current game and release resources.
+        """Stop the game, release resources, and drop its event buffer.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -159,37 +172,42 @@ def add_ForgeEnvServicer_to_server(servicer, server):
             ),
             'GetDecision': grpc.unary_unary_rpc_method_handler(
                     servicer.GetDecision,
-                    request_deserializer=forge__env__pb2.Empty.FromString,
+                    request_deserializer=forge__env__pb2.GameQuery.FromString,
                     response_serializer=forge__env__pb2.DecisionRequest.SerializeToString,
             ),
             'SubmitDecision': grpc.unary_unary_rpc_method_handler(
                     servicer.SubmitDecision,
-                    request_deserializer=forge__env__pb2.DecisionResponse.FromString,
+                    request_deserializer=forge__env__pb2.DecisionSubmit.FromString,
                     response_serializer=forge__env__pb2.StepResult.SerializeToString,
             ),
             'GetState': grpc.unary_unary_rpc_method_handler(
                     servicer.GetState,
-                    request_deserializer=forge__env__pb2.Empty.FromString,
+                    request_deserializer=forge__env__pb2.GameQuery.FromString,
                     response_serializer=forge__env__pb2.FullState.SerializeToString,
+            ),
+            'PollEvents': grpc.unary_unary_rpc_method_handler(
+                    servicer.PollEvents,
+                    request_deserializer=forge__env__pb2.PollRequest.FromString,
+                    response_serializer=forge__env__pb2.EventBatch.SerializeToString,
             ),
             'Snapshot': grpc.unary_unary_rpc_method_handler(
                     servicer.Snapshot,
-                    request_deserializer=forge__env__pb2.Empty.FromString,
+                    request_deserializer=forge__env__pb2.GameQuery.FromString,
                     response_serializer=forge__env__pb2.StateToken.SerializeToString,
             ),
             'Restore': grpc.unary_unary_rpc_method_handler(
                     servicer.Restore,
-                    request_deserializer=forge__env__pb2.StateToken.FromString,
+                    request_deserializer=forge__env__pb2.RestoreRequest.FromString,
                     response_serializer=forge__env__pb2.Empty.SerializeToString,
             ),
             'IsGameOver': grpc.unary_unary_rpc_method_handler(
                     servicer.IsGameOver,
-                    request_deserializer=forge__env__pb2.Empty.FromString,
+                    request_deserializer=forge__env__pb2.GameQuery.FromString,
                     response_serializer=forge__env__pb2.GameOver.SerializeToString,
             ),
             'StopGame': grpc.unary_unary_rpc_method_handler(
                     servicer.StopGame,
-                    request_deserializer=forge__env__pb2.Empty.FromString,
+                    request_deserializer=forge__env__pb2.GameQuery.FromString,
                     response_serializer=forge__env__pb2.Empty.SerializeToString,
             ),
             'Ping': grpc.unary_unary_rpc_method_handler(
@@ -250,7 +268,7 @@ class ForgeEnv:
             request,
             target,
             '/forgeenv.ForgeEnv/GetDecision',
-            forge__env__pb2.Empty.SerializeToString,
+            forge__env__pb2.GameQuery.SerializeToString,
             forge__env__pb2.DecisionRequest.FromString,
             options,
             channel_credentials,
@@ -277,7 +295,7 @@ class ForgeEnv:
             request,
             target,
             '/forgeenv.ForgeEnv/SubmitDecision',
-            forge__env__pb2.DecisionResponse.SerializeToString,
+            forge__env__pb2.DecisionSubmit.SerializeToString,
             forge__env__pb2.StepResult.FromString,
             options,
             channel_credentials,
@@ -304,8 +322,35 @@ class ForgeEnv:
             request,
             target,
             '/forgeenv.ForgeEnv/GetState',
-            forge__env__pb2.Empty.SerializeToString,
+            forge__env__pb2.GameQuery.SerializeToString,
             forge__env__pb2.FullState.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PollEvents(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/forgeenv.ForgeEnv/PollEvents',
+            forge__env__pb2.PollRequest.SerializeToString,
+            forge__env__pb2.EventBatch.FromString,
             options,
             channel_credentials,
             insecure,
@@ -331,7 +376,7 @@ class ForgeEnv:
             request,
             target,
             '/forgeenv.ForgeEnv/Snapshot',
-            forge__env__pb2.Empty.SerializeToString,
+            forge__env__pb2.GameQuery.SerializeToString,
             forge__env__pb2.StateToken.FromString,
             options,
             channel_credentials,
@@ -358,7 +403,7 @@ class ForgeEnv:
             request,
             target,
             '/forgeenv.ForgeEnv/Restore',
-            forge__env__pb2.StateToken.SerializeToString,
+            forge__env__pb2.RestoreRequest.SerializeToString,
             forge__env__pb2.Empty.FromString,
             options,
             channel_credentials,
@@ -385,7 +430,7 @@ class ForgeEnv:
             request,
             target,
             '/forgeenv.ForgeEnv/IsGameOver',
-            forge__env__pb2.Empty.SerializeToString,
+            forge__env__pb2.GameQuery.SerializeToString,
             forge__env__pb2.GameOver.FromString,
             options,
             channel_credentials,
@@ -412,7 +457,7 @@ class ForgeEnv:
             request,
             target,
             '/forgeenv.ForgeEnv/StopGame',
-            forge__env__pb2.Empty.SerializeToString,
+            forge__env__pb2.GameQuery.SerializeToString,
             forge__env__pb2.Empty.FromString,
             options,
             channel_credentials,

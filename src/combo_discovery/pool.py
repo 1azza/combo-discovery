@@ -26,7 +26,7 @@ class WorkerPool:
         self._procs: list[subprocess.Popen] = []
         for i in range(self.n_workers):
             client = ForgeEnvClient(host=self.host, port=self.base_port + i)
-            client.ping()
+            client.connect()
             self._clients.append(client)
 
     @classmethod
@@ -48,7 +48,7 @@ class WorkerPool:
             client = ForgeEnvClient(host=host, port=port)
             while True:
                 try:
-                    client.ping()
+                    client.connect()
                     break
                 except HarnessConnectionError:
                     if time.monotonic() > deadline:
@@ -106,7 +106,7 @@ class WorkerPool:
         port = self.base_port + idx
         dead.close()
         client = ForgeEnvClient(host=self.host, port=port)
-        client.ping()
+        client.connect()
         self._clients[idx] = client
 
     def close(self) -> None:

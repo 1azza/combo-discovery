@@ -3,19 +3,28 @@ from unittest.mock import MagicMock
 import pytest
 
 from combo_discovery.env import HarnessConnectionError
+from combo_discovery.generated import forge_env_pb2 as pb
 from combo_discovery.pool import WorkerPool
 from combo_discovery.runner import GameResult
 
 
 def make_result(seed, winner=0):
-    return GameResult(game_id=seed, seed=seed, winner=winner, turns=5, n_events=3, duration_s=0.1)
+    return GameResult(
+        game_id=seed,
+        seed=seed,
+        winner=winner,
+        turns=5,
+        n_events=3,
+        duration_s=0.1,
+        outcome=pb.OUTCOME_WIN,
+    )
 
 
 def fake_client(game_id=1):
     c = MagicMock()
-    c.start_game.return_value = MagicMock(game_id=game_id)
-    c.is_game_over.return_value = MagicMock(over=True)
-    c.get_decision.return_value = MagicMock(turn=3, options=[])
+    c.start_game.return_value = game_id
+    c.is_game_over.return_value = pb.GameOver(over=True, winner=0, outcome=pb.OUTCOME_WIN)
+    c.drain_events.return_value = []
     return c
 
 

@@ -1,10 +1,22 @@
-// ForgeEnv gRPC contract — Layer 1 interface, frozen per project plan M1.
+// ForgeEnv gRPC contract — v2 (protocol/lifecycle gate).
+// Canonical copy lives in the Python repo: combo-discovery/proto/forge_env.proto.
+// The Java harness mirrors it at forge-harness/src/main/proto/forge_env.proto.
 // Both the Java harness server and the Python research client are generated from this file.
 //
 // Message conventions:
 //  - All ints are 0-indexed player slots unless noted.
 //  - Card identity: Forge card name (e.g. "Kiki-Jiki, Mirror Breaker").
 //  - Determinism: same (decks, seed, config) MUST yield byte-identical event streams.
+//
+// v2 changes (breaking; regenerate stubs on both sides):
+//  - Every per-game RPC carries an explicit game_id; unknown/stale ids are
+//    rejected with INVALID_ARGUMENT, wrong-state calls with FAILED_PRECONDITION.
+//  - Decisions carry a monotonic decision_id; submissions must echo the
+//    outstanding decision_id and an option_id that belongs to that decision.
+//  - Events carry a per-game monotonic seq and are independently pollable via
+//    PollEvents, decoupled from SubmitDecision.
+//  - Outcomes are classified with an Outcome enum; max_turns is enforced.
+//  - Snapshot/Restore remain UNIMPLEMENTED pending the state-work round.
 
 syntax = "proto3";
 package forgeenv;
@@ -13,27 +25,35 @@ option java_package = "forge.harness.proto";
 option java_multiple_files = true;
 
 service ForgeEnv {
-  // Start a new game. Fails if a game is already active (stop it first).
+  // Start a new game. Fails with FAILED_PRECONDITION if a game is already active (stop it first).
   rpc StartGame(StartRequest) returns (StartResponse);
-  // Block until the acting player has a decision pending, then return options.
-  rpc GetDecision(Empty) returns (DecisionRequest);
+  // Block until the acting player of this game has a decision pending, then return options.
+  rpc GetDecision(GameQuery) returns (DecisionRequest);
   // Submit the acting player's choice; engine advances until next decision or game end.
-  rpc SubmitDecision(DecisionResponse) returns (StepResult);
-  // Full state snapshot of current game.
-  rpc GetState(Empty) returns (FullState);
-  // MCTS support: opaque state tokens (only valid within same game/session).
-  rpc Snapshot(Empty) returns (StateToken);
-  rpc Restore(StateToken) returns (Empty);
+  rpc SubmitDecision(DecisionSubmit) returns (StepResult);
+  // Full state inspection of current game.
+  rpc GetState(GameQuery) returns (FullState);
+  // Poll events with seq > cursor. cursor=0 returns from the first event.
+  // Valid while the game exists (including after game over, until StopGame).
+  rpc PollEvents(PollRequest) returns (EventBatch);
+  // MCTS support: opaque state tokens (only valid within same game).
+  rpc Snapshot(GameQuery) returns (StateToken);
+  rpc Restore(RestoreRequest) returns (Empty);
   // Query game-over status without stepping.
-  rpc IsGameOver(Empty) returns (GameOver);
-  // Stop current game and release resources.
-  rpc StopGame(Empty) returns (Empty);
+  rpc IsGameOver(GameQuery) returns (GameOver);
+  // Stop the game, release resources, and drop its event buffer.
+  rpc StopGame(GameQuery) returns (Empty);
   // Health / version.
   rpc Ping(Empty) returns (Pong);
 }
 
 message Empty {}
-message Pong { string version = 1; bool game_active = 2; }
+
+message Pong {
+  string version = 1;
+  bool game_active = 2;
+  int32 protocol_version = 3;  // 2 for this contract
+}
 
 message DeckSpec {
   string name = 1;
@@ -56,8 +76,22 @@ enum PlayerType {
 }
 
 message StartResponse {
-  int32 game_id = 1;
+  int64 game_id = 1;                 // server-assigned, monotonic per harness process
   repeated int32 starting_life = 2;  // per player
+}
+
+message GameQuery {
+  int64 game_id = 1;
+}
+
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  OUTCOME_WIN = 1;          // a player won; see GameOver.winner
+  OUTCOME_DRAW = 2;         // rules draw
+  OUTCOME_TURN_LIMIT = 3;   // max_turns reached
+  OUTCOME_TIMEOUT = 4;      // wall-clock watchdog fired
+  OUTCOME_ERROR = 5;        // engine error aborted the game
+  OUTCOME_STOPPED = 6;      // stopped via StopGame
 }
 
 message Option {
@@ -69,31 +103,49 @@ message Option {
 }
 
 message DecisionRequest {
-  int32 player = 1;                 // acting player slot
-  int32 turn = 2;
-  string phase = 3;                 // "Main1", "Combat", ...
-  repeated Option options = 4;
-  string prompt = 5;                // engine question, human-readable
+  int64 game_id = 1;
+  int64 decision_id = 2;            // monotonic within the game, starts at 1
+  int32 player = 3;                 // acting player slot
+  int32 turn = 4;
+  string phase = 5;                 // "Main1", "Combat", ...
+  string decision_type = 6;         // "priority" for now; typed enums land in the next round
+  repeated Option options = 7;
+  string prompt = 8;                // engine question, human-readable
 }
 
-message DecisionResponse {
-  int32 option_id = 1;              // must be one of the options from the last DecisionRequest
+message DecisionSubmit {
+  int64 game_id = 1;
+  int64 decision_id = 2;            // must equal the outstanding DecisionRequest.decision_id
+  int32 option_id = 3;              // must be one of that request's options
 }
 
 message GameEvent {
-  int32 turn = 1;
-  string phase = 2;
-  string type = 3;                  // "SpellResolved" | "PermanentEntered" | "TriggerFired"
+  int64 seq = 1;                    // per-game monotonic, starts at 1; defines replay identity
+  int64 game_id = 2;
+  int32 turn = 3;
+  string phase = 4;
+  string type = 5;                  // "SpellResolved" | "PermanentEntered" | "TriggerFired"
                                     // | "LifeChanged" | "TurnStarted" | "CardDrawn"
                                     // | "PermanentLeftBattlefield" | "GameOver"
-  int32 player = 4;                 // acting/affected player
-  string card_name = 5;
-  string detail = 6;                // structured extra info, "key=value;key=value"
+  int32 player = 6;                 // acting/affected player
+  string card_name = 7;
+  string detail = 8;                // structured extra info, "key=value;key=value"
 }
 
 message StepResult {
-  repeated GameEvent events = 1;    // events generated by applying this decision
+  repeated GameEvent events = 1;    // convenience: events appended by this step (same buffer as PollEvents)
   bool decision_pending = 2;        // another decision needed immediately
+  bool game_over = 3;
+}
+
+message PollRequest {
+  int64 game_id = 1;
+  int64 cursor = 2;                 // last seq seen; 0 = from start
+}
+
+message EventBatch {
+  repeated GameEvent events = 1;    // all buffered events with seq > cursor, in seq order
+  int64 next_cursor = 2;            // seq of last returned event (cursor if none)
   bool game_over = 3;
 }
 
@@ -112,17 +164,18 @@ message Permanent {
 }
 
 message FullState {
-  int32 turn = 1;
-  string phase = 2;
-  int32 active_player = 3;
-  repeated int32 life = 4;
+  int64 game_id = 1;
+  int32 turn = 2;
+  string phase = 3;
+  int32 active_player = 4;
+  repeated int32 life = 5;
   // Per-player zones: hand/library/graveyard/battlefield. Index = player slot.
-  repeated Zone hand = 5;
-  repeated Zone battlefield = 6;
-  repeated Zone graveyard = 7;
-  repeated Zone library = 8;        // top card first; counts only unless revealed
-  map<string, int32> mana_pools = 9; // key: player slot as string, value bytes keyed in detail
-  repeated GameEvent recent_events = 10;
+  repeated Zone hand = 6;
+  repeated Zone battlefield = 7;
+  repeated Zone graveyard = 8;
+  repeated Zone library = 9;        // top card first; counts only unless revealed
+  map<string, int32> mana_pools = 10;
+  repeated GameEvent recent_events = 11;
 }
 
 message Zone {
@@ -137,8 +190,14 @@ message CardRef {
 
 message StateToken { bytes token = 1; }
 
+message RestoreRequest {
+  int64 game_id = 1;
+  bytes token = 2;
+}
+
 message GameOver {
   bool over = 1;
   int32 winner = 2;                 // -1 if draw
   string reason = 3;
+  Outcome outcome = 4;
 }

@@ -69,32 +69,36 @@ process isolation.
 
 ## Current Protocol Limitations
 
-These are deliberate M1 shortcuts, not final research interfaces:
+Protocol v2 resolved the M1 identity, event-stream, and lifecycle gaps: every
+per-game RPC routes by `game_id`, decisions carry a validated monotonic
+`decision_id`, events are independently pollable with per-game sequence
+numbers, `max_turns` is enforced, and outcomes are classified. What remains:
 
-1. `SubmitDecision` does not identify a game or decision. It currently routes
-   to the first remote controller. This must be fixed before multiple remote
-   players or concurrent requests.
-2. Events are returned through `StepResult` after `SubmitDecision`. There is no
-   independent event stream for Forge-AI-only or goldfish-only games.
-3. Only priority spell/ability choices are exposed remotely. Targets, modes,
+1. Only priority spell/ability choices are exposed remotely. Targets, modes,
    mulligans, selections, combat, and other Forge callbacks still use defaults.
-4. `Snapshot` and `Restore` are declared but return `UNIMPLEMENTED`.
-5. `max_turns` is declared in protobuf but is not yet enforced by Java.
-6. `FullState` is a partial inspection state, not yet a complete search state.
-7. Deck paths are resolved by the Java process and currently depend on valid
+   (Gate item 4, next round.)
+2. `Snapshot` and `Restore` are declared but return `UNIMPLEMENTED`. (Gate
+   item 5.)
+3. `FullState` is a partial inspection state, not yet a complete search state.
+4. Deck paths are resolved by the Java process and currently depend on valid
    filesystem paths.
+5. One active game per harness process. The v2 registry routes by `game_id`
+   and rejects stale ids from previous games, but concurrent games are not
+   hosted yet.
 
 ## Required Gate Before Layer 2
 
 Do not begin MCTS, learned search, or large-scale ontology validation until the
 following are complete:
 
-1. Add `game_id`, `decision_id`, and action validation.
-2. Add sequence-numbered independent event delivery.
-3. Enforce `max_turns` and make outcome classification reliable.
-4. Implement typed decision callbacks beyond priority.
-5. Implement snapshot/restore and state hashing.
-6. Add replay tests proving identical `(deck, seed, policy)` trajectories.
+1. [x] Add `game_id`, `decision_id`, and action validation. — done (protocol v2)
+2. [x] Add sequence-numbered independent event delivery. — done (`PollEvents`, seq from 1)
+3. [x] Enforce `max_turns` and make outcome classification reliable. — done
+4. [ ] Implement typed decision callbacks beyond priority.
+5. [ ] Implement snapshot/restore and state hashing.
+6. [x] Add replay tests proving identical `(deck, seed, policy)` trajectories. —
+   done and verified live; this gate caught and fixed a real nondeterminism
+   (engine match-tally leakage into GameOver events)
 
 ## Launching the Harness
 

@@ -42,11 +42,11 @@ Legend:
 - `[x]` Run the game on a background thread
 - `[x]` Report starting life totals
 - `[x]` Report game-over state and winner/draw
-- `[!]` Enforce `max_turns` from `StartRequest` — currently the field is defined but not applied
-- `[!]` Add explicit game/session IDs to every request and response
-- `[!]` Prevent stale decisions from one game being submitted to another
-- `[ ]` Add a lifecycle state machine: `CREATED → RUNNING → OVER → CLOSED`
-- `[ ]` Clear completed runners and release all scheduled timeout resources
+- `[x]` Enforce `max_turns` from `StartRequest` — enforced; bounded games end as `OUTCOME_TURN_LIMIT`
+- `[x]` Add explicit game/session IDs to every request and response
+- `[x]` Prevent stale decisions from one game being submitted to another
+- `[x]` Add a lifecycle state machine: `CREATED → RUNNING → OVER → CLOSED`
+- `[x]` Clear completed runners and release all scheduled timeout resources
 - `[ ]` Add cancellation tests for timeout, client disconnect, and server shutdown
 
 ### 1.3 Player control
@@ -56,7 +56,7 @@ Legend:
 - `[x]` Support a Python-controlled remote player
 - `[x]` Surface priority spell/ability choices
 - `[x]` Submit a selected option and continue execution
-- `[!]` Replace the current implicit global decision routing with `(game_id, player_id, decision_id)` routing
+- `[x]` Replace the current implicit global decision routing with `(game_id, decision_id)` routing (registry keyed by server-assigned `game_id`; decisions are per-game monotonic)
 - `[!]` Expose all meaningful decision classes, not just priority choices:
   - `[ ]` targets
   - `[ ]` modes
@@ -66,7 +66,7 @@ Legend:
   - `[ ]` mulligans and scry decisions
   - `[ ]` combat attackers/blockers
   - `[ ]` discard/sacrifice/selection effects
-- `[!]` Validate that a submitted option belongs to the outstanding decision
+- `[x]` Validate that a submitted option belongs to the outstanding decision
 - `[ ]` Add explicit `PASS_PRIORITY` options instead of relying on empty lists
 - `[ ]` Add a real land-playing/casting goldfish policy
 - `[ ]` Add controller conformance tests for every decision callback used by Forge
@@ -76,10 +76,10 @@ Legend:
 - `[x]` Capture Forge `GameLog` entries
 - `[x]` Deliver events after remote decisions
 - `[x]` Include event type, card name, and detail text
-- `[!]` Add event sequence numbers and game/turn/phase metadata
-- `[!]` Decouple event delivery from `SubmitDecision`
-- `[ ]` Add `PollEvents(cursor)` or a server-streaming `WatchEvents` RPC
-- `[ ]` Deliver events for Forge-AI-vs-Forge-AI and goldfish-only games
+- `[x]` Add event sequence numbers and game/turn/phase metadata
+- `[x]` Decouple event delivery from `SubmitDecision`
+- `[x]` Add `PollEvents(cursor)` (independent event stream; per-game monotonic seq from 1)
+- `[x]` Deliver events for Forge-AI-vs-Forge-AI and goldfish-only games
 - `[ ]` Define a stable event taxonomy for research:
   - `[ ]` card drawn
   - `[ ]` card cast
@@ -92,7 +92,7 @@ Legend:
   - `[ ]` combat decisions and damage
   - `[ ]` game outcome
 - `[ ]` Preserve raw Forge log text alongside normalized events
-- `[ ]` Add event-stream replay tests
+- `[x]` Add event-stream replay tests (same `(decks, seed)` → byte-identical event streams, verified live)
 
 ### 1.5 State and snapshots
 
@@ -116,7 +116,7 @@ Legend:
 - `[x]` Add connection/error handling
 - `[x]` Add context-manager cleanup
 - `[ ]` Regenerate stubs as part of CI rather than relying on checked-in manual edits
-- `[ ]` Add protocol compatibility/version negotiation
+- `[x]` Add protocol compatibility/version negotiation (`protocol_version` checked on connect)
 - `[ ]` Add async client support for parallel search workloads
 - `[ ]` Add typed conversion objects instead of exposing protobuf messages throughout research code
 
@@ -126,11 +126,11 @@ Legend:
 - `[x]` Run multiple seeds
 - `[x]` Return `GameResult`
 - `[x]` Add basic determinism-check helper
-- `[~]` Observer-only mode exists, but event collection is not yet a first-class stream
-- `[!]` Make runner aware of player types instead of inferring whether it should drive decisions
-- `[ ]` Record complete action/event/state trajectories
+- `[x]` Observer mode: event collection is a first-class stream (`PollEvents` + `drain_events`)
+- `[x]` Make runner aware of player types instead of inferring whether it should drive decisions
+- `[ ]` Record complete action/event/state trajectories (events are recorded; state snapshots pending gate item 5)
 - `[ ]` Add retry and cleanup behavior after server-side game errors
-- `[ ]` Add outcome classification: win, loss, draw, timeout, engine error, invalid action
+- `[x]` Add outcome classification: win, loss, draw, timeout, engine error, invalid action (`Outcome` enum + winner/reason on `GameOver`)
 - `[ ]` Add per-turn and per-decision timing metrics
 
 ### 2.3 Worker pool

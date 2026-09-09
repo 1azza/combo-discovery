@@ -21,3 +21,8 @@ dev = [
     "grpcio-tools>=1.83.1",
     "pytest>=9.1.1",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "live: requires a running forge-harness server; only runs when FORGE_TEST_HARNESS is set (host:port)",
+]

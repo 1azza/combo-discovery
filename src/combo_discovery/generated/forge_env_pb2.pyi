@@ -13,22 +13,41 @@ class PlayerType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     PLAYER_TYPE_REMOTE: _ClassVar[PlayerType]
     PLAYER_TYPE_GOLDFISH: _ClassVar[PlayerType]
     PLAYER_TYPE_FORGE_AI: _ClassVar[PlayerType]
+
+class Outcome(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    OUTCOME_UNSPECIFIED: _ClassVar[Outcome]
+    OUTCOME_WIN: _ClassVar[Outcome]
+    OUTCOME_DRAW: _ClassVar[Outcome]
+    OUTCOME_TURN_LIMIT: _ClassVar[Outcome]
+    OUTCOME_TIMEOUT: _ClassVar[Outcome]
+    OUTCOME_ERROR: _ClassVar[Outcome]
+    OUTCOME_STOPPED: _ClassVar[Outcome]
 PLAYER_TYPE_UNSPECIFIED: PlayerType
 PLAYER_TYPE_REMOTE: PlayerType
 PLAYER_TYPE_GOLDFISH: PlayerType
 PLAYER_TYPE_FORGE_AI: PlayerType
+OUTCOME_UNSPECIFIED: Outcome
+OUTCOME_WIN: Outcome
+OUTCOME_DRAW: Outcome
+OUTCOME_TURN_LIMIT: Outcome
+OUTCOME_TIMEOUT: Outcome
+OUTCOME_ERROR: Outcome
+OUTCOME_STOPPED: Outcome
 
 class Empty(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
 
 class Pong(_message.Message):
-    __slots__ = ("version", "game_active")
+    __slots__ = ("version", "game_active", "protocol_version")
     VERSION_FIELD_NUMBER: _ClassVar[int]
     GAME_ACTIVE_FIELD_NUMBER: _ClassVar[int]
+    PROTOCOL_VERSION_FIELD_NUMBER: _ClassVar[int]
     version: str
     game_active: bool
-    def __init__(self, version: _Optional[str] = ..., game_active: _Optional[bool] = ...) -> None: ...
+    protocol_version: int
+    def __init__(self, version: _Optional[str] = ..., game_active: _Optional[bool] = ..., protocol_version: _Optional[int] = ...) -> None: ...
 
 class DeckSpec(_message.Message):
     __slots__ = ("name", "path")
@@ -60,6 +79,12 @@ class StartResponse(_message.Message):
     starting_life: _containers.RepeatedScalarFieldContainer[int]
     def __init__(self, game_id: _Optional[int] = ..., starting_life: _Optional[_Iterable[int]] = ...) -> None: ...
 
+class GameQuery(_message.Message):
+    __slots__ = ("game_id",)
+    GAME_ID_FIELD_NUMBER: _ClassVar[int]
+    game_id: int
+    def __init__(self, game_id: _Optional[int] = ...) -> None: ...
+
 class Option(_message.Message):
     __slots__ = ("id", "kind", "card_name", "target_names", "description")
     ID_FIELD_NUMBER: _ClassVar[int]
@@ -75,40 +100,54 @@ class Option(_message.Message):
     def __init__(self, id: _Optional[int] = ..., kind: _Optional[str] = ..., card_name: _Optional[str] = ..., target_names: _Optional[_Iterable[str]] = ..., description: _Optional[str] = ...) -> None: ...
 
 class DecisionRequest(_message.Message):
-    __slots__ = ("player", "turn", "phase", "options", "prompt")
+    __slots__ = ("game_id", "decision_id", "player", "turn", "phase", "decision_type", "options", "prompt")
+    GAME_ID_FIELD_NUMBER: _ClassVar[int]
+    DECISION_ID_FIELD_NUMBER: _ClassVar[int]
     PLAYER_FIELD_NUMBER: _ClassVar[int]
     TURN_FIELD_NUMBER: _ClassVar[int]
     PHASE_FIELD_NUMBER: _ClassVar[int]
+    DECISION_TYPE_FIELD_NUMBER: _ClassVar[int]
     OPTIONS_FIELD_NUMBER: _ClassVar[int]
     PROMPT_FIELD_NUMBER: _ClassVar[int]
+    game_id: int
+    decision_id: int
     player: int
     turn: int
     phase: str
+    decision_type: str
     options: _containers.RepeatedCompositeFieldContainer[Option]
     prompt: str
-    def __init__(self, player: _Optional[int] = ..., turn: _Optional[int] = ..., phase: _Optional[str] = ..., options: _Optional[_Iterable[_Union[Option, _Mapping]]] = ..., prompt: _Optional[str] = ...) -> None: ...
+    def __init__(self, game_id: _Optional[int] = ..., decision_id: _Optional[int] = ..., player: _Optional[int] = ..., turn: _Optional[int] = ..., phase: _Optional[str] = ..., decision_type: _Optional[str] = ..., options: _Optional[_Iterable[_Union[Option, _Mapping]]] = ..., prompt: _Optional[str] = ...) -> None: ...
 
-class DecisionResponse(_message.Message):
-    __slots__ = ("option_id",)
+class DecisionSubmit(_message.Message):
+    __slots__ = ("game_id", "decision_id", "option_id")
+    GAME_ID_FIELD_NUMBER: _ClassVar[int]
+    DECISION_ID_FIELD_NUMBER: _ClassVar[int]
     OPTION_ID_FIELD_NUMBER: _ClassVar[int]
+    game_id: int
+    decision_id: int
     option_id: int
-    def __init__(self, option_id: _Optional[int] = ...) -> None: ...
+    def __init__(self, game_id: _Optional[int] = ..., decision_id: _Optional[int] = ..., option_id: _Optional[int] = ...) -> None: ...
 
 class GameEvent(_message.Message):
-    __slots__ = ("turn", "phase", "type", "player", "card_name", "detail")
+    __slots__ = ("seq", "game_id", "turn", "phase", "type", "player", "card_name", "detail")
+    SEQ_FIELD_NUMBER: _ClassVar[int]
+    GAME_ID_FIELD_NUMBER: _ClassVar[int]
     TURN_FIELD_NUMBER: _ClassVar[int]
     PHASE_FIELD_NUMBER: _ClassVar[int]
     TYPE_FIELD_NUMBER: _ClassVar[int]
     PLAYER_FIELD_NUMBER: _ClassVar[int]
     CARD_NAME_FIELD_NUMBER: _ClassVar[int]
     DETAIL_FIELD_NUMBER: _ClassVar[int]
+    seq: int
+    game_id: int
     turn: int
     phase: str
     type: str
     player: int
     card_name: str
     detail: str
-    def __init__(self, turn: _Optional[int] = ..., phase: _Optional[str] = ..., type: _Optional[str] = ..., player: _Optional[int] = ..., card_name: _Optional[str] = ..., detail: _Optional[str] = ...) -> None: ...
+    def __init__(self, seq: _Optional[int] = ..., game_id: _Optional[int] = ..., turn: _Optional[int] = ..., phase: _Optional[str] = ..., type: _Optional[str] = ..., player: _Optional[int] = ..., card_name: _Optional[str] = ..., detail: _Optional[str] = ...) -> None: ...
 
 class StepResult(_message.Message):
     __slots__ = ("events", "decision_pending", "game_over")
@@ -119,6 +158,24 @@ class StepResult(_message.Message):
     decision_pending: bool
     game_over: bool
     def __init__(self, events: _Optional[_Iterable[_Union[GameEvent, _Mapping]]] = ..., decision_pending: _Optional[bool] = ..., game_over: _Optional[bool] = ...) -> None: ...
+
+class PollRequest(_message.Message):
+    __slots__ = ("game_id", "cursor")
+    GAME_ID_FIELD_NUMBER: _ClassVar[int]
+    CURSOR_FIELD_NUMBER: _ClassVar[int]
+    game_id: int
+    cursor: int
+    def __init__(self, game_id: _Optional[int] = ..., cursor: _Optional[int] = ...) -> None: ...
+
+class EventBatch(_message.Message):
+    __slots__ = ("events", "next_cursor", "game_over")
+    EVENTS_FIELD_NUMBER: _ClassVar[int]
+    NEXT_CURSOR_FIELD_NUMBER: _ClassVar[int]
+    GAME_OVER_FIELD_NUMBER: _ClassVar[int]
+    events: _containers.RepeatedCompositeFieldContainer[GameEvent]
+    next_cursor: int
+    game_over: bool
+    def __init__(self, events: _Optional[_Iterable[_Union[GameEvent, _Mapping]]] = ..., next_cursor: _Optional[int] = ..., game_over: _Optional[bool] = ...) -> None: ...
 
 class Permanent(_message.Message):
     __slots__ = ("id", "card_name", "controller", "owner", "tapped", "attacking", "blocking", "counters", "attachments", "is_token", "type_line")
@@ -154,7 +211,7 @@ class Permanent(_message.Message):
     def __init__(self, id: _Optional[int] = ..., card_name: _Optional[str] = ..., controller: _Optional[int] = ..., owner: _Optional[int] = ..., tapped: _Optional[bool] = ..., attacking: _Optional[bool] = ..., blocking: _Optional[bool] = ..., counters: _Optional[_Mapping[str, int]] = ..., attachments: _Optional[_Iterable[str]] = ..., is_token: _Optional[bool] = ..., type_line: _Optional[str] = ...) -> None: ...
 
 class FullState(_message.Message):
-    __slots__ = ("turn", "phase", "active_player", "life", "hand", "battlefield", "graveyard", "library", "mana_pools", "recent_events")
+    __slots__ = ("game_id", "turn", "phase", "active_player", "life", "hand", "battlefield", "graveyard", "library", "mana_pools", "recent_events")
     class ManaPoolsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -162,6 +219,7 @@ class FullState(_message.Message):
         key: str
         value: int
         def __init__(self, key: _Optional[str] = ..., value: _Optional[int] = ...) -> None: ...
+    GAME_ID_FIELD_NUMBER: _ClassVar[int]
     TURN_FIELD_NUMBER: _ClassVar[int]
     PHASE_FIELD_NUMBER: _ClassVar[int]
     ACTIVE_PLAYER_FIELD_NUMBER: _ClassVar[int]
@@ -172,6 +230,7 @@ class FullState(_message.Message):
     LIBRARY_FIELD_NUMBER: _ClassVar[int]
     MANA_POOLS_FIELD_NUMBER: _ClassVar[int]
     RECENT_EVENTS_FIELD_NUMBER: _ClassVar[int]
+    game_id: int
     turn: int
     phase: str
     active_player: int
@@ -182,7 +241,7 @@ class FullState(_message.Message):
     library: _containers.RepeatedCompositeFieldContainer[Zone]
     mana_pools: _containers.ScalarMap[str, int]
     recent_events: _containers.RepeatedCompositeFieldContainer[GameEvent]
-    def __init__(self, turn: _Optional[int] = ..., phase: _Optional[str] = ..., active_player: _Optional[int] = ..., life: _Optional[_Iterable[int]] = ..., hand: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., battlefield: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., graveyard: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., library: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., mana_pools: _Optional[_Mapping[str, int]] = ..., recent_events: _Optional[_Iterable[_Union[GameEvent, _Mapping]]] = ...) -> None: ...
+    def __init__(self, game_id: _Optional[int] = ..., turn: _Optional[int] = ..., phase: _Optional[str] = ..., active_player: _Optional[int] = ..., life: _Optional[_Iterable[int]] = ..., hand: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., battlefield: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., graveyard: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., library: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., mana_pools: _Optional[_Mapping[str, int]] = ..., recent_events: _Optional[_Iterable[_Union[GameEvent, _Mapping]]] = ...) -> None: ...
 
 class Zone(_message.Message):
     __slots__ = ("cards", "permanents")
@@ -206,12 +265,22 @@ class StateToken(_message.Message):
     token: bytes
     def __init__(self, token: _Optional[bytes] = ...) -> None: ...
 
+class RestoreRequest(_message.Message):
+    __slots__ = ("game_id", "token")
+    GAME_ID_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_FIELD_NUMBER: _ClassVar[int]
+    game_id: int
+    token: bytes
+    def __init__(self, game_id: _Optional[int] = ..., token: _Optional[bytes] = ...) -> None: ...
+
 class GameOver(_message.Message):
-    __slots__ = ("over", "winner", "reason")
+    __slots__ = ("over", "winner", "reason", "outcome")
     OVER_FIELD_NUMBER: _ClassVar[int]
     WINNER_FIELD_NUMBER: _ClassVar[int]
     REASON_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
     over: bool
     winner: int
     reason: str
-    def __init__(self, over: _Optional[bool] = ..., winner: _Optional[int] = ..., reason: _Optional[str] = ...) -> None: ...
+    outcome: Outcome
+    def __init__(self, over: _Optional[bool] = ..., winner: _Optional[int] = ..., reason: _Optional[str] = ..., outcome: _Optional[_Union[Outcome, str]] = ...) -> None: ...
