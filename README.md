@@ -9,6 +9,11 @@ blog + open artifact.
 
 ## Architecture
 
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design rationale and the
+protocol changes required before research-scale search. See
+[`STATUS.md`](STATUS.md) for the current implementation state and
+[`PROJECT_TODO.md`](PROJECT_TODO.md) for the full project checklist.
+
 - `forge-harness` (Java, separate repo/fork of Forge): embeds `forge-game`, exposes a steppable game environment via gRPC (contract: `proto/forge_env.proto`).
 - this repo (Python): environment client, worker pool, search policies, ontology, candidate generation, evaluation.
 

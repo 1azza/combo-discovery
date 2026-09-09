@@ -33,6 +33,7 @@ def run_game(
     max_turns: int = 0,
     timeout_seconds: int = 0,
     collect_events: bool = True,
+    drive: bool = True,
 ) -> GameResult:
     start = time.monotonic()
     resp = client.start_game(
@@ -45,6 +46,10 @@ def run_game(
         if over.over:
             result = over
             break
+        if not drive:
+            time.sleep(0.2)
+            turns = client.get_state().turn
+            continue
         req = client.get_decision()
         turns = req.turn
         if policy is None:
@@ -91,9 +96,14 @@ def determinism_check(
     seed: int,
     max_turns: int = 0,
     timeout_seconds: int = 0,
+    drive: bool = True,
 ) -> None:
-    r1 = run_game(client, decks, seed, max_turns=max_turns, timeout_seconds=timeout_seconds)
-    r2 = run_game(client, decks, seed, max_turns=max_turns, timeout_seconds=timeout_seconds)
+    r1 = run_game(
+        client, decks, seed, max_turns=max_turns, timeout_seconds=timeout_seconds, drive=drive
+    )
+    r2 = run_game(
+        client, decks, seed, max_turns=max_turns, timeout_seconds=timeout_seconds, drive=drive
+    )
     if r1.events != r2.events:
         for i, (a, b) in enumerate(zip(r1.events, r2.events)):
             if a != b:
