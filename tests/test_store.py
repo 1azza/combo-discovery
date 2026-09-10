@@ -100,14 +100,16 @@ class TestSchema:
         for t in (
             "schema_version", "experiments", "games", "decisions", "events",
             "candidates", "adjudications",
+            "import_runs", "cards", "card_faces", "card_aliases",
+            "card_scripts", "card_effects", "corpus_coverage",
         ):
             assert t in tables
         indexes = sqlite3.connect(path).execute(
             "SELECT name FROM sqlite_master WHERE type='index'"
         ).fetchall()
         idx_names = {r[0] for r in indexes}
-        assert {"idx_events_game", "idx_decisions_game"} <= idx_names
-        assert [tuple(r) for r in versions] == [(1,)]
+        assert {"idx_events_game", "idx_decisions_game", "idx_cards_name"} <= idx_names
+        assert [tuple(r) for r in versions] == [(1,), (2,)]
 
     def test_foreign_keys_enforced(self, tmp_path):
         store = ExperimentStore(tmp_path / "exp.sqlite")

@@ -29,7 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only (avoids an import cycle)
     from .runner import DecisionContext, GameResult
 
 # Current schema version. Bump this and register a migration in _MIGRATIONS.
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 # Serializes all DB access; see the module docstring for why.
 _DB_LOCK = threading.Lock()
@@ -42,6 +42,13 @@ _TABLES = (
     "events",
     "candidates",
     "adjudications",
+    "import_runs",
+    "cards",
+    "card_faces",
+    "card_aliases",
+    "card_scripts",
+    "card_effects",
+    "corpus_coverage",
 )
 
 _SCHEMA_SQL = """
@@ -82,10 +89,110 @@ CREATE INDEX IF NOT EXISTS idx_events_game ON events(game_row, seq);
 CREATE INDEX IF NOT EXISTS idx_decisions_game ON decisions(game_row, decision_id);
 """
 
+# Schema v2 (card corpus) lives in its own constant so it can be folded into
+# the base schema for fresh databases *and* replayed by the v1 -> v2 migration.
+_CORPUS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS import_runs (
+  import_id TEXT PRIMARY KEY,
+  started_at TEXT NOT NULL,
+  forge_root TEXT,
+  forge_commit TEXT,
+  scryfall_source TEXT NOT NULL DEFAULT 'forge_script',
+  scryfall_sha256 TEXT,
+  scryfall_download_uri TEXT,
+  notes TEXT);
+CREATE TABLE IF NOT EXISTS cards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id),
+  script_path TEXT,
+  file_sha256 TEXT NOT NULL,
+  name TEXT NOT NULL,
+  normalized_name TEXT NOT NULL,
+  mana_cost TEXT, type_line TEXT, oracle_text TEXT, colors TEXT,
+  pt TEXT, loyalty TEXT, defense TEXT,
+  set_code TEXT, rarity TEXT, collector_number TEXT,
+  scryfall_oracle_id TEXT, layout TEXT,
+  alternate_mode TEXT, meld_pair TEXT, copy_face_from TEXT,
+  effect_count INTEGER NOT NULL DEFAULT 0,
+  face_count INTEGER NOT NULL DEFAULT 1,
+  is_multiface INTEGER NOT NULL DEFAULT 0,
+  parse_ok INTEGER NOT NULL DEFAULT 1);
+CREATE INDEX IF NOT EXISTS idx_cards_import ON cards(import_id);
+CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(normalized_name);
+CREATE TABLE IF NOT EXISTS card_faces (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id),
+  card_id INTEGER NOT NULL REFERENCES cards(id),
+  face_index INTEGER NOT NULL,
+  name TEXT, mana_cost TEXT, type_line TEXT, oracle_text TEXT,
+  colors TEXT, pt TEXT, loyalty TEXT, defense TEXT, text TEXT,
+  marker TEXT, has_scryfall INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS idx_faces_card ON card_faces(card_id);
+CREATE TABLE IF NOT EXISTS card_aliases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id),
+  card_id INTEGER NOT NULL REFERENCES cards(id),
+  alias TEXT NOT NULL,
+  normalized_alias TEXT NOT NULL,
+  alias_kind TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_aliases_card ON card_aliases(card_id);
+CREATE INDEX IF NOT EXISTS idx_aliases_norm ON card_aliases(normalized_alias);
+CREATE TABLE IF NOT EXISTS card_scripts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id),
+  card_id INTEGER NOT NULL REFERENCES cards(id),
+  script_path TEXT,
+  file_sha256 TEXT NOT NULL,
+  line_count INTEGER NOT NULL DEFAULT 0,
+  face_count INTEGER NOT NULL DEFAULT 1,
+  effect_count INTEGER NOT NULL DEFAULT 0,
+  svar_count INTEGER NOT NULL DEFAULT 0,
+  ability_count INTEGER NOT NULL DEFAULT 0,
+  alternate_mode TEXT,
+  parse_ok INTEGER NOT NULL DEFAULT 1,
+  parse_error_count INTEGER NOT NULL DEFAULT 0,
+  error_json TEXT,
+  raw TEXT);
+CREATE INDEX IF NOT EXISTS idx_scripts_card ON card_scripts(card_id);
+CREATE TABLE IF NOT EXISTS card_effects (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id),
+  card_id INTEGER NOT NULL REFERENCES cards(id),
+  script_id INTEGER REFERENCES card_scripts(id),
+  face_index INTEGER NOT NULL DEFAULT 0,
+  effect_kind TEXT NOT NULL,
+  verb_or_mode TEXT NOT NULL,
+  ability_type TEXT,
+  zone TEXT,
+  is_optional INTEGER NOT NULL DEFAULT 0,
+  is_svar INTEGER NOT NULL DEFAULT 0,
+  svar_name TEXT,
+  description TEXT,
+  line_no INTEGER,
+  params_json TEXT NOT NULL DEFAULT '{}');
+CREATE INDEX IF NOT EXISTS idx_effects_card ON card_effects(card_id);
+CREATE INDEX IF NOT EXISTS idx_effects_verb ON card_effects(verb_or_mode);
+CREATE INDEX IF NOT EXISTS idx_effects_import ON card_effects(import_id);
+CREATE TABLE IF NOT EXISTS corpus_coverage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id),
+  metric TEXT NOT NULL,
+  key TEXT,
+  value INTEGER NOT NULL DEFAULT 0,
+  detail_json TEXT);
+CREATE INDEX IF NOT EXISTS idx_coverage_import ON corpus_coverage(import_id);
+CREATE INDEX IF NOT EXISTS idx_coverage_metric ON corpus_coverage(metric);
+"""
 
-def _migration_2(conn: sqlite3.Connection) -> None:  # pragma: no cover
-    """Stub for the next schema bump: raise until a real migration is written."""
-    raise NotImplementedError("no migration registered for schema version 2")
+
+def _migration_2(conn: sqlite3.Connection) -> None:
+    """Schema v2: the Layer-2 card corpus tables.
+
+    All tables are keyed by ``import_id`` (an FK to ``import_runs``) so every
+    import appends a self-contained, immutable snapshot.  The importer only ever
+    inserts; re-importing is a new ``import_runs`` row plus new child rows.
+    """
+    conn.executescript(_CORPUS_SCHEMA_SQL)
 
 
 # version -> callable applying the change for that version.
@@ -97,14 +204,19 @@ def _utc_now() -> str:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the schema idempotently and advance schema_version by inserting
-    rows (append-only)."""
+    """Create the base schema idempotently and advance schema_version by
+    inserting rows (append-only).
+
+    Fresh databases are stamped version 1 and then stepped through every
+    migration, so the v1 -> v2 corpus tables are created through exactly the
+    same path as an upgrade.
+    """
     conn.executescript(_SCHEMA_SQL)
     row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
     current = row[0] if row is not None and row[0] is not None else None
     if current is None:
-        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
-        return
+        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (1,))
+        current = 1
     while current < _SCHEMA_VERSION:
         nxt = current + 1
         migration = _MIGRATIONS.get(nxt)

@@ -116,6 +116,9 @@ async def test_corpus_lists_seeded_cards(tmp_path, monkeypatch):
 
     ExperimentStore(db).close()
     conn = sqlite3.connect(db)
+    # Schema v2 already created a real cards table; swap in the loose legacy
+    # shape the corpus view is designed to tolerate.
+    conn.execute("DROP TABLE IF EXISTS cards")
     conn.execute(
         "CREATE TABLE cards (id INTEGER PRIMARY KEY, name TEXT, type_line TEXT,"
         " mana_cost TEXT, oracle_text TEXT, effects_json TEXT)"

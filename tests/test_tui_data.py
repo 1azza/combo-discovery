@@ -354,6 +354,21 @@ class TestStoreBinding:
         assert binding.list_candidates() == []
         assert binding.games_for_run("nope") == []
         assert binding.event_tail() == []
+        # Schema v2 always creates the (empty) corpus tables, so the binding
+        # reports a usable schema with zero rows rather than "no table".
+        assert binding.card_schema() is not None
+        assert binding.list_cards() == []
+        assert binding.card_count() == 0
+        binding.close()
+
+    def test_cards_table_dropped_is_graceful(self, tmp_path):
+        binding = StoreBinding(tmp_path / "empty.sqlite")
+        binding.close()
+        conn = sqlite3.connect(tmp_path / "empty.sqlite")
+        conn.execute("DROP TABLE cards")
+        conn.commit()
+        conn.close()
+        binding = StoreBinding(tmp_path / "empty.sqlite")
         assert binding.card_schema() is None
         assert binding.list_cards() == []
         assert binding.card_count() == 0
@@ -407,6 +422,9 @@ class TestStoreBinding:
         path = tmp_path / "exp.sqlite"
         _seed_store(path)
         conn = sqlite3.connect(path)
+        # The store creates the importer-owned cards table at schema v2; replace
+        # it with the loose legacy shape this test is probing tolerance for.
+        conn.execute("DROP TABLE IF EXISTS cards")
         conn.execute(
             "CREATE TABLE cards (id INTEGER PRIMARY KEY, name TEXT, type_line TEXT,"
             " mana_cost TEXT, oracle_text TEXT, effects_json TEXT)"
@@ -443,6 +461,7 @@ class TestStoreBinding:
         path = tmp_path / "exp.sqlite"
         _seed_store(path)
         conn = sqlite3.connect(path)
+        conn.execute("DROP TABLE IF EXISTS cards")
         conn.execute("CREATE TABLE cards (id INTEGER PRIMARY KEY, weird TEXT)")
         conn.commit()
         conn.close()
