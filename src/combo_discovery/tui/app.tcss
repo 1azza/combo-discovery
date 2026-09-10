@@ -1,0 +1,495 @@
+/* combo-discovery research console
+ * "omarchy" — deep warm near-black ground, one restrained blue accent,
+ * warm muted grays, rounded borders, generous padding, no motion.
+ */
+
+Screen {
+    background: $background;
+    color: $text;
+}
+
+CorpusView,
+ExperimentsView,
+CandidatesView,
+ActivityView {
+    height: 1fr;
+    width: 1fr;
+    padding: 1 1 0 1;
+}
+
+/* -- chrome ------------------------------------------------------------- */
+
+#header-bar {
+    height: 2;
+    padding: 0 2;
+    background: $surface;
+    border-bottom: solid $omarchy-border;
+    content-align: left middle;
+}
+
+#view-tabs {
+    height: 2;
+    padding: 0 1;
+    background: $background;
+}
+
+#view-tabs Tab {
+    color: $omarchy-faint;
+    text-style: none;
+}
+
+#view-tabs Tab:hover {
+    color: $omarchy-muted;
+}
+
+#view-tabs Tab.-active {
+    color: $omarchy-accent;
+    text-style: bold;
+}
+
+#view-tabs Underline {
+    background: $background;
+}
+
+#view-tabs Underline > .underline--bar {
+    color: $omarchy-accent;
+    background: $omarchy-border;
+}
+
+#view-switcher {
+    height: 1fr;
+}
+
+#status-line {
+    height: 2;
+    padding: 0 2;
+    background: $surface;
+    border-top: solid $omarchy-border;
+    color: $omarchy-muted;
+}
+
+/* -- generic panels ----------------------------------------------------- */
+
+.panel {
+    background: $panel;
+    border: round $omarchy-border;
+    padding: 1 2;
+    margin: 0 0 1 0;
+}
+
+.panel:focus-within {
+    border: round $omarchy-border-hi;
+}
+
+.panel-title {
+    color: $omarchy-accent;
+    text-style: bold;
+}
+
+.section-label {
+    color: $omarchy-faint;
+    text-style: bold;
+    margin: 1 0 0 0;
+}
+
+.dim, .muted { color: $omarchy-muted; }
+.accent { color: $omarchy-accent; }
+.warn { color: $omarchy-warn; }
+.err { color: $omarchy-err; }
+.ok { color: $omarchy-ok; }
+
+/* -- corpus ------------------------------------------------------------- */
+
+#corpus-body {
+    height: 1fr;
+}
+
+#corpus-sidebar {
+    width: 40;
+    margin: 0 1 0 0;
+}
+
+#corpus-detail {
+    width: 1fr;
+}
+
+#corpus-search {
+    margin: 0 0 1 0;
+}
+
+#corpus-count {
+    margin: 0 0 1 0;
+}
+
+#corpus-list {
+    height: 1fr;
+}
+
+#corpus-empty {
+    height: 1fr;
+}
+
+/* -- candidates --------------------------------------------------------- */
+
+#cand-body {
+    height: 1fr;
+}
+
+#cand-sidebar {
+    width: 46;
+    margin: 0 1 0 0;
+}
+
+#cand-detail {
+    width: 1fr;
+}
+
+#cand-count {
+    margin: 0 0 1 0;
+}
+
+#cand-list {
+    height: 1fr;
+}
+
+#cand-empty {
+    height: 1fr;
+}
+
+/* -- activity ----------------------------------------------------------- */
+
+#activity-body {
+    height: 1fr;
+}
+
+#activity-feed {
+    width: 1fr;
+    margin: 0 1 0 0;
+}
+
+#activity-health {
+    width: 48;
+}
+
+#activity-log {
+    height: 1fr;
+    background: transparent;
+}
+
+#activity-workers {
+    height: auto;
+    max-height: 12;
+    margin: 0 0 1 0;
+}
+
+#activity-run {
+    margin: 1 0 0 0;
+}
+
+#activity-games {
+    margin: 1 0 0 0;
+}
+
+/* -- experiments -------------------------------------------------------- */
+
+#exp-top {
+    height: auto;
+}
+
+#exp-form {
+    width: 2fr;
+    height: auto;
+    margin: 0 1 1 0;
+}
+
+#exp-progress {
+    width: 1fr;
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+.field {
+    width: 1fr;
+    height: auto;
+    margin: 0 1 0 0;
+}
+
+.form-row {
+    height: auto;
+}
+
+.field Label {
+    color: $omarchy-faint;
+    height: 1;
+}
+
+.form-row.actions {
+    height: 3;
+    align-vertical: middle;
+    margin: 1 0 0 0;
+}
+
+.form-error {
+    color: $omarchy-err;
+    margin: 0 0 0 1;
+    height: 1;
+}
+
+#exp-bar {
+    width: 1fr;
+    margin: 0 0 1 0;
+    background: transparent;
+}
+
+#exp-guidance {
+    height: auto;
+    border: round $omarchy-warn 45%;
+}
+
+.results-head {
+    height: 2;
+    align-vertical: middle;
+}
+
+#exp-results {
+    height: 1fr;
+    margin: 0 0 1 0;
+}
+
+#exp-empty {
+    height: 1fr;
+}
+
+/* -- form controls ------------------------------------------------------ */
+
+Input, Select {
+    background: $surface;
+    border: round $omarchy-border;
+    color: $text;
+}
+
+Input:focus, Select:focus {
+    border: round $omarchy-accent;
+}
+
+Input > .input--placeholder {
+    color: $omarchy-faint;
+}
+
+Input > .input--cursor {
+    background: $omarchy-accent;
+    color: $background;
+}
+
+Button {
+    background: $surface;
+    color: $text;
+    border: round $omarchy-border;
+    min-width: 14;
+    height: 3;
+    margin: 0 1 0 0;
+}
+
+Button.-primary {
+    background: $omarchy-accent-dim;
+    color: $omarchy-accent-hi;
+    border: round $omarchy-accent;
+    text-style: bold;
+}
+
+Button.-error {
+    background: $surface;
+    color: $omarchy-err;
+}
+
+Button:focus {
+    border: round $omarchy-accent-hi;
+    text-style: bold;
+}
+
+Button.-primary:focus {
+    border: round $omarchy-accent-hi;
+}
+
+Button:disabled {
+    color: $omarchy-faint;
+    border: round $omarchy-border;
+    text-style: none;
+}
+
+/* -- lists and tables --------------------------------------------------- */
+
+OptionList {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+OptionList > .option-list--option {
+    color: $text;
+    padding: 0 1;
+}
+
+OptionList > .option-list--option-highlighted {
+    background: $omarchy-accent-dim;
+    color: $omarchy-accent-hi;
+    text-style: bold;
+}
+
+OptionList > .option-list--option-hover {
+    background: $omarchy-panel-hi;
+}
+
+DataTable {
+    background: transparent;
+    color: $text;
+}
+
+DataTable > .datatable--header {
+    background: $surface;
+    color: $omarchy-accent;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: $omarchy-accent-dim;
+    color: $omarchy-accent-hi;
+}
+
+DataTable > .datatable--even-row {
+    background: $omarchy-panel-hi 60%;
+}
+
+ProgressBar {
+    background: transparent;
+}
+
+ProgressBar > .bar--bar {
+    color: $omarchy-accent;
+    background: $surface;
+}
+
+ProgressBar > .bar--complete {
+    color: $omarchy-ok;
+    background: $surface;
+}
+
+/* -- detail panes ------------------------------------------------------- */
+
+.detail-name {
+    color: $omarchy-accent;
+    text-style: bold;
+}
+
+.detail-type {
+    color: $omarchy-muted;
+}
+
+.detail-mana {
+    color: $omarchy-accent;
+}
+
+.detail-oracle {
+    color: $text;
+}
+
+.detail-effects {
+    color: $omarchy-ok;
+}
+
+.detail-extra {
+    color: $omarchy-faint;
+}
+
+#card-detail,
+#candidate-detail {
+    height: auto;
+}
+
+Rule {
+    color: $omarchy-border;
+    margin: 1 0;
+}
+
+/* -- empty states ------------------------------------------------------- */
+
+.empty-state {
+    width: 1fr;
+    height: 1fr;
+    content-align: center middle;
+    text-align: center;
+    color: $omarchy-muted;
+    padding: 2 4;
+}
+
+/* -- help modal --------------------------------------------------------- */
+
+HelpScreen {
+    align: center middle;
+    background: $background 75%;
+}
+
+#help-card {
+    width: 68;
+    max-width: 92%;
+    height: auto;
+    max-height: 90%;
+    background: $panel;
+    border: round $omarchy-border-hi;
+    padding: 1 3;
+}
+
+#help-title {
+    color: $omarchy-accent;
+    text-style: bold;
+}
+
+#help-sub {
+    color: $omarchy-faint;
+    margin: 0 0 1 0;
+}
+
+#help-body {
+    height: auto;
+    max-height: 24;
+}
+
+#help-keys {
+    height: auto;
+}
+
+#help-foot {
+    color: $omarchy-faint;
+    margin: 1 0 0 0;
+}
+
+/* -- narrow terminals --------------------------------------------------- */
+
+Screen.-narrow #header-bar {
+    padding: 0 1;
+}
+
+Screen.-narrow #corpus-sidebar {
+    width: 30;
+}
+
+Screen.-narrow #exp-top {
+    layout: vertical;
+}
+
+Screen.-narrow #exp-form {
+    width: 1fr;
+    margin: 0 0 1 0;
+}
+
+Screen.-narrow #exp-progress {
+    width: 1fr;
+}
+
+Screen.-narrow #cand-sidebar {
+    width: 34;
+}
+
+Screen.-narrow #activity-health {
+    width: 38;
+}

@@ -49,6 +49,13 @@ src/combo_discovery/
   store.py                   ExperimentStore — append-only SQLite persistence
   research_config.py         research.toml loader
   config.py                  worker-pool defaults
+  tui/                       Textual research console (`combo-tui`)
+    app.py                   app shell, tabs, header/statusline, run wiring
+    data.py                  read-only store binding, run config, worker probing
+    views/                   Corpus · Experiments · Candidates · Activity
+    widgets.py               shared presentation widgets
+    screens.py               key-map help modal
+    app.tcss                 "omarchy" stylesheet
   generated/                 protobuf stubs (do not edit)
 research.toml                research metadata + batch defaults
 scripts/gen_stubs.sh         regenerate stubs from proto
@@ -108,6 +115,59 @@ store.close()
 records a `games` row, every drained event, and the accepted decisions from the
 trajectory. The store serializes writes with a process-wide lock, so the worker
 pool can record from multiple threads into one database.
+
+## Research console (TUI)
+
+`combo-tui` is a keyboard-first [Textual](https://textual.textualize.io/) console
+for running experiments interactively. It drives the same library as the
+snippets above — the append-only store, `WorkerPool.map_games(..., store=,
+run_id=)`, and the real policies — from four views:
+
+- **Corpus** — search the card store, inspect type line / mana / oracle text /
+  extracted effect count. The `cards` table is importer-owned; until it lands,
+  the view shows a clear empty state instead of failing.
+- **Experiments** — pick deck pair, policy, seed range, worker count and port;
+  launch a batch and watch live progress, worker health and the results table.
+- **Candidates** — recorded combo candidates with status, evidence JSON and the
+  adjudication trail.
+- **Activity** — a live tail of experiment events plus worker health.
+
+```bash
+uv run combo-tui                              # experiments.sqlite, research.toml, ./decks
+uv run python -m combo_discovery.tui          # same thing, module form
+uv run combo-tui --db runs.sqlite --config research.toml --decks-dir decks
+```
+
+| key | action |
+| --- | --- |
+| `1` `2` `3` `4` | jump to Corpus / Experiments / Candidates / Activity |
+| `[` `]` | previous / next view |
+| `tab` `shift+tab` | move focus between panes |
+| `j` `k` | move down / up in a list |
+| `enter` | open / inspect the highlighted row |
+| `/` | focus the corpus search box |
+| `r` | reload the current view from the store |
+| `ctrl+r` `ctrl+k` `ctrl+t` | start run / cancel run / re-check harness |
+| `?` `f1` | key map |
+| `ctrl+p` | command palette |
+| `q` | quit (press twice while a run is active) |
+
+**Empty and absent data are first-class states.** The SQLite store is created on
+demand, so the console starts cleanly against a fresh database: Corpus and
+Candidates show quiet empty states, and the Experiments form still configures.
+Every read goes through a separate read-only (`PRAGMA query_only`) connection,
+so polling the UI can never interfere with the worker thread recording games.
+
+**No live harness?** The Experiments view probes the configured worker ports with
+a short connect and, when none answer, shows the exact `java -jar
+forge-harness-*.jar --port …` command to start one. A run is only launched over
+the longest contiguous run of reachable ports, so absent ports never stall the
+UI. Corpus, recorded experiments and candidates remain fully browsable offline.
+
+Long-running work (probing and the game batch) runs in Textual worker threads,
+never on the UI thread; progress is polled from the store and the pool's health
+flags. The visual style is a single restrained omarchy blue on a deep warm
+near-black ground, with no motion.
 
 ## License
 
