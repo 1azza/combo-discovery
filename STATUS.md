@@ -1,12 +1,33 @@
 # Project Status
 
-Last verified during the wave-3 round: the final oracle re-review found
-residual defects in the wave-2 fixes (validation-lease atomicity, join-failure
-persistence, IsGameOver timing, stale-marker misclassification); wave-3 fixed
-all of them and the full gate passed after the fixes. Gate item 4 is still
-partial (spell targeting/modes remain).
+Last verified during the proto v4 round (spell-casting-path decisions):
+the final oracle re-review's wave-3 fixes held, and v4 added the full
+spell-casting path. **Gate item 4 is COMPLETE** — every meaningful decision
+class is surfaced (long-tail callbacks deliberately AI-defaulted). Remaining
+plumbing per PLUMBING_SPEC.md: snapshot/restore (gate item 5), event
+taxonomy + FullState v2, persistence, hardening.
 
 ## Verified
+
+- [x] Protocol v4 (spell-casting path): `CHOOSE_TARGETS` (server-validated
+      candidates via `canTarget`, `TargetSelection` answer, mandatory/optional,
+      count bounds), `CHOOSE_MODE` (option list, repeat rules honored), and
+      `OPTIONAL_COSTS` (kicker selection, empty = no kicker). Every engine
+      re-prompt is a fresh `decision_id`; illegal answers are rejected with
+      the decision outstanding.
+- [x] Remote casting now flows through the human `PlaySpellAbility` path
+      (the AI casting path bypassed `setupTargets` — fixed by overriding
+      `playChosenSpellAbility`), with a `canPayCost` filter so unpayable
+      abilities don't spin the priority loop.
+- [x] Live staged verification on the real harness: Giant Growth surfaced
+      `CHOOSE_TARGETS` with correct candidates (own bears), illegal target
+      rejected with decision outstanding, legal target accepted, spell
+      resolved; `Return to Nature` surfaced `CHOOSE_MODE` (invalid mode
+      rejected, valid accepted); `Kavu Titan` surfaced `OPTIONAL_COSTS`
+      (empty = no kicker accepted).
+- [x] Deck fixtures extended: `4 Giant Growth` + `4 Return to Nature` in
+      both goldfish decks; smoke requires live `CHOOSE_TARGETS` +
+      `CHOOSE_MODE` (both observed in the remote-driven game).
 
 - [x] Forge fork exists at `/home/lza/Work/forge`
 - [x] Forge source is pinned to `4f577da7b2a9074f9f66544aaf99405e38cf5ac3`
@@ -98,13 +119,10 @@ partial (spell targeting/modes remain).
       thread)
 - [ ] Remote priority options are AI-curated (`canPlaySa` filter, not a
       legality filter): legal actions the AI deems unattractive never appear
-      as options — decision pending before spell targeting lands
+      as options — matters now that targeting has landed; switch to a
+      pure-legality filter in a hardening round
 - [ ] GetState zone snapshot uses bounded retry over live zone lists; an
       immutable game-thread snapshot is the deferred full fix (TODO in code)
-- [ ] Spell targeting and mode selection are still engine-internal: a remote
-      player's spells resolve with AI-chosen targets/modes
-      (`chooseTargetsFor`/`chooseModeForAbility` not yet surfaced) — next
-      slice of gate item 4, together with optional costs
 - [ ] Long-tail callbacks deliberately keep AI defaults (mana payment,
       generic confirms, trigger ordering, votes/dice/sectors) — documented in
       the proto header, not a defect
@@ -126,8 +144,9 @@ partial (spell targeting/modes remain).
 
 ## Next Work
 
-1. Finish gate item 4: surface spell targeting (`chooseTargetsFor`),
-   mode selection (`chooseModeForAbility`), and optional costs
-   (`chooseOptionalCosts`) — the spell-casting-path decisions.
-2. Gate item 5: snapshot/restore and state hashing, plus controller
-   conformance tests.
+1. Gate item 5: snapshot/restore + state hashing (PLUMBING_SPEC.md section 2).
+2. Event taxonomy + FullState v2 (PLUMBING_SPEC.md section 3).
+3. Trajectory persistence + SQLite + config/metadata (PLUMBING_SPEC.md
+   sections 1/4).
+4. Hardening: legality-filtered priority options, real goldfish, conformance
+   + cancellation tests, CI.

@@ -57,11 +57,11 @@ Legend:
 - `[x]` Surface priority spell/ability choices
 - `[x]` Submit a selected option and continue execution
 - `[x]` Replace the current implicit global decision routing with `(game_id, decision_id)` routing (registry keyed by server-assigned `game_id`; decisions are per-game monotonic)
-- `[~]` Expose all meaningful decision classes, not just priority choices (protocol v3 surfaced 10 typed decision classes; the spell-casting path remains):
-  - `[ ]` targets (`chooseTargetsFor` — engine-internal, mutates the SA; hardest to serialize)
-  - `[ ]` modes (`chooseModeForAbility`)
+- `[x]` Expose all meaningful decision classes (v3 combat/selection/mulligans + v4 spell-casting path; long-tail callbacks deliberately AI-defaulted):
+  - `[x]` targets (`chooseTargetsFor` — server-validated candidates via `canTarget`, `TargetSelection` answer, mandatory/optional)
+  - `[x]` modes (`chooseModeForAbility` — option list, repeat rules honored)
   - `[x]` X values and announcements (`ANNOUNCE`, min/max validated)
-  - `[ ]` optional costs (`chooseOptionalCosts`)
+  - `[x]` optional costs (`chooseOptionalCosts` — kicker selection, empty = no kicker)
   - `[~]` trigger ordering — deliberately AI-defaulted for now (hot path, documented in the proto header)
   - `[x]` mulligans and scry decisions (`MULLIGAN_KEEP`, `MULLIGAN_TUCK`, `SCRY_ARRANGE` incl. surveil)
   - `[x]` combat attackers/blockers (`DECLARE_ATTACKERS`, `DECLARE_BLOCKERS`, `ASSIGN_COMBAT_DAMAGE`, `ORDER_BLOCKERS`; live-verified with a remote player winning by combat)

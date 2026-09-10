@@ -55,12 +55,13 @@ def _candidates(*ids):
 
 
 class FakeClient:
-    """Mimics ForgeEnvClient v3 just enough for run_game/determinism_check.
+    """Mimics ForgeEnvClient v4 just enough for run_game/determinism_check.
 
     In remote mode each submit appends one event from the scripted stream;
     the game is over once the whole stream has been produced. In goldfish
     mode the game flips to over after two IsGameOver polls. decision_script
-    (if given) cycles the DecisionType of successive requests.
+    (if given) cycles the DecisionType of successive requests; the v4
+    spell-casting types get synthetic payloads so default_policy can answer.
     """
 
     def __init__(self, streams, goldfish=False, over_outcome=pb.OUTCOME_WIN,
@@ -111,6 +112,26 @@ class FakeClient:
         )
         if dtype == pb.DECISION_TYPE_PRIORITY:
             req.options.add(id=0, kind="pass")
+        elif dtype == pb.DECISION_TYPE_CHOOSE_TARGETS:
+            req.spell_description = "Giant Growth: target creature gets +3/+3"
+            req.candidates.add(card_id=101, name="Grizzly Bears")
+            req.candidates.add(card_id=102, name="Forest")
+            req.defender_players.extend([1])
+            req.min_choices = 1
+            req.max_choices = 2
+            req.mandatory = True
+        elif dtype == pb.DECISION_TYPE_CHOOSE_MODE:
+            req.spell_description = "Return to Nature"
+            req.mode_options.add(id=0, description="Destroy target artifact")
+            req.mode_options.add(id=1, description="Destroy target enchantment")
+            req.min_choices = 1
+            req.max_choices = 1
+            req.allow_repeat = False
+        elif dtype == pb.DECISION_TYPE_OPTIONAL_COSTS:
+            req.spell_description = "Kicker"
+            req.mode_options.add(id=0, description="Kicker {2}")
+            req.min_choices = 0
+            req.max_choices = 1
         return req
 
     def submit_decision(self, game_id, decision_id, answer):
@@ -388,6 +409,82 @@ class TestDefaultPolicy:
         ctx = self._ctx(pb.DECISION_TYPE_SCRY_ARRANGE, candidates=_candidates(60, 61))
         assert default_policy(ctx) == ("scry", ([60, 61], []))
 
+    # --- v4: spell-casting path -------------------------------------------
+
+    def test_choose_targets_first_candidates(self):
+        ctx = self._ctx(
+            pb.DECISION_TYPE_CHOOSE_TARGETS,
+            candidates=_candidates(101, 102),
+            defender_players=[1],
+            min_choices=1,
+            max_choices=2,
+            mandatory=True,
+        )
+        assert default_policy(ctx) == ("targets", ([101], []))
+
+    def test_choose_targets_uses_player_slots_when_no_card_candidates(self):
+        ctx = self._ctx(
+            pb.DECISION_TYPE_CHOOSE_TARGETS,
+            candidates=[],
+            defender_players=[0, 1],
+            min_choices=1,
+            max_choices=1,
+            mandatory=True,
+        )
+        assert default_policy(ctx) == ("targets", ([], [0]))
+
+    def test_choose_targets_empty_when_not_required(self):
+        ctx = self._ctx(
+            pb.DECISION_TYPE_CHOOSE_TARGETS,
+            candidates=_candidates(101),
+            defender_players=[1],
+            min_choices=0,
+            max_choices=1,
+            mandatory=False,
+        )
+        assert default_policy(ctx) == ("targets", ([], []))
+
+    def test_choose_targets_multi(self):
+        ctx = self._ctx(
+            pb.DECISION_TYPE_CHOOSE_TARGETS,
+            candidates=_candidates(101, 102, 103),
+            defender_players=[],
+            min_choices=2,
+            max_choices=3,
+            mandatory=True,
+        )
+        assert default_policy(ctx) == ("targets", ([101, 102], []))
+
+    def test_choose_mode_first_modes(self):
+        ctx = self._ctx(
+            pb.DECISION_TYPE_CHOOSE_MODE,
+            mode_options=[
+                pb.ModeOption(id=0, description="Destroy target artifact"),
+                pb.ModeOption(id=1, description="Destroy target enchantment"),
+            ],
+            min_choices=1,
+            max_choices=1,
+        )
+        assert default_policy(ctx) == ("mode_selection", [0])
+
+    def test_choose_mode_empty_when_min_zero(self):
+        ctx = self._ctx(
+            pb.DECISION_TYPE_CHOOSE_MODE,
+            mode_options=[pb.ModeOption(id=3, description="mode")],
+            min_choices=0,
+            max_choices=1,
+        )
+        assert default_policy(ctx) == ("mode_selection", [])
+
+    def test_optional_costs_never_paid(self):
+        ctx = self._ctx(
+            pb.DECISION_TYPE_OPTIONAL_COSTS,
+            mode_options=[pb.ModeOption(id=0, description="Kicker {2}")],
+            min_choices=0,
+            max_choices=1,
+        )
+        assert default_policy(ctx) == ("mode_selection", [])
+
     def test_unspecified_type_raises(self):
         with pytest.raises(ValueError, match="no default policy"):
             default_policy(self._ctx(pb.DECISION_TYPE_UNSPECIFIED))
@@ -445,6 +542,34 @@ class TestRunnerDispatch:
             ("scry", ([], [])),  # no candidates on the synthetic request
             ("number_answer", 0),  # max_number defaults to 0
         ]
+
+    def test_default_policy_drives_v4_spellcasting_script(self):
+        stream = [ev(1, "A"), ev(2, "B"), ev(3, "C"), ev(4, "D")]
+        client = FakeClient(
+            [stream],
+            decision_script=[
+                pb.DECISION_TYPE_CHOOSE_TARGETS,
+                pb.DECISION_TYPE_CHOOSE_MODE,
+                pb.DECISION_TYPE_OPTIONAL_COSTS,
+                pb.DECISION_TYPE_PRIORITY,
+            ],
+        )
+        result = run_game(client, DECKS, seed=1, player_types=REMOTE)
+        assert [t for _, t, _ in result.decision_trace] == [
+            pb.DECISION_TYPE_CHOOSE_TARGETS,
+            pb.DECISION_TYPE_CHOOSE_MODE,
+            pb.DECISION_TYPE_OPTIONAL_COSTS,
+            pb.DECISION_TYPE_PRIORITY,
+        ]
+        assert [a for _, _, a in result.decision_trace] == [
+            ("targets", ([101], [])),   # first min_choices card candidate
+            ("mode_selection", [0]),    # first mode id
+            ("mode_selection", []),     # kicker never paid
+            ("option_id", 0),
+        ]
+        # The targets/mode submits still ride the wire correctly.
+        assert client.submits[0][2] == ("targets", ([101], []))
+        assert client.submits[1][2] == ("mode_selection", [0])
 
 
 class TestValidationErrorPath:

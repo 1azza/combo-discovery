@@ -158,6 +158,21 @@ def main() -> int:
             "OK: non-PRIORITY decision types observed: "
             f"{sorted(pb.DecisionType.Name(t) for t in non_priority)}"
         )
+        # v4: the deck fixtures now include a targeted spell (Giant Growth) and
+        # a modal card (Return to Nature), so the spell-casting path must
+        # surface CHOOSE_TARGETS and CHOOSE_MODE. This is a real requirement,
+        # not a tautology: if the remote policy never reaches those callbacks
+        # the smoke fails.
+        assert pb.DECISION_TYPE_CHOOSE_TARGETS in seen_types, (
+            "CHOOSE_TARGETS never surfaced although the fixture decks include a "
+            f"targeted spell; saw {sorted(pb.DecisionType.Name(t) for t in seen_types)}"
+        )
+        assert pb.DECISION_TYPE_CHOOSE_MODE in seen_types, (
+            "CHOOSE_MODE never surfaced although the fixture decks include a modal "
+            f"card; saw {sorted(pb.DecisionType.Name(t) for t in seen_types)}"
+        )
+        print("OK: v4 spell-casting decisions observed "
+              "(CHOOSE_TARGETS, CHOOSE_MODE)")
 
         # --- Section 3: determinism ------------------------------------------
         determinism_check(

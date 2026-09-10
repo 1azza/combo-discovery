@@ -43,10 +43,10 @@ class TestEnvClient:
 
     def test_ping_returns_pong(self):
         client, stub = make_client()
-        stub.Ping.return_value = pb.Pong(version="0.3.0", game_active=False, protocol_version=3)
+        stub.Ping.return_value = pb.Pong(version="0.4.0", game_active=False, protocol_version=4)
         pong = client.ping()
-        assert pong.version == "0.3.0"
-        assert pong.protocol_version == 3
+        assert pong.version == "0.4.0"
+        assert pong.protocol_version == 4
 
     def test_connection_error_resets_stub(self):
         client, stub = make_client()
@@ -179,24 +179,24 @@ class TestEnvClient:
             client.submit_decision(5, 3, ("option_id", 1))
         assert excinfo.value.code == grpc.StatusCode.FAILED_PRECONDITION
 
-    def test_connect_accepts_protocol_v3(self):
+    def test_connect_accepts_protocol_v4(self):
         client, stub = make_client()
-        stub.Ping.return_value = pb.Pong(version="0.3.0", protocol_version=3)
+        stub.Ping.return_value = pb.Pong(version="0.4.0", protocol_version=4)
         pong = client.connect()
-        assert pong.protocol_version == 3
+        assert pong.protocol_version == 4
 
     def test_connect_rejects_protocol_mismatch(self):
         client, stub = make_client()
-        stub.Ping.return_value = pb.Pong(version="0.2.0", protocol_version=2)
+        stub.Ping.return_value = pb.Pong(version="0.3.0", protocol_version=3)
         with pytest.raises(ProtocolMismatchError, match="protocol version mismatch"):
             client.connect()
-        with pytest.raises(ProtocolMismatchError, match="protocol_version=2"):
+        with pytest.raises(ProtocolMismatchError, match="protocol_version=3"):
             client.connect()
 
     def test_protocol_version_exposed(self):
         client, stub = make_client()
-        stub.Ping.return_value = pb.Pong(protocol_version=3)
-        assert client.protocol_version() == 3
+        stub.Ping.return_value = pb.Pong(protocol_version=4)
+        assert client.protocol_version() == 4
 
     def test_start_game_returns_game_id(self):
         client, stub = make_client()
@@ -401,6 +401,40 @@ class TestBuildSubmit:
         req = build_submit(3, 7, ("scry", ([2, 1], [3])))
         assert req.WhichOneof("answer") == "scry"
         assert (list(req.scry.top), list(req.scry.bottom)) == ([2, 1], [3])
+
+    # --- v4 arms -----------------------------------------------------------
+
+    def test_targets_builds_target_selection(self):
+        req = build_submit(3, 7, ("targets", ([101, 102], [0, 1])))
+        assert req.WhichOneof("answer") == "targets"
+        assert isinstance(req.targets, pb.TargetSelection)
+        assert list(req.targets.card_ids) == [101, 102]
+        assert list(req.targets.player_slots) == [0, 1]
+
+    def test_empty_targets_valid_when_not_mandatory(self):
+        req = build_submit(3, 7, ("targets", ([], [])))
+        assert req.WhichOneof("answer") == "targets"
+        assert list(req.targets.card_ids) == []
+        assert list(req.targets.player_slots) == []
+
+    def test_targets_cards_only_and_players_only(self):
+        cards = build_submit(3, 7, ("targets", ([5], [])))
+        assert list(cards.targets.card_ids) == [5] and list(cards.targets.player_slots) == []
+        players = build_submit(3, 7, ("targets", ([], [1])))
+        assert list(players.targets.card_ids) == [] and list(players.targets.player_slots) == [1]
+
+    def test_mode_selection_alias_routes_to_card_ids_arm(self):
+        req = build_submit(3, 7, ("mode_selection", [0, 2]))
+        assert req.WhichOneof("answer") == "card_ids"  # rides the existing arm
+        assert list(req.card_ids.values) == [0, 2]
+        # Both spellings are wire-identical.
+        direct = build_submit(3, 7, ("card_ids", [0, 2]))
+        assert req.SerializeToString() == direct.SerializeToString()
+
+    def test_empty_mode_selection_is_valid(self):
+        req = build_submit(3, 7, ("mode_selection", []))
+        assert req.WhichOneof("answer") == "card_ids"
+        assert list(req.card_ids.values) == []
 
     def test_unknown_arm_rejected(self):
         with pytest.raises(ValueError, match="unknown answer arm"):

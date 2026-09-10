@@ -37,6 +37,9 @@ class DecisionType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     DECISION_TYPE_CHOOSE_CARDS: _ClassVar[DecisionType]
     DECISION_TYPE_ANNOUNCE: _ClassVar[DecisionType]
     DECISION_TYPE_SCRY_ARRANGE: _ClassVar[DecisionType]
+    DECISION_TYPE_CHOOSE_TARGETS: _ClassVar[DecisionType]
+    DECISION_TYPE_CHOOSE_MODE: _ClassVar[DecisionType]
+    DECISION_TYPE_OPTIONAL_COSTS: _ClassVar[DecisionType]
 PLAYER_TYPE_UNSPECIFIED: PlayerType
 PLAYER_TYPE_REMOTE: PlayerType
 PLAYER_TYPE_GOLDFISH: PlayerType
@@ -59,6 +62,9 @@ DECISION_TYPE_ORDER_BLOCKERS: DecisionType
 DECISION_TYPE_CHOOSE_CARDS: DecisionType
 DECISION_TYPE_ANNOUNCE: DecisionType
 DECISION_TYPE_SCRY_ARRANGE: DecisionType
+DECISION_TYPE_CHOOSE_TARGETS: DecisionType
+DECISION_TYPE_CHOOSE_MODE: DecisionType
+DECISION_TYPE_OPTIONAL_COSTS: DecisionType
 
 class Empty(_message.Message):
     __slots__ = ()
@@ -135,7 +141,7 @@ class CardCandidate(_message.Message):
     def __init__(self, card_id: _Optional[int] = ..., name: _Optional[str] = ...) -> None: ...
 
 class DecisionRequest(_message.Message):
-    __slots__ = ("game_id", "decision_id", "player", "turn", "phase", "decision_type", "prompt", "options", "candidates", "min_choices", "max_choices", "optional", "min_number", "max_number", "defender_players", "attacker_cards", "damage_amount", "damage_source_card", "cards_to_return")
+    __slots__ = ("game_id", "decision_id", "player", "turn", "phase", "decision_type", "prompt", "options", "candidates", "min_choices", "max_choices", "optional", "min_number", "max_number", "defender_players", "attacker_cards", "damage_amount", "damage_source_card", "cards_to_return", "spell_description", "allow_repeat", "mode_options", "mandatory")
     GAME_ID_FIELD_NUMBER: _ClassVar[int]
     DECISION_ID_FIELD_NUMBER: _ClassVar[int]
     PLAYER_FIELD_NUMBER: _ClassVar[int]
@@ -155,6 +161,10 @@ class DecisionRequest(_message.Message):
     DAMAGE_AMOUNT_FIELD_NUMBER: _ClassVar[int]
     DAMAGE_SOURCE_CARD_FIELD_NUMBER: _ClassVar[int]
     CARDS_TO_RETURN_FIELD_NUMBER: _ClassVar[int]
+    SPELL_DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    ALLOW_REPEAT_FIELD_NUMBER: _ClassVar[int]
+    MODE_OPTIONS_FIELD_NUMBER: _ClassVar[int]
+    MANDATORY_FIELD_NUMBER: _ClassVar[int]
     game_id: int
     decision_id: int
     player: int
@@ -174,7 +184,11 @@ class DecisionRequest(_message.Message):
     damage_amount: int
     damage_source_card: int
     cards_to_return: int
-    def __init__(self, game_id: _Optional[int] = ..., decision_id: _Optional[int] = ..., player: _Optional[int] = ..., turn: _Optional[int] = ..., phase: _Optional[str] = ..., decision_type: _Optional[_Union[DecisionType, str]] = ..., prompt: _Optional[str] = ..., options: _Optional[_Iterable[_Union[Option, _Mapping]]] = ..., candidates: _Optional[_Iterable[_Union[CardCandidate, _Mapping]]] = ..., min_choices: _Optional[int] = ..., max_choices: _Optional[int] = ..., optional: _Optional[bool] = ..., min_number: _Optional[int] = ..., max_number: _Optional[int] = ..., defender_players: _Optional[_Iterable[int]] = ..., attacker_cards: _Optional[_Iterable[int]] = ..., damage_amount: _Optional[int] = ..., damage_source_card: _Optional[int] = ..., cards_to_return: _Optional[int] = ...) -> None: ...
+    spell_description: str
+    allow_repeat: bool
+    mode_options: _containers.RepeatedCompositeFieldContainer[ModeOption]
+    mandatory: bool
+    def __init__(self, game_id: _Optional[int] = ..., decision_id: _Optional[int] = ..., player: _Optional[int] = ..., turn: _Optional[int] = ..., phase: _Optional[str] = ..., decision_type: _Optional[_Union[DecisionType, str]] = ..., prompt: _Optional[str] = ..., options: _Optional[_Iterable[_Union[Option, _Mapping]]] = ..., candidates: _Optional[_Iterable[_Union[CardCandidate, _Mapping]]] = ..., min_choices: _Optional[int] = ..., max_choices: _Optional[int] = ..., optional: _Optional[bool] = ..., min_number: _Optional[int] = ..., max_number: _Optional[int] = ..., defender_players: _Optional[_Iterable[int]] = ..., attacker_cards: _Optional[_Iterable[int]] = ..., damage_amount: _Optional[int] = ..., damage_source_card: _Optional[int] = ..., cards_to_return: _Optional[int] = ..., spell_description: _Optional[str] = ..., allow_repeat: _Optional[bool] = ..., mode_options: _Optional[_Iterable[_Union[ModeOption, _Mapping]]] = ..., mandatory: _Optional[bool] = ...) -> None: ...
 
 class IntList(_message.Message):
     __slots__ = ("values",)
@@ -234,8 +248,24 @@ class DamageList(_message.Message):
     values: _containers.RepeatedCompositeFieldContainer[DamageAssignment]
     def __init__(self, values: _Optional[_Iterable[_Union[DamageAssignment, _Mapping]]] = ...) -> None: ...
 
+class ModeOption(_message.Message):
+    __slots__ = ("id", "description")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    description: str
+    def __init__(self, id: _Optional[int] = ..., description: _Optional[str] = ...) -> None: ...
+
+class TargetSelection(_message.Message):
+    __slots__ = ("card_ids", "player_slots")
+    CARD_IDS_FIELD_NUMBER: _ClassVar[int]
+    PLAYER_SLOTS_FIELD_NUMBER: _ClassVar[int]
+    card_ids: _containers.RepeatedScalarFieldContainer[int]
+    player_slots: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, card_ids: _Optional[_Iterable[int]] = ..., player_slots: _Optional[_Iterable[int]] = ...) -> None: ...
+
 class DecisionSubmit(_message.Message):
-    __slots__ = ("game_id", "decision_id", "option_id", "boolean_answer", "card_ids", "number_answer", "attackers", "blockers", "damage", "scry")
+    __slots__ = ("game_id", "decision_id", "option_id", "boolean_answer", "card_ids", "number_answer", "attackers", "blockers", "damage", "scry", "targets")
     GAME_ID_FIELD_NUMBER: _ClassVar[int]
     DECISION_ID_FIELD_NUMBER: _ClassVar[int]
     OPTION_ID_FIELD_NUMBER: _ClassVar[int]
@@ -246,6 +276,7 @@ class DecisionSubmit(_message.Message):
     BLOCKERS_FIELD_NUMBER: _ClassVar[int]
     DAMAGE_FIELD_NUMBER: _ClassVar[int]
     SCRY_FIELD_NUMBER: _ClassVar[int]
+    TARGETS_FIELD_NUMBER: _ClassVar[int]
     game_id: int
     decision_id: int
     option_id: int
@@ -256,7 +287,8 @@ class DecisionSubmit(_message.Message):
     blockers: BlockerList
     damage: DamageList
     scry: CardPartition
-    def __init__(self, game_id: _Optional[int] = ..., decision_id: _Optional[int] = ..., option_id: _Optional[int] = ..., boolean_answer: _Optional[bool] = ..., card_ids: _Optional[_Union[IntList, _Mapping]] = ..., number_answer: _Optional[int] = ..., attackers: _Optional[_Union[AttackerList, _Mapping]] = ..., blockers: _Optional[_Union[BlockerList, _Mapping]] = ..., damage: _Optional[_Union[DamageList, _Mapping]] = ..., scry: _Optional[_Union[CardPartition, _Mapping]] = ...) -> None: ...
+    targets: TargetSelection
+    def __init__(self, game_id: _Optional[int] = ..., decision_id: _Optional[int] = ..., option_id: _Optional[int] = ..., boolean_answer: _Optional[bool] = ..., card_ids: _Optional[_Union[IntList, _Mapping]] = ..., number_answer: _Optional[int] = ..., attackers: _Optional[_Union[AttackerList, _Mapping]] = ..., blockers: _Optional[_Union[BlockerList, _Mapping]] = ..., damage: _Optional[_Union[DamageList, _Mapping]] = ..., scry: _Optional[_Union[CardPartition, _Mapping]] = ..., targets: _Optional[_Union[TargetSelection, _Mapping]] = ...) -> None: ...
 
 class GameEvent(_message.Message):
     __slots__ = ("seq", "game_id", "turn", "phase", "type", "player", "card_name", "detail")

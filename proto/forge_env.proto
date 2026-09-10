@@ -1,4 +1,4 @@
-// ForgeEnv gRPC contract — v3 (typed decision callbacks; gate item 4).
+// ForgeEnv gRPC contract — v4 (spell-casting-path decisions).
 // Canonical copy lives in the Python repo: combo-discovery/proto/forge_env.proto.
 // The Java harness mirrors it at forge-harness/src/main/proto/forge_env.proto.
 //
@@ -7,20 +7,15 @@
 //  - Card identity: Forge card id (int32, stable within a game) + card name.
 //  - Determinism: same (decks, seed, config) MUST yield byte-identical event streams.
 //
-// v3 changes (breaking; regenerate stubs on both sides):
-//  - DecisionRequest carries a DecisionType enum plus a per-type payload:
-//    candidate cards, selection constraints (min/max/optional), number ranges,
-//    combat context (defender players, attackers, damage amount).
-//  - DecisionSubmit carries a typed oneof answer; the server validates the
-//    answer against the outstanding decision's type and payload. A wrong
-//    answer kind, out-of-range ids, size violations, or an invalid partition
-//    is INVALID_ARGUMENT.
-//  - Every re-prompt (e.g. engine retry after an invalid attack declaration)
-//    is a NEW decision_id; the previous one becomes stale.
-//  - protocol_version is now 3.
-//  - Unsurfaced callback classes (mana payment, generic confirms, trigger
-//    ordering, votes/dice/sectors, chooseSingleEntityForEffect) keep AI
-//    defaults via the controller inheritance chain, by design.
+// v4 additions on top of v3 (breaking for the new decision paths only; see
+// PLUMBING_SPEC.md section 1):
+//  - Three new DecisionTypes for the spell-casting path:
+//    CHOOSE_TARGETS (candidates = legal target entities, server-validated
+//    against the ability's TargetRestrictions; answer = `targets` arm),
+//    CHOOSE_MODE (answer = mode option ids via the `card_ids` arm,
+//    repeats only if allow_repeat), OPTIONAL_COSTS (kicker etc., answer =
+//    option ids via `card_ids`). Every engine re-prompt is a new decision_id.
+//  - protocol_version is now 4.
 
 syntax = "proto3";
 package forgeenv;
@@ -55,7 +50,7 @@ message Empty {}
 message Pong {
   string version = 1;
   bool game_active = 2;
-  int32 protocol_version = 3;  // 3 for this contract
+  int32 protocol_version = 3;  // 4 for this contract
 }
 
 message DeckSpec {
@@ -141,6 +136,18 @@ enum DecisionType {
   // surveil-graveyard group). Both groups together must be a permutation of
   // candidates.
   DECISION_TYPE_SCRY_ARRANGE = 10;
+  // Choose targets for a spell/ability being cast or resolving;
+  // candidates = legal target cards (+ defender_players for player targets);
+  // answer = targets (TargetSelection). Size within [min_choices,
+  // max_choices]; mandatory requires reaching min_choices.
+  DECISION_TYPE_CHOOSE_TARGETS = 11;
+  // Choose modes for a spell/ability; mode_options = the mode list; answer =
+  // mode option ids via the card_ids arm (IntList), size within
+  // [min_choices, max_choices]; repeats only if allow_repeat.
+  DECISION_TYPE_CHOOSE_MODE = 12;
+  // Choose optional costs (kicker etc.); cost_options = the cost list;
+  // answer = cost option ids via the card_ids arm (IntList).
+  DECISION_TYPE_OPTIONAL_COSTS = 13;
 }
 
 message Option {
@@ -182,6 +189,11 @@ message DecisionRequest {
   int32 damage_source_card = 18;         // ASSIGN_COMBAT_DAMAGE: the attacking card
   // --- MULLIGAN payload ---
   int32 cards_to_return = 19;            // MULLIGAN_TUCK: exact tuck count
+  // --- CHOOSE_TARGETS / CHOOSE_MODE / OPTIONAL_COSTS payload ---
+  string spell_description = 20;         // host card + ability text summary
+  bool allow_repeat = 21;                // CHOOSE_MODE: repeats allowed
+  repeated ModeOption mode_options = 22; // CHOOSE_MODE / OPTIONAL_COSTS options
+  bool mandatory = 23;                   // CHOOSE_TARGETS: min_choices required
 }
 
 message IntList {
@@ -221,6 +233,18 @@ message AttackerList { repeated AttackerAssignment values = 1; }
 message BlockerList { repeated BlockerAssignment values = 1; }
 message DamageList { repeated DamageAssignment values = 1; }
 
+// One mode (CHOOSE_MODE) or optional cost (OPTIONAL_COSTS) option.
+message ModeOption {
+  int32 id = 1;           // stable within this DecisionRequest
+  string description = 2; // engine mode/cost text
+}
+
+// Typed target selection: cards and/or players, given order = assignment order.
+message TargetSelection {
+  repeated int32 card_ids = 1;
+  repeated int32 player_slots = 2;   // for player-targeting effects
+}
+
 message DecisionSubmit {
   int64 game_id = 1;
   int64 decision_id = 2;            // must equal the outstanding DecisionRequest.decision_id
@@ -234,6 +258,7 @@ message DecisionSubmit {
     BlockerList blockers = 8;      // DECLARE_BLOCKERS (wrapper)
     DamageList damage = 9;         // ASSIGN_COMBAT_DAMAGE (wrapper)
     CardPartition scry = 10;                      // SCRY_ARRANGE
+    TargetSelection targets = 11; // CHOOSE_TARGETS
   }
 }
 

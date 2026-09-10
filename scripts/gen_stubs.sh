@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate gRPC stubs from proto/forge_env.proto into src/combo_discovery/generated.
-# Compiles the canonical proto directly (v3 combat answers use the
-# AttackerList/BlockerList/DamageList wrapper messages, valid proto3).
+# Compiles the canonical proto directly (wrapper messages for repeated oneof
+# arms; the proto is the source of truth for the protocol version).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -16,4 +16,4 @@ uv run python -m grpc_tools.protoc \
 sed -i 's/^import forge_env_pb2 as forge__env__pb2$/try:\n    from . import forge_env_pb2 as forge__env__pb2\nexcept ImportError:\n    import forge_env_pb2 as forge__env__pb2/' \
   src/combo_discovery/generated/forge_env_pb2_grpc.py
 touch src/combo_discovery/generated/__init__.py
-echo "stubs regenerated (v3, canonical proto)"
+echo "stubs regenerated (canonical proto)"

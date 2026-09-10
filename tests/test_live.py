@@ -26,13 +26,13 @@ def _target() -> tuple[str, int]:
     return host or "localhost", int(port)
 
 
-def test_live_protocol_v3():
+def test_live_protocol_v4():
     host, port = _target()
     client = ForgeEnvClient(host=host, port=port)
     try:
         pong = client.connect()
-        assert pong.protocol_version == 3
+        assert pong.protocol_version == 4
     except ProtocolMismatchError:
-        pytest.fail("live harness does not speak protocol v3")
+        pytest.fail("live harness does not speak protocol v4")
     finally:
         client.close()

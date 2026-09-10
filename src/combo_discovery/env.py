@@ -1,4 +1,4 @@
-"""Typed synchronous client for the forge-harness gRPC service (protocol v3).
+"""Typed synchronous client for the forge-harness gRPC service (protocol v4).
 
 Mirrors the service defined in proto/forge_env.proto. All methods are blocking;
 use WorkerPool for parallelism.
@@ -29,6 +29,13 @@ Answer shapes accepted by submit_decision (one per DecisionType):
   ("blockers", list[(blocker_card, attacker_card)])       DECLARE_BLOCKERS
   ("damage", list[DamageTarget | (card_id|None, player|None, amount)])  ASSIGN_COMBAT_DAMAGE
   ("scry", (top_ids, bottom_ids))                 SCRY_ARRANGE
+  ("targets", (card_ids, player_slots))           CHOOSE_TARGETS  (pb.TargetSelection)
+  ("mode_selection", list[int])                   CHOOSE_MODE / OPTIONAL_COSTS
+
+v4 note: "mode_selection" is a readability ALIAS for the card_ids arm. Per the
+proto, CHOOSE_MODE and OPTIONAL_COSTS answers ride the existing IntList
+`card_ids` arm interpreted as mode/cost option ids (no new oneof arm), so
+("mode_selection", ids) and ("card_ids", ids) are wire-identical.
 """
 
 from __future__ import annotations
@@ -40,7 +47,7 @@ import grpc
 from .generated import forge_env_pb2 as pb
 from .generated.forge_env_pb2_grpc import ForgeEnvStub
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 # INVALID_ARGUMENT classification for decision calls (get_decision /
 # submit_decision). The harness exposes no machine-readable subcode, so we match
@@ -93,8 +100,8 @@ def _is_stale_decision_detail(details: str) -> bool:
     return "option_id" in text
 
 # Arm name -> constructor for the corresponding answer payload in
-# pb.DecisionSubmit. Arms that carry message types (card_ids, scry) get their
-# payload built separately in build_submit.
+# pb.DecisionSubmit. Arms that carry message types (card_ids, scry, targets)
+# get their payload built separately in build_submit.
 _ANSWER_ARMS = (
     "option_id",
     "boolean_answer",
@@ -104,6 +111,8 @@ _ANSWER_ARMS = (
     "blockers",
     "damage",
     "scry",
+    "targets",         # CHOOSE_TARGETS
+    "mode_selection",  # CHOOSE_MODE / OPTIONAL_COSTS (alias for the card_ids arm)
 )
 
 
@@ -170,6 +179,17 @@ def build_submit(game_id: int, decision_id: int, answer: Answer) -> pb.DecisionS
         kwargs["boolean_answer"] = bool(payload)
     elif arm == "card_ids":
         kwargs["card_ids"] = pb.IntList(values=[int(c) for c in payload])
+    elif arm == "mode_selection":
+        # v4 readability alias: CHOOSE_MODE / OPTIONAL_COSTS answers ride the
+        # existing IntList `card_ids` arm (option ids), per the proto.
+        kwargs["card_ids"] = pb.IntList(values=[int(c) for c in payload])
+    elif arm == "targets":
+        # CHOOSE_TARGETS: payload is (card_ids, player_slots), order preserved.
+        card_ids, player_slots = payload
+        kwargs["targets"] = pb.TargetSelection(
+            card_ids=[int(c) for c in card_ids],
+            player_slots=[int(p) for p in player_slots],
+        )
     elif arm == "number_answer":
         kwargs["number_answer"] = int(payload)
     elif arm == "attackers":

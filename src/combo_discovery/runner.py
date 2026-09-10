@@ -196,6 +196,27 @@ class DecisionContext:
     def cards_to_return(self) -> int:
         return self.request.cards_to_return
 
+    # -- CHOOSE_TARGETS / CHOOSE_MODE / OPTIONAL_COSTS (v4) --------------------
+
+    @property
+    def spell_description(self) -> str:
+        return self.request.spell_description
+
+    @property
+    def mandatory(self) -> bool:
+        """CHOOSE_TARGETS: min_choices must be reached."""
+        return self.request.mandatory
+
+    @property
+    def allow_repeat(self) -> bool:
+        """CHOOSE_MODE: the same mode may be chosen more than once."""
+        return self.request.allow_repeat
+
+    @property
+    def mode_options(self) -> list[tuple[int, str]]:
+        """(id, description) pairs for CHOOSE_MODE / OPTIONAL_COSTS, in order."""
+        return [(m.id, m.description) for m in self.request.mode_options]
+
 
 def default_policy(ctx: DecisionContext) -> Answer:
     """A simple legal answer for every decision type.
@@ -251,6 +272,28 @@ def default_policy(ctx: DecisionContext) -> Answer:
     if t == pb.DECISION_TYPE_SCRY_ARRANGE:
         # Keep everything on top in the current order.
         return ("scry", (ctx.candidate_ids, []))
+    if t == pb.DECISION_TYPE_CHOOSE_TARGETS:
+        # Meet min_choices with the first legal candidates: card targets
+        # first, then player slots (defender_players) for the remainder.
+        # When min_choices is 0 the empty selection is legal, so choose
+        # nothing (never commit targets "just because").
+        need = ctx.min_choices
+        if need <= 0:
+            return ("targets", ([], []))
+        card_ids = ctx.candidate_ids[:need]
+        player_slots = ctx.defender_players[: max(0, need - len(card_ids))]
+        return ("targets", (card_ids, player_slots))
+    if t == pb.DECISION_TYPE_CHOOSE_MODE:
+        # First min_choices mode ids, in request order. (allow_repeat only
+        # matters if the same mode is chosen twice; first-N distinct is legal.)
+        need = ctx.min_choices
+        if need <= 0:
+            return ("mode_selection", [])
+        return ("mode_selection", [mode_id for mode_id, _ in ctx.mode_options[:need]])
+    if t == pb.DECISION_TYPE_OPTIONAL_COSTS:
+        # Never pay an optional cost (kicker etc.) by default: the empty
+        # selection is legal and is the conservative research default.
+        return ("mode_selection", [])
     raise ValueError(f"no default policy for decision type {ctx.type_name}")
 
 
