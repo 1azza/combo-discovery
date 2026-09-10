@@ -16,6 +16,7 @@ dependencies = [
 [project.scripts]
 combo-tui = "combo_discovery.tui.app:main"
 combo-import-cards = "combo_discovery.corpus.__main__:main"
+combo-build-ontology = "combo_discovery.ontology.__main__:main"
 
 [build-system]
 requires = ["uv_build>=0.12.11,<0.13.0"]

@@ -29,7 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only (avoids an import cycle)
     from .runner import DecisionContext, GameResult
 
 # Current schema version. Bump this and register a migration in _MIGRATIONS.
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 # Serializes all DB access; see the module docstring for why.
 _DB_LOCK = threading.Lock()
@@ -49,6 +49,10 @@ _TABLES = (
     "card_scripts",
     "card_effects",
     "corpus_coverage",
+    "patterns",
+    "card_predicates",
+    "interactions",
+    "combo_hypotheses",
 )
 
 _SCHEMA_SQL = """
@@ -195,8 +199,73 @@ def _migration_2(conn: sqlite3.Connection) -> None:
     conn.executescript(_CORPUS_SCHEMA_SQL)
 
 
+# Schema v3 (predicate ontology + interaction graph).  ``patterns`` is the
+# global controlled vocabulary (not import-scoped); every derived row is keyed
+# by ``import_id`` and appended, never mutated.
+_ONTOLOGY_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS patterns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  description TEXT,
+  pattern_json TEXT NOT NULL DEFAULT '{}',
+  version INTEGER NOT NULL DEFAULT 1,
+  UNIQUE (name, version));
+CREATE TABLE IF NOT EXISTS card_predicates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id),
+  card_id INTEGER NOT NULL REFERENCES cards(id),
+  face_index INTEGER NOT NULL DEFAULT 0,
+  predicate TEXT NOT NULL,
+  params_json TEXT NOT NULL DEFAULT '{}',
+  evidence_json TEXT NOT NULL DEFAULT '[]',
+  confidence REAL NOT NULL DEFAULT 1.0);
+CREATE INDEX IF NOT EXISTS idx_predicates_import ON card_predicates(import_id);
+CREATE INDEX IF NOT EXISTS idx_predicates_card ON card_predicates(card_id);
+CREATE INDEX IF NOT EXISTS idx_predicates_pred ON card_predicates(predicate);
+CREATE TABLE IF NOT EXISTS interactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id),
+  source_card_id INTEGER NOT NULL REFERENCES cards(id),
+  target_card_id INTEGER NOT NULL REFERENCES cards(id),
+  pattern_id INTEGER NOT NULL REFERENCES patterns(id),
+  direction TEXT NOT NULL DEFAULT 'one_way'
+    CHECK (direction IN ('one_way','mutual')),
+  mechanism TEXT,
+  score REAL NOT NULL DEFAULT 0,
+  evidence_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_interactions_import ON interactions(import_id);
+CREATE INDEX IF NOT EXISTS idx_interactions_pattern ON interactions(pattern_id);
+CREATE INDEX IF NOT EXISTS idx_interactions_source ON interactions(source_card_id);
+CREATE INDEX IF NOT EXISTS idx_interactions_target ON interactions(target_card_id);
+CREATE TABLE IF NOT EXISTS combo_hypotheses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id),
+  pattern_id INTEGER NOT NULL REFERENCES patterns(id),
+  card_ids_json TEXT NOT NULL,
+  mechanism TEXT,
+  score REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'proposed'
+    CHECK (status IN ('proposed','verified','refuted','inconclusive')),
+  created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_hypotheses_import ON combo_hypotheses(import_id);
+CREATE INDEX IF NOT EXISTS idx_hypotheses_pattern ON combo_hypotheses(pattern_id);
+CREATE INDEX IF NOT EXISTS idx_hypotheses_status_score
+  ON combo_hypotheses(status, score);
+"""
+
+
+def _migration_3(conn: sqlite3.Connection) -> None:
+    """Schema v3: predicate vocabulary, per-card predicates, interaction edges
+    and combo hypotheses (all append-only, corpus rows keyed by ``import_id``)."""
+    conn.executescript(_ONTOLOGY_SCHEMA_SQL)
+
+
 # version -> callable applying the change for that version.
-_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {2: _migration_2}
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    2: _migration_2,
+    3: _migration_3,
+}
 
 
 def _utc_now() -> str:

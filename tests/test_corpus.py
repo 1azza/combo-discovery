@@ -413,13 +413,13 @@ class TestImporter:
         )[0]["n"]
         assert dangling == 0
 
-    def test_schema_version_is_two(self, mini_corpus):
+    def test_schema_version_is_three(self, mini_corpus):
         db = mini_corpus / "research.db"
         store = ExperimentStore(db)
         versions = [r[0] for r in store._conn.execute("SELECT version FROM schema_version")]
         store.close()
-        # Fresh databases step 1 -> 2 through the migration registry.
-        assert versions == [1, 2]
+        # Fresh databases step 1 -> 2 -> 3 through the migration registry.
+        assert versions == [1, 2, 3]
 
     def test_migration_function_creates_corpus_tables(self, tmp_path):
         conn = sqlite3.connect(tmp_path / "raw.db")
