@@ -1,10 +1,11 @@
-"""End-to-end smoke test against a live harness (protocol v3).
+"""End-to-end smoke test against a live harness (protocol v5).
 
 Checks: ping + protocol version, goldfish-vs-goldfish game via the raw client
 (drain events, verify seq strictly increasing from 1, check GameOver.outcome,
-stop_game), a remote-driven game over the v3 typed-decision interface, and a
-determinism section (two same-seed goldfish games must produce identical event
-streams, excluding game_id; a different seed must differ).
+stop_game), a remote-driven game over the v4 typed-decision interface (incl. the
+spell-casting decisions), a determinism section (two same-seed goldfish games
+must produce identical event streams, excluding game_id; a different seed must
+differ), and a v5 snapshot/restore replay determinism check.
 
 Requires a running harness on localhost:50051 (see the Java harness lane).
 """
@@ -181,6 +182,20 @@ def main() -> int:
         )
         print("OK: determinism — same-seed streams identical (excl. game_id), "
               "different seed diverges")
+
+        # --- Section 4: snapshot/restore replay (v5) -------------------------
+        from combo_discovery.runner import snapshot_replay_check
+
+        snapshot_replay_check(
+            client,
+            DECKS,
+            seed=321,
+            player_types=[pb.PLAYER_TYPE_REMOTE, pb.PLAYER_TYPE_GOLDFISH],
+            max_turns=20,
+            timeout_seconds=120,
+        )
+        print("OK: snapshot/restore replay — post-restore event suffix identical "
+              "(v5 MCTS determinism guarantee)")
     except Exception as e:
         print(f"FAIL: {type(e).__name__}: {e}")
         # Never leave a game active on the single-game harness, including a

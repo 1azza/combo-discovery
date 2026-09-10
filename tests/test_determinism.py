@@ -6,6 +6,7 @@ from combo_discovery.env import (
     DamageTarget,
     ForgeEnvClient,
     ForgeEnvError,
+    GameNotActiveError,
     HarnessConnectionError,
     HarnessTimeoutError,
     InvalidRequestError,
@@ -15,12 +16,14 @@ from combo_discovery.generated import forge_env_pb2 as pb
 from combo_discovery.runner import (
     MAX_DECISION_TIMEOUTS,
     MAX_STALE_RETRIES,
+    SNAPSHOT_RESTORED_TYPE,
     DecisionContext,
     DeterminismError,
     compare_event_streams,
     default_policy,
     determinism_check,
     run_game,
+    snapshot_replay_check,
 )
 
 DECKS = [("a", "/tmp/a.dck"), ("b", "/tmp/b.dck")]
@@ -55,13 +58,20 @@ def _candidates(*ids):
 
 
 class FakeClient:
-    """Mimics ForgeEnvClient v4 just enough for run_game/determinism_check.
+    """Mimics ForgeEnvClient v5 just enough for run_game/determinism_check and
+    snapshot_replay_check.
 
     In remote mode each submit appends one event from the scripted stream;
     the game is over once the whole stream has been produced. In goldfish
     mode the game flips to over after two IsGameOver polls. decision_script
     (if given) cycles the DecisionType of successive requests; the v4
     spell-casting types get synthetic payloads so default_policy can answer.
+
+    v5: the fake models the server's snapshot/restore contract — the event
+    buffer is the "state", snapshot requires an outstanding decision, restore
+    truncates the buffer back to the snapshot point, appends a
+    SnapshotRestored event (renumbering seqs monotonically) and re-parks the
+    decision; unknown/foreign tokens are INVALID_ARGUMENT.
     """
 
     def __init__(self, streams, goldfish=False, over_outcome=pb.OUTCOME_WIN,
@@ -78,26 +88,35 @@ class FakeClient:
         self.stopped: int | None = None
         self._over_polls = 0
         self.outstanding: pb.DecisionRequest | None = None
+        # v5: number of submit-produced events (buffer length excluding
+        # SnapshotRestored markers) and the next seq to assign.
+        self.answered = 0
+        self._next_seq = 1
+        self.snapshots: dict[bytes, tuple[int, int]] = {}
+        self._snapshot_counter = 0
 
     def start_game(self, decks, seed, player_types=None, **kw):
         self.calls += 1
         self.collected = []
         self.submits = []
         self._over_polls = 0
+        self.outstanding = None
+        self.answered = 0
+        self._next_seq = 1
+        self.snapshots = {}
+        self._snapshot_counter = 0
         self.game_id = self.calls * 100 + seed
         return self.game_id
 
-    def is_game_over(self, game_id):
-        if self.goldfish:
-            self._over_polls += 1
-            over = self._over_polls >= 2
-        else:
-            over = len(self.collected) >= len(self.streams[self.calls - 1])
-        return pb.GameOver(over=over, winner=0, outcome=self.over_outcome, reason="lethal")
+    def _stream(self):
+        return self.streams[self.calls - 1]
 
-    def get_decision(self, game_id):
-        self.get_decision_calls += 1
-        n = len(self.collected) + 1
+    def _state_hash(self) -> str:
+        # Cache-key stand-in: deterministic function of the "state" (the number
+        # of submit-produced events).
+        return f"h{self.answered}"
+
+    def _make_decision(self, game_id, n):
         dtype = (
             self.decision_script[(n - 1) % len(self.decision_script)]
             if self.decision_script else pb.DECISION_TYPE_PRIORITY
@@ -134,17 +153,85 @@ class FakeClient:
             req.max_choices = 1
         return req
 
+    def is_game_over(self, game_id):
+        if self.goldfish:
+            self._over_polls += 1
+            over = self._over_polls >= 2
+        else:
+            over = self.answered >= len(self._stream())
+        return pb.GameOver(over=over, winner=0, outcome=self.over_outcome, reason="lethal")
+
+    def get_decision(self, game_id):
+        self.get_decision_calls += 1
+        if self.outstanding is None:
+            self.outstanding = self._make_decision(game_id, self.answered + 1)
+        return self.outstanding
+
     def submit_decision(self, game_id, decision_id, answer):
         self.submits.append((game_id, decision_id, answer))
-        e = self.streams[self.calls - 1][len(self.collected)]
+        src = self._stream()[self.answered]
+        e = pb.GameEvent()
+        e.CopyFrom(src)
+        e.seq = self._next_seq
         self.collected.append(e)
+        self.answered += 1
+        self._next_seq += 1
+        over = self.answered >= len(self._stream())
+        self.outstanding = None if over else self._make_decision(game_id, self.answered + 1)
         return pb.StepResult(events=[e])
 
+    def poll_events(self, game_id, cursor=0):
+        events = [e for e in self.collected if e.seq > cursor]
+        next_cursor = events[-1].seq if events else cursor
+        return pb.EventBatch(
+            events=events, next_cursor=next_cursor,
+            game_over=self.answered >= len(self._stream()),
+        )
+
     def drain_events(self, game_id, cursor=0):
-        return list(self.collected)
+        events: list[pb.GameEvent] = []
+        while True:
+            batch = self.poll_events(game_id, cursor)
+            events.extend(batch.events)
+            if batch.next_cursor <= cursor:
+                break
+            cursor = batch.next_cursor
+        return events
 
     def get_state(self, game_id):
-        return pb.FullState(game_id=game_id, turn=1)
+        return pb.FullState(
+            game_id=game_id, turn=self.answered + 1, state_hash=self._state_hash()
+        )
+
+    # -- v5 snapshot/restore ------------------------------------------------
+
+    def snapshot(self, game_id):
+        if self.outstanding is None:
+            raise GameNotActiveError(
+                "FAILED_PRECONDITION: snapshot requires an outstanding decision"
+            )
+        self._snapshot_counter += 1
+        token = f"tok-{game_id}-{self._snapshot_counter}-{self.answered}".encode()
+        self.snapshots[token] = (game_id, self.answered)
+        return (token, self._state_hash())
+
+    def restore(self, game_id, token):
+        if self.outstanding is None:
+            raise GameNotActiveError(
+                "FAILED_PRECONDITION: restore requires an outstanding decision"
+            )
+        entry = self.snapshots.get(token)
+        if entry is None or entry[0] != game_id:
+            raise InvalidRequestError("INVALID_ARGUMENT: unknown or foreign snapshot token")
+        _, length = entry
+        self.collected = self.collected[:length]
+        self.answered = length
+        self._next_seq = length + 1
+        marker = pb.GameEvent(seq=self._next_seq, type=SNAPSHOT_RESTORED_TYPE, detail="restored")
+        self.collected.append(marker)
+        self._next_seq += 1
+        # Restore re-parks the decision at the snapshot point (client refetch).
+        self.outstanding = self._make_decision(game_id, length + 1)
 
     def stop_game(self, game_id):
         self.stopped = game_id
@@ -769,3 +856,106 @@ class TestRunGameCleanupAndPollRetry:
         # Cleanup failure must not mask the original error.
         with pytest.raises(HarnessTimeoutError):
             run_game(client, DECKS, seed=1, player_types=REMOTE)
+
+
+class TestFakeSnapshotSemantics:
+    """The v5 fake models the server snapshot/restore contract."""
+
+    def test_snapshot_requires_outstanding_decision(self):
+        c = FakeClient([[ev(1, "A")]])
+        gid = c.start_game(DECKS, 1)
+        with pytest.raises(GameNotActiveError, match="outstanding decision"):
+            c.snapshot(gid)
+
+    def test_restore_foreign_token_is_invalid_request(self):
+        c = FakeClient([[ev(1, "A"), ev(2, "B")]])
+        gid = c.start_game(DECKS, 1)
+        c.get_decision(gid)  # outstanding decision
+        c.snapshot(gid)
+        c.submit_decision(gid, 1, ("option_id", 0))
+        with pytest.raises(InvalidRequestError, match="foreign snapshot token"):
+            c.restore(gid, b"bogus-token")
+
+    def test_restore_truncates_appends_marker_and_repark(self):
+        c = FakeClient([[ev(1, "A"), ev(2, "B"), ev(3, "C")]])
+        gid = c.start_game(DECKS, 1)
+        req = c.get_decision(gid)
+        token, h1 = c.snapshot(gid)
+        c.submit_decision(gid, req.decision_id, ("option_id", 0))
+        assert c.answered == 1
+        c.restore(gid, token)
+        assert c.answered == 0
+        assert c.collected[-1].type == SNAPSHOT_RESTORED_TYPE
+        # Restore re-parks the decision at the snapshot point.
+        refetched = c.get_decision(gid)
+        assert refetched.decision_id == req.decision_id
+        assert c.get_state(gid).state_hash == h1
+
+
+class TestSnapshotReplayCheck:
+    STREAM = [ev(1, "TurnStarted"), ev(2, "SpellCast"), ev(3, "SpellResolved")]
+
+    def test_identical_replay_suffixes_pass(self):
+        client = FakeClient([list(self.STREAM)])
+        snapshot_replay_check(client, DECKS, seed=1)
+        assert client.stopped == client.game_id
+
+    def test_branch_action_override_used(self):
+        client = FakeClient([list(self.STREAM)])
+        seen: list[object] = []
+
+        def branch(ctx):
+            seen.append(ctx.decision_type)
+            return ("option_id", 0)
+
+        snapshot_replay_check(client, DECKS, seed=1, branch_action=branch)
+        assert seen == [pb.DECISION_TYPE_PRIORITY]
+
+    def test_divergent_replay_fails_with_clear_message(self):
+        class DivergentReplayClient(FakeClient):
+            """Simulates a non-deterministic engine: the replay submit's event
+            differs from the forward run's."""
+
+            def __init__(self, stream):
+                super().__init__([stream])
+                self.replaying = False
+
+            def restore(self, game_id, token):
+                super().restore(game_id, token)
+                self.replaying = True
+
+            def submit_decision(self, game_id, decision_id, answer):
+                step = super().submit_decision(game_id, decision_id, answer)
+                if self.replaying:
+                    # Mutate the buffered event (StepResult copies its input).
+                    self.collected[-1].detail = "diverged"
+                return step
+
+        client = DivergentReplayClient(list(self.STREAM))
+        with pytest.raises(DeterminismError, match="diverges at relative index 0"):
+            snapshot_replay_check(client, DECKS, seed=1)
+
+    def test_hash_mismatch_across_restore_raises(self):
+        class SkipTruncate(FakeClient):
+            def restore(self, game_id, token):
+                if self.outstanding is None:
+                    raise GameNotActiveError("no outstanding decision")
+                # Do not truncate; re-park at a LATER decision so the hash differs.
+                self.answered += 1
+                self.outstanding = self._make_decision(game_id, self.answered + 1)
+
+        client = SkipTruncate([list(self.STREAM)])
+        with pytest.raises(DeterminismError, match="state_hash changed across restore"):
+            snapshot_replay_check(client, DECKS, seed=1)
+
+    def test_game_over_before_first_priority_raises(self):
+        client = FakeClient([[]])  # game is instantly over
+        with pytest.raises(DeterminismError, match="before the first PRIORITY"):
+            snapshot_replay_check(client, DECKS, seed=1)
+
+    def test_game_ending_at_branch_raises(self):
+        # A one-event stream: the branch submit ends the game, so there is no
+        # outstanding decision to restore.
+        client = FakeClient([[ev(1, "GameOver")]])
+        with pytest.raises(DeterminismError, match="ended at the branch decision"):
+            snapshot_replay_check(client, DECKS, seed=1)

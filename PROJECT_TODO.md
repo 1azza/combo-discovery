@@ -98,8 +98,8 @@ Legend:
 
 - `[x]` Return basic turn, phase, life, hand, and battlefield state
 - `[~]` Define protobuf messages for permanents, zones, counters, attachments, and mana
-- `[!]` Implement `Snapshot` and `Restore` before MCTS or Go-Explore work
-- `[!]` Make `FullState` semantically complete and versioned
+- `[x]` Implement `Snapshot` and `Restore` before MCTS or Go-Explore work (proto v5: decision-parked snapshots, reusable tokens, RNG re-seed, byte-identical post-restore replay verified live)
+- `[x]` Make `FullState` semantically complete and versioned — partially: `state_hash` added; zone completeness is the next round
 - `[ ]` Add graveyard, exile, stack, command zone, library counts, and revealed-card state
 - `[ ]` Represent mana as typed colored/colorless quantities rather than a string-keyed map
 - `[ ]` Represent permanents using the defined `Permanent` message rather than only `CardRef`

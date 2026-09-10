@@ -43,10 +43,10 @@ class TestEnvClient:
 
     def test_ping_returns_pong(self):
         client, stub = make_client()
-        stub.Ping.return_value = pb.Pong(version="0.4.0", game_active=False, protocol_version=4)
+        stub.Ping.return_value = pb.Pong(version="0.5.0", game_active=False, protocol_version=5)
         pong = client.ping()
-        assert pong.version == "0.4.0"
-        assert pong.protocol_version == 4
+        assert pong.version == "0.5.0"
+        assert pong.protocol_version == 5
 
     def test_connection_error_resets_stub(self):
         client, stub = make_client()
@@ -179,24 +179,24 @@ class TestEnvClient:
             client.submit_decision(5, 3, ("option_id", 1))
         assert excinfo.value.code == grpc.StatusCode.FAILED_PRECONDITION
 
-    def test_connect_accepts_protocol_v4(self):
+    def test_connect_accepts_protocol_v5(self):
         client, stub = make_client()
-        stub.Ping.return_value = pb.Pong(version="0.4.0", protocol_version=4)
+        stub.Ping.return_value = pb.Pong(version="0.5.0", protocol_version=5)
         pong = client.connect()
-        assert pong.protocol_version == 4
+        assert pong.protocol_version == 5
 
     def test_connect_rejects_protocol_mismatch(self):
         client, stub = make_client()
-        stub.Ping.return_value = pb.Pong(version="0.3.0", protocol_version=3)
+        stub.Ping.return_value = pb.Pong(version="0.4.0", protocol_version=4)
         with pytest.raises(ProtocolMismatchError, match="protocol version mismatch"):
             client.connect()
-        with pytest.raises(ProtocolMismatchError, match="protocol_version=3"):
+        with pytest.raises(ProtocolMismatchError, match="protocol_version=4"):
             client.connect()
 
     def test_protocol_version_exposed(self):
         client, stub = make_client()
-        stub.Ping.return_value = pb.Pong(protocol_version=4)
-        assert client.protocol_version() == 4
+        stub.Ping.return_value = pb.Pong(protocol_version=5)
+        assert client.protocol_version() == 5
 
     def test_start_game_returns_game_id(self):
         client, stub = make_client()
@@ -226,7 +226,9 @@ class TestEnvClient:
         client, stub = make_client()
         stub.GetDecision.return_value = pb.DecisionRequest(game_id=9, decision_id=1)
         stub.GetState.return_value = pb.FullState(game_id=9)
-        stub.Snapshot.return_value = pb.StateToken(token=b"tok")
+        stub.Snapshot.return_value = pb.SnapshotResponse(
+            token=pb.StateToken(token=b"tok", game_id=9), state_hash="H1"
+        )
         stub.IsGameOver.return_value = pb.GameOver(over=True, outcome=pb.OUTCOME_WIN)
         stub.PollEvents.return_value = pb.EventBatch(next_cursor=0)
         client.get_decision(9)
@@ -243,6 +245,46 @@ class TestEnvClient:
         assert stub.Restore.call_args[0][0].token == b"tok"
         poll_req = stub.PollEvents.call_args[0][0]
         assert (poll_req.game_id, poll_req.cursor) == (9, 4)
+
+    # --- v5 snapshot/restore ----------------------------------------------
+
+    def test_snapshot_returns_token_bytes_and_hash(self):
+        client, stub = make_client()
+        stub.Snapshot.return_value = pb.SnapshotResponse(
+            token=pb.StateToken(token=b"tok-1", game_id=9), state_hash="abc123"
+        )
+        token, state_hash = client.snapshot(9)
+        assert token == b"tok-1"
+        assert state_hash == "abc123"
+        assert stub.Snapshot.call_args[0][0].game_id == 9
+
+    def test_snapshot_requires_outstanding_decision_maps_to_game_not_active(self):
+        client, stub = make_client()
+        stub.Snapshot.side_effect = _rpc_error(
+            "FAILED_PRECONDITION", details="snapshot requires an outstanding decision"
+        )
+        with pytest.raises(GameNotActiveError, match="requires an outstanding decision"):
+            client.snapshot(9)
+
+    def test_restore_sends_token_and_returns_none(self):
+        client, stub = make_client()
+        stub.Restore.return_value = pb.Empty()
+        assert client.restore(9, b"tok-1") is None
+        req = stub.Restore.call_args[0][0]
+        assert (req.game_id, req.token) == (9, b"tok-1")
+
+    def test_restore_requires_outstanding_decision_maps_to_game_not_active(self):
+        client, stub = make_client()
+        stub.Restore.side_effect = _rpc_error(
+            "FAILED_PRECONDITION", details="restore requires an outstanding decision"
+        )
+        with pytest.raises(GameNotActiveError, match="requires an outstanding decision"):
+            client.restore(9, b"tok-1")
+
+    def test_get_state_exposes_state_hash(self):
+        client, stub = make_client()
+        stub.GetState.return_value = pb.FullState(game_id=9, state_hash="H1")
+        assert client.get_state(9).state_hash == "H1"
 
     def test_get_decision_uses_decision_timeout(self):
         client, stub = make_client()

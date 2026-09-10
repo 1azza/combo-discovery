@@ -1,4 +1,4 @@
-"""Typed synchronous client for the forge-harness gRPC service (protocol v4).
+"""Typed synchronous client for the forge-harness gRPC service (protocol v5).
 
 Mirrors the service defined in proto/forge_env.proto. All methods are blocking;
 use WorkerPool for parallelism.
@@ -36,6 +36,15 @@ v4 note: "mode_selection" is a readability ALIAS for the card_ids arm. Per the
 proto, CHOOSE_MODE and OPTIONAL_COSTS answers ride the existing IntList
 `card_ids` arm interpreted as mode/cost option ids (no new oneof arm), so
 ("mode_selection", ids) and ("card_ids", ids) are wire-identical.
+
+v5 note (snapshot/restore): snapshot() returns (token_bytes, state_hash) and
+REQUIRES an outstanding decision (the engine thread is parked, so the state is
+quiescent); it raises GameNotActiveError on FAILED_PRECONDITION (e.g. "requires
+an outstanding decision"). restore() invalidates the outstanding decision — the
+caller must refetch via get_decision before submitting — appends a deterministic
+`SnapshotRestored` event, and re-seeds the engine RNG so identical post-restore
+action sequences replay byte-identically. Restores do not consume tokens; tokens
+are game-scoped and die with the game.
 """
 
 from __future__ import annotations
@@ -47,7 +56,7 @@ import grpc
 from .generated import forge_env_pb2 as pb
 from .generated.forge_env_pb2_grpc import ForgeEnvStub
 
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 
 # INVALID_ARGUMENT classification for decision calls (get_decision /
 # submit_decision). The harness exposes no machine-readable subcode, so we match
@@ -367,7 +376,7 @@ class ForgeEnvClient:
         """Ping the harness and verify the protocol version.
 
         Raises ProtocolMismatchError with a clear message if the harness does
-        not speak protocol v3.
+        not speak the expected protocol version (PROTOCOL_VERSION).
         """
         pong = self.ping()
         if pong.protocol_version != PROTOCOL_VERSION:
@@ -455,10 +464,29 @@ class ForgeEnvClient:
             cursor = batch.next_cursor
         return events
 
-    def snapshot(self, game_id: int) -> pb.StateToken:
-        return self._call(self._ensure_stub().Snapshot, pb.GameQuery(game_id=game_id))
+    def snapshot(self, game_id: int) -> tuple[bytes, str]:
+        """Take a state snapshot; returns ``(token_bytes, state_hash)``.
+
+        REQUIRES an outstanding decision (the engine thread is parked, so the
+        state is quiescent). Raises GameNotActiveError on FAILED_PRECONDITION
+        (no outstanding decision / game not active). Tokens are game-scoped and
+        die with the game; a game holds at most a bounded number of live tokens.
+        """
+        resp: pb.SnapshotResponse = self._call(
+            self._ensure_stub().Snapshot, pb.GameQuery(game_id=game_id)
+        )
+        return resp.token.token, resp.state_hash
 
     def restore(self, game_id: int, token: bytes) -> None:
+        """Restore a snapshot token.
+
+        Invalidates the outstanding decision — the caller MUST refetch via
+        ``get_decision`` before submitting again (the decision_id may change).
+        The harness appends a deterministic ``SnapshotRestored`` event and
+        re-seeds the engine RNG so identical post-restore action sequences
+        replay byte-identically. Restoring does not consume the token.
+        Requires an outstanding decision (raises GameNotActiveError otherwise).
+        """
         req = pb.RestoreRequest(game_id=game_id, token=token)
         self._call(self._ensure_stub().Restore, req)
 

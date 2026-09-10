@@ -1,4 +1,4 @@
-"""LIVE tests: need a running forge-harness server (protocol v3).
+"""LIVE tests: need a running forge-harness server (protocol v5).
 
 Skipped unless the FORGE_TEST_HARNESS env var is set to "host:port".
 Run with: FORGE_TEST_HARNESS=localhost:50051 uv run pytest -m live
@@ -26,13 +26,13 @@ def _target() -> tuple[str, int]:
     return host or "localhost", int(port)
 
 
-def test_live_protocol_v4():
+def test_live_protocol_v5():
     host, port = _target()
     client = ForgeEnvClient(host=host, port=port)
     try:
         pong = client.connect()
-        assert pong.protocol_version == 4
+        assert pong.protocol_version == 5
     except ProtocolMismatchError:
-        pytest.fail("live harness does not speak protocol v4")
+        pytest.fail("live harness does not speak protocol v5")
     finally:
         client.close()

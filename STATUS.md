@@ -1,13 +1,31 @@
 # Project Status
 
-Last verified during the proto v4 round (spell-casting-path decisions):
-the final oracle re-review's wave-3 fixes held, and v4 added the full
-spell-casting path. **Gate item 4 is COMPLETE** — every meaningful decision
-class is surfaced (long-tail callbacks deliberately AI-defaulted). Remaining
-plumbing per PLUMBING_SPEC.md: snapshot/restore (gate item 5), event
-taxonomy + FullState v2, persistence, hardening.
+Last verified during the proto v5 round (snapshot/restore + state hashing).
+**Gate item 4 COMPLETE; gate item 5 COMPLETE** — the pre-Layer-2 gate from
+ARCHITECTURE.md is fully closed. Remaining plumbing per PLUMBING_SPEC.md:
+event taxonomy + FullState v2, persistence, hardening.
 
 ## Verified
+
+- [x] Protocol v5 (snapshot/restore, gate item 5): `Snapshot` requires an
+      outstanding decision (engine parked = quiescent), returns an opaque
+      game-scoped `StateToken` (max 32 live, LRU-evicted, die with the game)
+      plus a SHA-256 `state_hash` projection; `Restore` invalidates the
+      outstanding decision, re-applies zone ordering (fixing a real
+      `GameSnapshot` limitation: same-zone cards are appended, not
+      repositioned), re-seeds the engine RNG deterministically from
+      (game seed, snapshot id), truncates the event trajectory to the
+      snapshot seq (numbering stays monotonic), and appends a deterministic
+      `SnapshotRestored` marker; tokens are reusable (branch repeatedly).
+- [x] MCTS determinism guarantee verified live: snapshot → branch → restore
+      → replay the same answers TWICE → state hash stable and post-restore
+      event suffixes byte-identical (relative-seq comparison). Priority
+      decisions re-present naturally after restore; non-priority (combat/
+      target) restores fall back to the abort NO-OP — documented limitation.
+- [x] `state_hash` exposed in `SnapshotResponse` and `FullState`; token
+      rules live-verified (foreign game rejected, >32 evicts oldest, tokens
+      die with the game, snapshot without outstanding decision →
+      FAILED_PRECONDITION).
 
 - [x] Protocol v4 (spell-casting path): `CHOOSE_TARGETS` (server-validated
       candidates via `canTarget`, `TargetSelection` answer, mandatory/optional,
@@ -126,8 +144,9 @@ taxonomy + FullState v2, persistence, hardening.
 - [ ] Long-tail callbacks deliberately keep AI defaults (mana payment,
       generic confirms, trigger ordering, votes/dice/sectors) — documented in
       the proto header, not a defect
-- [ ] `Snapshot`/`Restore` return `UNIMPLEMENTED`; no state hashing — gate
-      item 5
+- [ ] FullState is a partial inspection state (graveyard/exile/stack/typed
+      mana/command zone still missing) — PLUMBING_SPEC.md section 3, next
+      round
 - [ ] `FullState` is a partial inspection state, not a complete search state
 - [ ] One active game per harness process at a time (registry routes by
       `game_id`, concurrent games not hosted yet)
@@ -144,9 +163,8 @@ taxonomy + FullState v2, persistence, hardening.
 
 ## Next Work
 
-1. Gate item 5: snapshot/restore + state hashing (PLUMBING_SPEC.md section 2).
-2. Event taxonomy + FullState v2 (PLUMBING_SPEC.md section 3).
-3. Trajectory persistence + SQLite + config/metadata (PLUMBING_SPEC.md
-   sections 1/4).
-4. Hardening: legality-filtered priority options, real goldfish, conformance
+1. Event taxonomy + FullState v2 (PLUMBING_SPEC.md section 3).
+2. Trajectory persistence + SQLite + config/metadata (PLUMBING_SPEC.md
+   section 4).
+3. Hardening: legality-filtered priority options, real goldfish, conformance
    + cancellation tests, CI.

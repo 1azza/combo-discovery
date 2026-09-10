@@ -1,4 +1,4 @@
-// ForgeEnv gRPC contract — v4 (spell-casting-path decisions).
+// ForgeEnv gRPC contract — v5 (snapshot/restore + state hashing).
 // Canonical copy lives in the Python repo: combo-discovery/proto/forge_env.proto.
 // The Java harness mirrors it at forge-harness/src/main/proto/forge_env.proto.
 //
@@ -7,15 +7,17 @@
 //  - Card identity: Forge card id (int32, stable within a game) + card name.
 //  - Determinism: same (decks, seed, config) MUST yield byte-identical event streams.
 //
-// v4 additions on top of v3 (breaking for the new decision paths only; see
-// PLUMBING_SPEC.md section 1):
-//  - Three new DecisionTypes for the spell-casting path:
-//    CHOOSE_TARGETS (candidates = legal target entities, server-validated
-//    against the ability's TargetRestrictions; answer = `targets` arm),
-//    CHOOSE_MODE (answer = mode option ids via the `card_ids` arm,
-//    repeats only if allow_repeat), OPTIONAL_COSTS (kicker etc., answer =
-//    option ids via `card_ids`). Every engine re-prompt is a new decision_id.
-//  - protocol_version is now 4.
+// v5 changes on top of v4 (see PLUMBING_SPEC.md section 2):
+//  - Snapshot is now implemented: requires an outstanding decision (the
+//    engine thread is parked, so the game state is quiescent); returns an
+//    opaque in-process StateToken (game-scoped, dies with the game, max 32
+//    live per game) plus a state_hash cache key.
+//  - Restore applies the token's game copy on the parked engine thread,
+//    invalidates the outstanding decision (client must refetch), appends a
+//    deterministic `SnapshotRestored` event, and re-seeds the engine RNG
+//    deterministically from (game_id, token) so identical post-restore
+//    action sequences replay byte-identically.
+//  - protocol_version is now 5.
 
 syntax = "proto3";
 package forgeenv;
@@ -34,8 +36,10 @@ service ForgeEnv {
   rpc GetState(GameQuery) returns (FullState);
   // Poll events with seq > cursor. cursor=0 returns from the first event.
   rpc PollEvents(PollRequest) returns (EventBatch);
-  // MCTS support: opaque state tokens (only valid within same game).
-  rpc Snapshot(GameQuery) returns (StateToken);
+  // MCTS support: opaque in-process state tokens. Snapshot requires an
+  // outstanding decision (engine parked). Tokens are game-scoped, die with
+  // the game, max 32 live per game.
+  rpc Snapshot(GameQuery) returns (SnapshotResponse);
   rpc Restore(RestoreRequest) returns (Empty);
   // Query game-over status without stepping.
   rpc IsGameOver(GameQuery) returns (GameOver);
@@ -50,7 +54,7 @@ message Empty {}
 message Pong {
   string version = 1;
   bool game_active = 2;
-  int32 protocol_version = 3;  // 4 for this contract
+  int32 protocol_version = 3;  // 5 for this contract
 }
 
 message DeckSpec {
@@ -319,6 +323,7 @@ message FullState {
   repeated Zone library = 9;        // top card first; counts only unless revealed
   map<string, int32> mana_pools = 10;
   repeated GameEvent recent_events = 11;
+  string state_hash = 12;           // SHA-256 projection; cache key only
 }
 
 message Zone {
@@ -331,7 +336,12 @@ message CardRef {
   int32 count = 2;                  // for library stacks
 }
 
-message StateToken { bytes token = 1; }
+message StateToken { bytes token = 1; int64 game_id = 2; }
+
+message SnapshotResponse {
+  StateToken token = 1;
+  string state_hash = 2;            // SHA-256 projection; cache key only
+}
 
 message RestoreRequest {
   int64 game_id = 1;

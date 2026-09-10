@@ -18,6 +18,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from typing import cast
 
 from .env import (
     Answer,
@@ -575,3 +576,194 @@ def determinism_check(
             raise DeterminismError(
                 f"seed {divergent_seed} produced an event stream identical to seed {seed}"
             )
+
+
+# -- snapshot/restore replay (v5 MCTS determinism guarantee) -----------------
+
+# The harness event type appended on restore; excluded from suffix comparison.
+SNAPSHOT_RESTORED_TYPE = "SnapshotRestored"
+
+
+def _resolve_branch_action(
+    branch_action: Answer | Callable[[DecisionContext], Answer] | None,
+    ctx: DecisionContext,
+    drive_policy,
+) -> Answer:
+    """The answer used at the branch decision: an explicit Answer, a callable
+    ``ctx -> Answer``, or (default) the drive policy."""
+    if branch_action is None:
+        return drive_policy(ctx)
+    if callable(branch_action):
+        return branch_action(ctx)
+    return cast(Answer, branch_action)
+
+
+def _relative_identity(identity: EventKey, base_seq: int) -> EventKey:
+    """Identity with seq shifted to be relative to ``base_seq``."""
+    return (identity[0] - base_seq, *identity[1:])
+
+
+def _compare_replay_suffixes(
+    forward: list[EventKey],
+    replay: list[EventKey],
+    *,
+    base_forward: int,
+    base_replay: int,
+    context: str,
+) -> None:
+    """Assert two post-branch event suffixes are byte-identical modulo seq
+    offsets, comparing relative seqs (the restore marker shifts the replay).
+
+    Raises DeterminismError with the first divergence and both raw events.
+    """
+    rel_forward = [_relative_identity(x, base_forward) for x in forward]
+    rel_replay = [_relative_identity(x, base_replay) for x in replay]
+    for i, (x, y) in enumerate(zip(rel_forward, rel_replay)):
+        if x != y:
+            raise DeterminismError(
+                f"snapshot replay suffix diverges at relative index {i} ({context}): "
+                f"forward={x!r} replay={y!r} "
+                f"(forward_event={forward[i]!r}, replay_event={replay[i]!r})"
+            )
+    if len(rel_forward) != len(rel_replay):
+        raise DeterminismError(
+            f"snapshot replay suffix length mismatch ({context}): "
+            f"forward={len(rel_forward)} replay={len(rel_replay)}; "
+            f"forward={forward!r} replay={replay!r}"
+        )
+
+
+def snapshot_replay_check(
+    client,
+    decks: list[tuple[str, str]],
+    seed: int,
+    player_types: Sequence["pb.PlayerType"] | None = None,
+    max_turns: int = 0,
+    branch_action: Answer | Callable[[DecisionContext], Answer] | None = None,
+    timeout_seconds: int = 0,
+    policy: Callable[[DecisionContext], Answer] | None = None,
+) -> None:
+    """Verify the snapshot/restore determinism guarantee.
+
+    Drives a game to the FIRST PRIORITY decision, snapshots there (recording
+    the state hash H1 and the event-buffer cursor S0), submits the branch
+    answer, then restores the token and replays the SAME answer. Asserts the
+    game is still alive after restore, the state hash is unchanged, and the
+    post-``SnapshotRestored`` event suffix is byte-identical to the forward
+    suffix (seq offsets differ by the marker, so comparison is on RELATIVE
+    seqs). Raises DeterminismError on any mismatch.
+
+    The forward branch stops after the branch answer: the next decision is
+    left outstanding, which Restore requires (the server parks the engine on
+    an outstanding decision). The game must therefore not end at the branch
+    decision.
+
+    ``branch_action`` overrides the answer at the branch decision: an explicit
+    Answer tuple, or a callable ``ctx -> Answer``; None means ``policy`` (or
+    default_policy). ``policy`` is the drive policy used to reach the branch.
+    """
+    if player_types is None:
+        player_types = [pb.PLAYER_TYPE_REMOTE] * len(decks)
+    drive_policy = policy or default_policy
+    started_game_id: int | None = None
+    try:
+        started_game_id = int(
+            client.start_game(
+                decks,
+                seed,
+                player_types=list(player_types),
+                max_turns=max_turns,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+        game_id = started_game_id
+        context = f"seed={seed} game_id={game_id}"
+
+        # --- drive to the first PRIORITY decision --------------------------
+        while True:
+            if _retry_transient_timeout(client.is_game_over, game_id).over:
+                raise DeterminismError(
+                    f"snapshot_replay_check: game ended before the first PRIORITY "
+                    f"decision ({context})"
+                )
+            req = client.get_decision(game_id)
+            if req.decision_type == pb.DECISION_TYPE_PRIORITY:
+                break
+            client.submit_decision(
+                game_id, req.decision_id, drive_policy(DecisionContext(request=req))
+            )
+
+        # --- snapshot at the branch point ----------------------------------
+        token, hash_at_snapshot = client.snapshot(game_id)
+        s0 = client.poll_events(game_id, 0).next_cursor
+
+        # --- forward branch: record and submit the branch answer -----------
+        # Restore requires an outstanding decision, so we answer the branch
+        # decision and leave the NEXT decision outstanding (the loop above has
+        # already confirmed the game is not over before the snapshot).
+        branch_answer = _resolve_branch_action(
+            branch_action, DecisionContext(request=req), drive_policy
+        )
+        answers: list[tuple[int, Answer]] = [(req.decision_type, branch_answer)]
+        client.submit_decision(game_id, req.decision_id, branch_answer)
+        if _retry_transient_timeout(client.is_game_over, game_id).over:
+            raise DeterminismError(
+                f"snapshot_replay_check: game ended at the branch decision, so there "
+                f"is no outstanding decision to restore ({context})"
+            )
+        forward_suffix = [event_identity(e) for e in client.drain_events(game_id, s0)]
+
+        # --- restore and replay the same answers ---------------------------
+        client.restore(game_id, token)
+        if _retry_transient_timeout(client.is_game_over, game_id).over:
+            raise DeterminismError(
+                f"snapshot_replay_check: game reports over immediately after restore "
+                f"({context})"
+            )
+        hash_after = client.get_state(game_id).state_hash
+        if hash_after != hash_at_snapshot:
+            raise DeterminismError(
+                f"snapshot_replay_check: state_hash changed across restore ({context}): "
+                f"H1={hash_at_snapshot!r} H2={hash_after!r}"
+            )
+
+        for expected_type, ans in answers:
+            refetched = client.get_decision(game_id)
+            if refetched.decision_type != expected_type:
+                raise DeterminismError(
+                    f"snapshot_replay_check: replay decision type mismatch ({context}): "
+                    f"expected {pb.DecisionType.Name(expected_type)}, got "
+                    f"{pb.DecisionType.Name(refetched.decision_type)}"
+                )
+            client.submit_decision(game_id, refetched.decision_id, ans)
+
+        restored_events = client.drain_events(game_id, s0)
+        marker_index = next(
+            (i for i, e in enumerate(restored_events) if e.type == SNAPSHOT_RESTORED_TYPE),
+            None,
+        )
+        if marker_index is None:
+            raise DeterminismError(
+                f"snapshot_replay_check: no {SNAPSHOT_RESTORED_TYPE} event found after "
+                f"restore ({context})"
+            )
+        marker_seq = restored_events[marker_index].seq
+        replay_suffix = [event_identity(e) for e in restored_events[marker_index + 1 :]]
+
+        _compare_replay_suffixes(
+            forward_suffix,
+            replay_suffix,
+            base_forward=s0,
+            base_replay=marker_seq,
+            context=context,
+        )
+    finally:
+        if started_game_id is not None:
+            try:
+                client.stop_game(started_game_id)
+            except Exception as cleanup_err:  # best effort
+                logger.warning(
+                    "best-effort stop_game(%s) after snapshot replay failed: %s",
+                    started_game_id,
+                    cleanup_err,
+                )

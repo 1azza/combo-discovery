@@ -65,7 +65,7 @@ class ForgeEnvStub:
         self.Snapshot = channel.unary_unary(
                 '/forgeenv.ForgeEnv/Snapshot',
                 request_serializer=forge__env__pb2.GameQuery.SerializeToString,
-                response_deserializer=forge__env__pb2.StateToken.FromString,
+                response_deserializer=forge__env__pb2.SnapshotResponse.FromString,
                 _registered_method=True)
         self.Restore = channel.unary_unary(
                 '/forgeenv.ForgeEnv/Restore',
@@ -128,7 +128,9 @@ class ForgeEnvServicer:
         raise NotImplementedError('Method not implemented!')
 
     def Snapshot(self, request, context):
-        """MCTS support: opaque state tokens (only valid within same game).
+        """MCTS support: opaque in-process state tokens. Snapshot requires an
+        outstanding decision (engine parked). Tokens are game-scoped, die with
+        the game, max 32 live per game.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -192,7 +194,7 @@ def add_ForgeEnvServicer_to_server(servicer, server):
             'Snapshot': grpc.unary_unary_rpc_method_handler(
                     servicer.Snapshot,
                     request_deserializer=forge__env__pb2.GameQuery.FromString,
-                    response_serializer=forge__env__pb2.StateToken.SerializeToString,
+                    response_serializer=forge__env__pb2.SnapshotResponse.SerializeToString,
             ),
             'Restore': grpc.unary_unary_rpc_method_handler(
                     servicer.Restore,
@@ -376,7 +378,7 @@ class ForgeEnv:
             target,
             '/forgeenv.ForgeEnv/Snapshot',
             forge__env__pb2.GameQuery.SerializeToString,
-            forge__env__pb2.StateToken.FromString,
+            forge__env__pb2.SnapshotResponse.FromString,
             options,
             channel_credentials,
             insecure,

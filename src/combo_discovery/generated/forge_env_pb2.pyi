@@ -372,7 +372,7 @@ class Permanent(_message.Message):
     def __init__(self, id: _Optional[int] = ..., card_name: _Optional[str] = ..., controller: _Optional[int] = ..., owner: _Optional[int] = ..., tapped: _Optional[bool] = ..., attacking: _Optional[bool] = ..., blocking: _Optional[bool] = ..., counters: _Optional[_Mapping[str, int]] = ..., attachments: _Optional[_Iterable[str]] = ..., is_token: _Optional[bool] = ..., type_line: _Optional[str] = ...) -> None: ...
 
 class FullState(_message.Message):
-    __slots__ = ("game_id", "turn", "phase", "active_player", "life", "hand", "battlefield", "graveyard", "library", "mana_pools", "recent_events")
+    __slots__ = ("game_id", "turn", "phase", "active_player", "life", "hand", "battlefield", "graveyard", "library", "mana_pools", "recent_events", "state_hash")
     class ManaPoolsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -391,6 +391,7 @@ class FullState(_message.Message):
     LIBRARY_FIELD_NUMBER: _ClassVar[int]
     MANA_POOLS_FIELD_NUMBER: _ClassVar[int]
     RECENT_EVENTS_FIELD_NUMBER: _ClassVar[int]
+    STATE_HASH_FIELD_NUMBER: _ClassVar[int]
     game_id: int
     turn: int
     phase: str
@@ -402,7 +403,8 @@ class FullState(_message.Message):
     library: _containers.RepeatedCompositeFieldContainer[Zone]
     mana_pools: _containers.ScalarMap[str, int]
     recent_events: _containers.RepeatedCompositeFieldContainer[GameEvent]
-    def __init__(self, game_id: _Optional[int] = ..., turn: _Optional[int] = ..., phase: _Optional[str] = ..., active_player: _Optional[int] = ..., life: _Optional[_Iterable[int]] = ..., hand: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., battlefield: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., graveyard: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., library: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., mana_pools: _Optional[_Mapping[str, int]] = ..., recent_events: _Optional[_Iterable[_Union[GameEvent, _Mapping]]] = ...) -> None: ...
+    state_hash: str
+    def __init__(self, game_id: _Optional[int] = ..., turn: _Optional[int] = ..., phase: _Optional[str] = ..., active_player: _Optional[int] = ..., life: _Optional[_Iterable[int]] = ..., hand: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., battlefield: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., graveyard: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., library: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., mana_pools: _Optional[_Mapping[str, int]] = ..., recent_events: _Optional[_Iterable[_Union[GameEvent, _Mapping]]] = ..., state_hash: _Optional[str] = ...) -> None: ...
 
 class Zone(_message.Message):
     __slots__ = ("cards", "permanents")
@@ -421,10 +423,20 @@ class CardRef(_message.Message):
     def __init__(self, name: _Optional[str] = ..., count: _Optional[int] = ...) -> None: ...
 
 class StateToken(_message.Message):
-    __slots__ = ("token",)
+    __slots__ = ("token", "game_id")
     TOKEN_FIELD_NUMBER: _ClassVar[int]
+    GAME_ID_FIELD_NUMBER: _ClassVar[int]
     token: bytes
-    def __init__(self, token: _Optional[bytes] = ...) -> None: ...
+    game_id: int
+    def __init__(self, token: _Optional[bytes] = ..., game_id: _Optional[int] = ...) -> None: ...
+
+class SnapshotResponse(_message.Message):
+    __slots__ = ("token", "state_hash")
+    TOKEN_FIELD_NUMBER: _ClassVar[int]
+    STATE_HASH_FIELD_NUMBER: _ClassVar[int]
+    token: StateToken
+    state_hash: str
+    def __init__(self, token: _Optional[_Union[StateToken, _Mapping]] = ..., state_hash: _Optional[str] = ...) -> None: ...
 
 class RestoreRequest(_message.Message):
     __slots__ = ("game_id", "token")
