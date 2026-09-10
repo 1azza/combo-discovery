@@ -53,7 +53,6 @@ process isolation.
 
 - `src/combo_discovery/env.py`: synchronous `ForgeEnvClient`
 - `src/combo_discovery/runner.py`: game execution and determinism helper
-- `src/combo_discovery/goldfish.py`: deterministic placeholder policy
 - `src/combo_discovery/pool.py`: worker pool over pre-running harness servers
 - `src/combo_discovery/generated/`: generated protobuf stubs
 - `tests/`: client, policy, runner, determinism, and pool tests

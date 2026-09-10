@@ -58,6 +58,26 @@ def outcome_name(value: int) -> str:
 
 def main() -> int:
     client = ForgeEnvClient(host=HOST, port=PORT)
+    # Track every game id this run starts so failure cleanup can stop games
+    # that run_game started and did not get to stop (run_game also does a
+    # best-effort stop on failure, but this covers the window before it).
+    started_games: list[int] = []
+    _real_start_game = client.start_game
+    _real_stop_game = client.stop_game
+
+    def _tracking_start_game(*args, **kwargs) -> int:
+        game_id = _real_start_game(*args, **kwargs)
+        started_games.append(game_id)
+        return game_id
+
+    def _tracking_stop_game(game_id: int) -> None:
+        _real_stop_game(game_id)
+        if game_id in started_games:
+            started_games.remove(game_id)
+
+    client.start_game = _tracking_start_game  # type: ignore[method-assign]
+    client.stop_game = _tracking_stop_game  # type: ignore[method-assign]
+
     try:
         pong = client.connect()
     except HarnessConnectionError as e:
@@ -148,12 +168,13 @@ def main() -> int:
               "different seed diverges")
     except Exception as e:
         print(f"FAIL: {type(e).__name__}: {e}")
-        # Never leave a game active on the single-game harness.
-        try:
-            if active_game is not None:
-                client.stop_game(active_game)
-        except Exception:
-            pass
+        # Never leave a game active on the single-game harness, including a
+        # remote game run_game started before failing.
+        for gid in list(started_games):
+            try:
+                client.stop_game(gid)
+            except Exception:
+                pass
         return 1
     finally:
         client.close()

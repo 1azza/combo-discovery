@@ -1,6 +1,10 @@
 # Project Status
 
-Last verified during the v3 typed-decision round (gate item 4, partial).
+Last verified during the wave-3 round: the final oracle re-review found
+residual defects in the wave-2 fixes (validation-lease atomicity, join-failure
+persistence, IsGameOver timing, stale-marker misclassification); wave-3 fixed
+all of them and the full gate passed after the fixes. Gate item 4 is still
+partial (spell targeting/modes remain).
 
 ## Verified
 
@@ -41,7 +45,37 @@ Last verified during the v3 typed-decision round (gate item 4, partial).
 - [x] Client: protocol negotiation, dedicated blocking-wait timeout with
       bounded retry, typed error mapping, `GameNotActiveError` treated as
       normal game-over exit from the remote loop
-- [x] Python unit tests pass: `69 passed, 1 skipped` (live test opt-in)
+- [x] Concurrency hardening (delta-review round):
+      decision single-winner state machine (LIVE → ANSWERED/TIMED_OUT/ABORTED,
+      one transition under the runner lock, exactly one fallback marker),
+      with a validation lease so answer validation cannot race timeout/abort;
+      `isOver()` reflects runner state so the final `GameOver` event is
+      exactly-once and observable only after it is appended; previous game
+      thread joined before RNG reseed on every stop→start handoff (join
+      timeout refuses to reseed); blocker legality validated as a set via
+      `CombatUtil.validateBlocks` plus correct per-blocker capacity checks
+      (verified: one ordinary blocker accepted, capacity-0 multi-block
+      rejected, menace two-blocker accepted); no engine calls under the
+      runner lock; stop/start serialized under `startLock`; force-stop
+      validates the request before stopping; `PLAYER_TYPE_UNSPECIFIED`
+      rejected; IsGameOver returns one atomic (over, outcome, winner,
+      reason) read
+- [x] Combat-damage candidates fixed: the harness surfaces the attacker's
+      ordered blockers (engine assignment order preserved), not unrelated
+      battlefield attackers; default policy assigns all damage to the first
+      blocker when blocked (always-legal by construction)
+- [x] Pool correctness (delta-review + wave-2 rounds): per-seed round budget
+      replaces the broken global 2×workers cap (25 seeds over 2 workers
+      complete); successes consume no budget; timeout/stale errors are
+      retryable job failures; `InvalidRequestError` (deterministic policy
+      bugs) propagates without blaming workers; excluded workers probed
+      one-per-iteration (rotating, 2s timeout) and re-admitted at most once
+      per call; all-excluded pools wait for respawn readiness (bounded by
+      `_startup_timeout`); wedged owned processes killed+respawned;
+      probe/revive treat connection death AND timeout as "not recovered";
+      `run_game` best-effort-stops its game on any failure; transient poll
+      timeouts retried
+- [x] Python unit tests pass: `103 passed, 1 skipped` (live test opt-in)
 - [x] Live protocol test passes against the real harness (protocol v3)
 - [x] Java Maven compile/package succeeds
 - [x] End-to-end smoke passes: `SMOKE PASS` (turn-limit game, remote-driven
@@ -49,6 +83,24 @@ Last verified during the v3 typed-decision round (gate item 4, partial).
 
 ## Known Gaps
 
+- [ ] Combat-damage assignment validation is policy-side only: candidates are
+      now the attacker's ordered blockers and the default policy is
+      always-legal by construction (blocked → first blocker), but the server
+      does not validate trample/deathtouch damage splits — deferred until
+      the targeting round
+- [ ] Stale-vs-policy error distinction relies on INVALID_ARGUMENT detail
+      text markers because the harness exposes no machine-readable subcode
+      (documented in `env.py` `_STALE_DECISION_MARKERS`); a proto subcode
+      would make it robust — v4 item
+- [ ] Engine AI can hang in mana-payment loops with certain aggressive decks
+      (observed during Wave-2 staging with custom decks; engine-side, not a
+      harness defect — the harness correctly detects the unterminated engine
+      thread)
+- [ ] Remote priority options are AI-curated (`canPlaySa` filter, not a
+      legality filter): legal actions the AI deems unattractive never appear
+      as options — decision pending before spell targeting lands
+- [ ] GetState zone snapshot uses bounded retry over live zone lists; an
+      immutable game-thread snapshot is the deferred full fix (TODO in code)
 - [ ] Spell targeting and mode selection are still engine-internal: a remote
       player's spells resolve with AI-chosen targets/modes
       (`chooseTargetsFor`/`chooseModeForAbility` not yet surfaced) — next

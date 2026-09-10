@@ -14,6 +14,7 @@ every DecisionType.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -28,16 +29,26 @@ from .env import (
 )
 from .generated import forge_env_pb2 as pb
 
+logger = logging.getLogger(__name__)
+
 # Consecutive get_decision deadline failures tolerated before giving up. The
 # server guarantees wake-on-game-over, so a deadline usually means a slow
 # engine stretch; each failure is followed by an is_game_over re-check.
 MAX_DECISION_TIMEOUTS = 3
 
-# Consecutive stale-decision rejections tolerated before giving up. The
-# harness decision watchdog (120s) can release a decision while a slow
+# Retries after the INITIAL stale-decision rejection (so up to
+# MAX_STALE_RETRIES + 1 total rejected attempts are allowed before raising).
+# The harness decision watchdog (120s) can release a decision while a slow
 # policy's submit is in flight, surfacing as INVALID_ARGUMENT. Each rejection
-# is followed by a game-over re-check and a refetch of the current decision.
+# is followed by a game-over re-check and a refetch of the current decision;
+# the counter resets only on a successful submit.
 MAX_STALE_RETRIES = 3
+
+# Retries for a TRANSIENT HarnessTimeoutError on a quick polling RPC
+# (is_game_over / get_state). A deadline on a fast RPC is not server death;
+# retry a couple of times with backoff, then let the caller act.
+MAX_POLL_TIMEOUTS = 3
+POLL_BACKOFF_S = 0.1
 
 # Identity tuple for one event: everything deterministic about it, minus the
 # game_id (which legitimately differs between runs).
@@ -53,6 +64,24 @@ DecisionTraceEntry = tuple[int, int, Answer]
 def event_identity(e: pb.GameEvent) -> EventKey:
     """Deterministic identity of a GameEvent: seq included, game_id excluded."""
     return (e.seq, e.type, e.turn, e.phase, e.player, e.card_name, e.detail)
+
+
+def _retry_transient_timeout(fn, *args):
+    """Call a quick polling RPC, retrying HarnessTimeoutError with backoff.
+
+    A DEADLINE_EXCEEDED on a fast RPC (is_game_over / get_state) is not server
+    death — under load even quick calls can exceed the general timeout while
+    the harness stays healthy. Retry a bounded number of times, then re-raise
+    so the caller (or the worker pool) can decide what to do.
+    """
+    for attempt in range(MAX_POLL_TIMEOUTS):
+        try:
+            return fn(*args)
+        except HarnessTimeoutError:
+            if attempt + 1 >= MAX_POLL_TIMEOUTS:
+                raise
+            time.sleep(POLL_BACKOFF_S * (attempt + 1))
+    raise HarnessTimeoutError("poll retry loop exhausted")  # pragma: no cover
 
 
 @dataclass
@@ -193,7 +222,20 @@ def default_policy(ctx: DecisionContext) -> Answer:
     if t == pb.DECISION_TYPE_DECLARE_BLOCKERS:
         return ("blockers", [])
     if t == pb.DECISION_TYPE_ASSIGN_COMBAT_DAMAGE:
-        # All damage to the defending player (player arm of DamageAssignment).
+        # candidates = remaining blockers; defender_players = defending player.
+        # Assign ALL damage to the FIRST blocker: that is always legal (the
+        # at-least-lethal ordering is trivially satisfied, and excess damage to
+        # the first blocker is allowed). Assigning it all to the defending
+        # player would be rule-invalid whenever the attacker is blocked by a
+        # non-trampling creature. Only route to the player arm when the
+        # attacker is unblocked (no blockers). Full trample/deathtouch-aware
+        # assignment validation is deferred: this default policy is
+        # always-legal by construction, not by modelling combat.
+        if ctx.candidate_ids:
+            return (
+                "damage",
+                [DamageTarget(card_id=ctx.candidate_ids[0], amount=ctx.damage_amount)],
+            )
         defender = ctx.defender_players[0] if ctx.defender_players else 0
         return ("damage", [DamageTarget(player=defender, amount=ctx.damage_amount)])
     if t == pb.DECISION_TYPE_ORDER_BLOCKERS:
@@ -253,99 +295,135 @@ def run_game(
     if player_types is None:
         player_types = [pb.PLAYER_TYPE_REMOTE] * len(decks)
     has_remote = any(t == pb.PLAYER_TYPE_REMOTE for t in player_types)
-    game_id = client.start_game(
-        decks,
-        seed,
-        player_types=list(player_types),
-        max_turns=max_turns,
-        timeout_seconds=timeout_seconds,
-        force_stop_active=force_stop_active,
-    )
-    turns = 0
-    trace: list[DecisionTraceEntry] = []
-    if has_remote:
-        deadline_failures = 0
-        stale_failures = 0
-        while True:
-            over = client.is_game_over(game_id)
-            if over.over:
-                break
-            try:
-                req = client.get_decision(game_id)
-            except GameNotActiveError:
-                # The game ended while we were blocked waiting for a decision
-                # (turn limit, timeout, opponent win). This is a normal exit.
-                over = client.is_game_over(game_id)
-                if not over.over:
-                    raise
-                break
-            except HarnessTimeoutError:
-                # Blocking wait timed out (slow engine stretch). Re-check game
-                # over at the top of the loop and retry; raise after too many
-                # consecutive deadlines.
-                deadline_failures += 1
-                if deadline_failures >= MAX_DECISION_TIMEOUTS:
-                    raise
-                time.sleep(0.1)
-                continue
-            except StaleDecisionError:
-                # The watchdog released this decision before our submit (or a
-                # re-prompt invalidated it). Re-check game over at the top of
-                # the loop and refetch the current decision; raise after too
-                # many consecutive stale rejections.
-                stale_failures += 1
-                if stale_failures >= MAX_STALE_RETRIES:
-                    raise
-                time.sleep(0.05)
-                continue
+    # started_game_id is set once StartGame succeeds. The guard below
+    # best-effort stops the game on ANY failure path so a crashed run cannot
+    # leave an active game behind and brick the harness for later jobs.
+    started_game_id: int | None = None
+    try:
+        started_game_id = int(
+            client.start_game(
+                decks,
+                seed,
+                player_types=list(player_types),
+                max_turns=max_turns,
+                timeout_seconds=timeout_seconds,
+                force_stop_active=force_stop_active,
+            )
+        )
+        game_id = started_game_id
+        turns = 0
+        trace: list[DecisionTraceEntry] = []
+        if has_remote:
             deadline_failures = 0
-            turns = req.turn
-            ctx = DecisionContext(request=req)
-            answer = policy(ctx)
-            # Echo the outstanding decision id back with the typed answer.
-            try:
-                client.submit_decision(game_id, req.decision_id, answer)
-            except GameNotActiveError:
-                # Game ended between fetching and submitting (e.g. turn-limit
-                # fired mid-decision). Normal exit path.
-                over = client.is_game_over(game_id)
-                if not over.over:
-                    raise
-                break
-            except StaleDecisionError:
-                # The watchdog released this decision while our (possibly
-                # slow) submit was in flight; the server's next decision has a
-                # NEW id. Re-check game over, refetch, retry — bounded.
-                stale_failures += 1
-                if stale_failures >= MAX_STALE_RETRIES:
-                    raise
-                time.sleep(0.05)
-                continue
             stale_failures = 0
-            trace.append((req.decision_id, req.decision_type, answer))
-    else:
-        # No remote decisions: the harness drives itself; just wait it out.
-        while True:
-            over = client.is_game_over(game_id)
-            if over.over:
-                break
-            time.sleep(0.1)
-            turns = client.get_state(game_id).turn
-    # Drain the full event buffer before StopGame drops it.
-    events = [event_identity(e) for e in client.drain_events(game_id)] if collect_events else []
-    client.stop_game(game_id)
-    return GameResult(
-        game_id=game_id,
-        seed=seed,
-        winner=over.winner,
-        turns=turns,
-        n_events=len(events),
-        duration_s=time.monotonic() - start,
-        outcome=over.outcome,
-        reason=over.reason,
-        events=events,
-        decision_trace=trace,
-    )
+            while True:
+                # IsGameOver is atomic with respect to the latest classification
+                # read (over == a GameOver classification exists), so over flips
+                # only once the GameOver event has been appended. Polling may
+                # therefore run slightly longer near the end; the sleeps in the
+                # retry branches keep it off a busy-tight-loop.
+                over = _retry_transient_timeout(client.is_game_over, game_id)
+                if over.over:
+                    break
+                try:
+                    req = client.get_decision(game_id)
+                except GameNotActiveError:
+                    # The game ended while we were blocked waiting for a
+                    # decision (turn limit, timeout, opponent win). Normal exit.
+                    over = _retry_transient_timeout(client.is_game_over, game_id)
+                    if not over.over:
+                        raise
+                    break
+                except HarnessTimeoutError:
+                    # Blocking wait timed out (slow engine stretch). Re-check
+                    # game over at the top of the loop and retry; raise after
+                    # too many consecutive deadlines.
+                    deadline_failures += 1
+                    if deadline_failures >= MAX_DECISION_TIMEOUTS:
+                        raise
+                    time.sleep(0.1)
+                    continue
+                except StaleDecisionError:
+                    # The watchdog released this decision before our submit (or
+                    # a re-prompt invalidated it). Re-check game over at the top
+                    # of the loop and refetch; raise after too many retries.
+                    stale_failures += 1
+                    if stale_failures > MAX_STALE_RETRIES:
+                        raise
+                    time.sleep(0.05)
+                    continue
+                deadline_failures = 0
+                turns = req.turn
+                ctx = DecisionContext(request=req)
+                answer = policy(ctx)
+                # Echo the outstanding decision id back with the typed answer.
+                try:
+                    client.submit_decision(game_id, req.decision_id, answer)
+                except GameNotActiveError:
+                    # Game ended between fetching and submitting (e.g.
+                    # turn-limit fired mid-decision). Normal exit path.
+                    over = _retry_transient_timeout(client.is_game_over, game_id)
+                    if not over.over:
+                        raise
+                    break
+                except StaleDecisionError:
+                    # The watchdog released this decision while our (possibly
+                    # slow) submit was in flight; the server's next decision
+                    # has a NEW id. Re-check, refetch, retry — bounded.
+                    stale_failures += 1
+                    if stale_failures > MAX_STALE_RETRIES:
+                        raise
+                    time.sleep(0.05)
+                    continue
+                stale_failures = 0
+                trace.append((req.decision_id, req.decision_type, answer))
+        else:
+            # No remote decisions: the harness drives itself; wait it out.
+            # IsGameOver now reflects an atomic classification read (over is
+            # false until the GameOver event is appended), so the poll may run
+            # a little longer near the end; the 0.1s sleep keeps it from being
+            # a busy-tight-loop.
+            while True:
+                over = _retry_transient_timeout(client.is_game_over, game_id)
+                if over.over:
+                    break
+                time.sleep(0.1)
+                turns = _retry_transient_timeout(client.get_state, game_id).turn
+        # Drain the full event buffer before StopGame drops it.
+        events = (
+            [event_identity(e) for e in client.drain_events(game_id)]
+            if collect_events
+            else []
+        )
+        client.stop_game(game_id)
+        result = GameResult(
+            game_id=game_id,
+            seed=seed,
+            winner=over.winner,
+            turns=turns,
+            n_events=len(events),
+            duration_s=time.monotonic() - start,
+            outcome=over.outcome,
+            reason=over.reason,
+            events=events,
+            decision_trace=trace,
+        )
+        started_game_id = None  # stopped cleanly; suppress failure cleanup
+        return result
+    except BaseException:
+        # ANY failure after StartGame leaves a live game on the harness; stop
+        # it best-effort so the worker stays usable (pool recovery). Swallow
+        # and log secondary cleanup errors, then re-raise the original.
+        if started_game_id is not None:
+            try:
+                client.stop_game(started_game_id)
+            except Exception as cleanup_err:  # best effort
+                logger.warning(
+                    "best-effort stop_game(%s) failed after run error: %s",
+                    started_game_id,
+                    cleanup_err,
+                )
+        raise
 
 
 def run_games(

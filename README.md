@@ -23,7 +23,6 @@ protocol changes required before research-scale search. See
 proto/forge_env.proto        frozen gRPC contract (shared with Java harness)
 src/combo_discovery/
   env.py                     ForgeEnvClient — typed sync gRPC wrapper
-  goldfish.py                placeholder deterministic policy (combo validation)
   runner.py                  run_game / run_games / determinism_check
   pool.py                    WorkerPool — round-robin over harness servers
   config.py                  defaults

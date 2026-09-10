@@ -9,11 +9,16 @@ Contract notes:
     DecisionType enum plus per-type payload; submit_decision echoes
     (game_id, decision_id) plus a typed answer (see build_submit).
   - Events are independently pollable via poll_events/drain_events.
-  - Server errors: INVALID_ARGUMENT (unknown/stale game or decision id, wrong
-    or out-of-range answer) maps to StaleDecisionError; FAILED_PRECONDITION
-    (wrong lifecycle state) maps to GameNotActiveError; DEADLINE_EXCEEDED maps
-    to HarnessTimeoutError (slow call — the server may still be healthy);
-    UNAVAILABLE maps to HarnessConnectionError (transport death).
+  - Server errors: INVALID_ARGUMENT on a decision call that is about the
+    outstanding decision (stale/unknown game or decision id, invalid option,
+    already-resolved decision) maps to StaleDecisionError, which callers may
+    recover from by refetching. Any other INVALID_ARGUMENT — StartGame
+    validation, a bad request shape, a wrong answer arm, an out-of-range
+    number/option — maps to InvalidRequestError, a deterministic client/policy
+    bug that must fail loudly. FAILED_PRECONDITION (wrong lifecycle state) maps
+    to GameNotActiveError; DEADLINE_EXCEEDED maps to HarnessTimeoutError (slow
+    call — the server may still be healthy); UNAVAILABLE maps to
+    HarnessConnectionError (transport death).
 
 Answer shapes accepted by submit_decision (one per DecisionType):
   ("option_id", int)                              PRIORITY
@@ -36,6 +41,56 @@ from .generated import forge_env_pb2 as pb
 from .generated.forge_env_pb2_grpc import ForgeEnvStub
 
 PROTOCOL_VERSION = 3
+
+# INVALID_ARGUMENT classification for decision calls (get_decision /
+# submit_decision). The harness exposes no machine-readable subcode, so we match
+# the exact detail texts emitted by the Java harness (verified against
+# forge-harness/src/main/java/forge/harness/{ForgeEnvService,GameRunner}.java):
+#
+#   unknown game_id:   "unknown or removed game_id: <id>"
+#   stale submit:      "decision_id <id> does not match outstanding decision_id <id>"
+#   already resolved:  "decision_id <id> was already resolved (timeout/abort); answer discarded"
+#   no outstanding:    "no decision outstanding for game_id <id>"
+#   wrong arm:         "... is a <TYPE> decision; answer must use <arm>"   [policy bug]
+#   option out of range: "option_id <id> is not among the <n> options of decision_id <id>"  [policy bug]
+#
+# A parallel Java lane is adding a "stale decision:" prefix to stale rejections,
+# so "stale decision" is the primary marker. Coordinate any wording change with
+# the Java side; keep this list in sync.
+_STALE_DECISION_MARKERS = (
+    "stale decision",              # new coordinated prefix
+    "does not match outstanding",  # real decision_id mismatch text
+    "unknown or removed game",     # real unknown game_id text
+    "unknown or removed decision",
+    "already resolved",            # real timeout/abort-resolved text
+    "no decision outstanding",
+    "is already being validated",
+    "invalid option",
+)
+
+# Phrases that mark an INVALID_ARGUMENT as a malformed/buggy request rather than
+# a stale decision, even when an arm name such as "option_id" also appears.
+# "must use" is the wrong-arm message; "is not among" is the out-of-range
+# option/candidate message. Both are deterministic policy bugs.
+_POLICY_ERROR_PHRASES = ("must use", "is not among")
+
+
+def _is_stale_decision_detail(details: str) -> bool:
+    """True if a decision-call INVALID_ARGUMENT detail describes a stale/resolved
+    decision state (recoverable by refetching) rather than a buggy request.
+
+    Ordering matters: explicit stale markers are checked first, but a policy
+    error phrase forces False — "must use option_id" (wrong arm) and "option_id
+    N is not among ..." (out of range) must never be treated as stale.
+    """
+    text = details.lower()
+    if any(phrase in text for phrase in _POLICY_ERROR_PHRASES):
+        return False
+    if any(marker in text for marker in _STALE_DECISION_MARKERS):
+        return True
+    # "option_id" alone is only ambiguous once the policy-error phrases above
+    # have been ruled out.
+    return "option_id" in text
 
 # Arm name -> constructor for the corresponding answer payload in
 # pb.DecisionSubmit. Arms that carry message types (card_ids, scry) get their
@@ -141,6 +196,7 @@ def build_submit(game_id: int, decision_id: int, answer: Answer) -> pb.DecisionS
             if card_id is not None:
                 d.card_id = card_id
             else:
+                assert player is not None  # exactly-one-of guard above
                 d.player = player  # may be 0 — assignment still marks the arm
             entries.append(d)
         kwargs["damage"] = pb.DamageList(values=entries)
@@ -173,8 +229,20 @@ class HarnessTimeoutError(ForgeEnvError):
 
 
 class StaleDecisionError(ForgeEnvError):
-    """INVALID_ARGUMENT: unknown/stale game or decision id, wrong or
-    out-of-range answer, or an answer arm that mismatches the decision type."""
+    """INVALID_ARGUMENT on a decision call that is about the outstanding
+    decision: stale/unknown game or decision id, or an invalid option. This is
+    a state error the runner may recover from by refetching and retrying. Only
+    raised from get_decision/submit_decision (never from other RPCs) and only
+    when the server detail matches a known stale marker (see
+    _STALE_DECISION_MARKERS)."""
+
+
+class InvalidRequestError(ForgeEnvError):
+    """INVALID_ARGUMENT that is NOT about the outstanding decision: StartGame
+    validation, a bad request shape, a wrong answer arm, an out-of-range
+    number, a size/partition violation, etc. A deterministic client/policy bug
+    — it must fail loudly, never be retried by the runner or blamed on a
+    worker by the pool."""
 
 
 class GameNotActiveError(ForgeEnvError):
@@ -232,12 +300,12 @@ class ForgeEnvClient:
                 raise HarnessConnectionError(f"no harness at {self._target}") from e
         return self._stub
 
-    def _call(self, fn, request, timeout: float | None = None):
+    def _call(self, fn, request, timeout: float | None = None, decision_call: bool = False):
         try:
             return fn(request, timeout=timeout or self._timeout)
         except grpc.RpcError as e:
             code = e.code()
-            details = e.details()
+            details = e.details() or ""
             if code == grpc.StatusCode.UNAVAILABLE:
                 # Transport death: the channel is broken, reset it so the next
                 # call reconnects from scratch.
@@ -252,7 +320,15 @@ class ForgeEnvClient:
                 # healthy workers).
                 raise HarnessTimeoutError(f"{code.name} from {self._target}", code=code) from e
             if code == grpc.StatusCode.INVALID_ARGUMENT:
-                raise StaleDecisionError(f"INVALID_ARGUMENT: {details}", code=code) from e
+                # Stale decision state is only meaningful on decision calls and
+                # only when the server detail says so; anything else is a
+                # malformed or buggy request (policy bug / bad config) and must
+                # fail loudly as InvalidRequestError.
+                if decision_call and _is_stale_decision_detail(details):
+                    raise StaleDecisionError(
+                        f"INVALID_ARGUMENT: {details}", code=code
+                    ) from e
+                raise InvalidRequestError(f"INVALID_ARGUMENT: {details}", code=code) from e
             if code == grpc.StatusCode.FAILED_PRECONDITION:
                 raise GameNotActiveError(f"FAILED_PRECONDITION: {details}", code=code) from e
             raise ForgeEnvError(f"{code.name}: {details}", code=code) from e
@@ -325,6 +401,7 @@ class ForgeEnvClient:
             self._ensure_stub().GetDecision,
             pb.GameQuery(game_id=game_id),
             timeout=self._decision_timeout,
+            decision_call=True,
         )
 
     def submit_decision(self, game_id: int, decision_id: int, answer: Answer) -> pb.StepResult:
@@ -337,7 +414,7 @@ class ForgeEnvClient:
         docstring for the full set; build_submit does the oneof encoding.
         """
         req = build_submit(game_id, decision_id, answer)
-        return self._call(self._ensure_stub().SubmitDecision, req)
+        return self._call(self._ensure_stub().SubmitDecision, req, decision_call=True)
 
     def get_state(self, game_id: int) -> pb.FullState:
         return self._call(self._ensure_stub().GetState, pb.GameQuery(game_id=game_id))

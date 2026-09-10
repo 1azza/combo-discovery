@@ -9,6 +9,7 @@ from combo_discovery.env import (
     GameNotActiveError,
     HarnessConnectionError,
     HarnessTimeoutError,
+    InvalidRequestError,
     ProtocolMismatchError,
     StaleDecisionError,
     build_submit,
@@ -62,10 +63,114 @@ class TestEnvClient:
 
     def test_invalid_argument_maps_to_stale_decision(self):
         client, stub = make_client()
-        stub.GetDecision.side_effect = _rpc_error("INVALID_ARGUMENT", details="unknown game 5")
-        with pytest.raises(StaleDecisionError, match="unknown game 5") as excinfo:
+        stub.GetDecision.side_effect = _rpc_error(
+            "INVALID_ARGUMENT", details="unknown or removed game_id: 5"
+        )
+        with pytest.raises(StaleDecisionError, match="unknown or removed game_id") as excinfo:
             client.get_decision(5)
         assert excinfo.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+    # --- M1: exact Java-harness detail texts -------------------------------
+
+    def test_real_stale_decision_id_text_is_stale(self):
+        client, stub = make_client()
+        stub.SubmitDecision.side_effect = _rpc_error(
+            "INVALID_ARGUMENT",
+            details="decision_id 4 does not match outstanding decision_id 5",
+        )
+        with pytest.raises(StaleDecisionError, match="does not match outstanding"):
+            client.submit_decision(1, 4, ("option_id", 0))
+
+    def test_real_already_resolved_text_is_stale(self):
+        client, stub = make_client()
+        stub.SubmitDecision.side_effect = _rpc_error(
+            "INVALID_ARGUMENT",
+            details="decision_id 4 was already resolved (timeout/abort); answer discarded",
+        )
+        with pytest.raises(StaleDecisionError, match="already resolved"):
+            client.submit_decision(1, 4, ("option_id", 0))
+
+    def test_new_stale_decision_prefix_is_stale(self):
+        client, stub = make_client()
+        stub.SubmitDecision.side_effect = _rpc_error(
+            "INVALID_ARGUMENT",
+            details="stale decision: decision_id 4 was superseded by decision_id 5",
+        )
+        with pytest.raises(StaleDecisionError, match="stale decision"):
+            client.submit_decision(1, 4, ("option_id", 0))
+
+    def test_no_decision_outstanding_is_stale(self):
+        client, stub = make_client()
+        stub.SubmitDecision.side_effect = _rpc_error(
+            "INVALID_ARGUMENT", details="no decision outstanding for game_id 1"
+        )
+        with pytest.raises(StaleDecisionError, match="no decision outstanding"):
+            client.submit_decision(1, 1, ("option_id", 0))
+
+    def test_must_use_wrong_arm_is_invalid_request(self):
+        """M1: the real wrong-arm text contains 'must use option_id' but is a
+        deterministic policy bug, never a stale decision."""
+        client, stub = make_client()
+        stub.SubmitDecision.side_effect = _rpc_error(
+            "INVALID_ARGUMENT",
+            details="DECISION_TYPE_DECLARE_ATTACKERS is a DECLARE_ATTACKERS "
+            "decision; answer must use attackers",
+        )
+        with pytest.raises(InvalidRequestError, match="must use attackers"):
+            client.submit_decision(1, 4, ("option_id", 0))
+
+    def test_out_of_range_option_id_is_invalid_request(self):
+        """M1 false positive: the out-of-range priority message contains
+        'option_id' but must not be classified as stale."""
+        client, stub = make_client()
+        stub.SubmitDecision.side_effect = _rpc_error(
+            "INVALID_ARGUMENT",
+            details="option_id 9 is not among the 2 options of decision_id 1",
+        )
+        with pytest.raises(InvalidRequestError, match="is not among the 2 options"):
+            client.submit_decision(1, 1, ("option_id", 9))
+
+    def test_non_decision_invalid_argument_is_invalid_request(self):
+        """Q4: INVALID_ARGUMENT outside a decision call is a malformed/buggy
+        request, not a stale decision — it must not be retried or blamed on a
+        worker."""
+        client, stub = make_client()
+        stub.StartGame.side_effect = _rpc_error("INVALID_ARGUMENT", details="need 2 decks")
+        with pytest.raises(InvalidRequestError, match="need 2 decks") as excinfo:
+            client.start_game([("a", "/a.dck")], seed=1)
+        assert excinfo.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+    def test_get_state_invalid_argument_is_invalid_request(self):
+        client, stub = make_client()
+        stub.GetState.side_effect = _rpc_error("INVALID_ARGUMENT", details="unknown game 9")
+        with pytest.raises(InvalidRequestError, match="unknown game 9"):
+            client.get_state(9)
+
+    def test_wrong_answer_arm_is_invalid_request_not_stale(self):
+        """Q4: a deterministic policy bug (wrong arm) on submit must fail
+        loudly as InvalidRequestError, not cycle as a stale decision."""
+        client, stub = make_client()
+        stub.SubmitDecision.side_effect = _rpc_error(
+            "INVALID_ARGUMENT", details="wrong answer kind"
+        )
+        with pytest.raises(InvalidRequestError, match="wrong answer kind"):
+            client.submit_decision(1, 4, ("option_id", 0))
+
+    def test_stale_submit_detail_stays_stale_decision(self):
+        client, stub = make_client()
+        stub.SubmitDecision.side_effect = _rpc_error(
+            "INVALID_ARGUMENT", details="stale decision 4, outstanding 5"
+        )
+        with pytest.raises(StaleDecisionError, match="stale decision"):
+            client.submit_decision(1, 4, ("option_id", 0))
+
+    def test_invalid_option_detail_stays_stale_decision(self):
+        client, stub = make_client()
+        stub.SubmitDecision.side_effect = _rpc_error(
+            "INVALID_ARGUMENT", details="invalid option 42"
+        )
+        with pytest.raises(StaleDecisionError, match="invalid option"):
+            client.submit_decision(1, 1, ("option_id", 42))
 
     def test_failed_precondition_maps_to_game_not_active(self):
         client, stub = make_client()

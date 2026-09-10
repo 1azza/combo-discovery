@@ -8,6 +8,7 @@ from combo_discovery.env import (
     ForgeEnvError,
     HarnessConnectionError,
     HarnessTimeoutError,
+    InvalidRequestError,
     StaleDecisionError,
 )
 from combo_discovery.generated import forge_env_pb2 as pb
@@ -237,7 +238,8 @@ class TestDecisionTimeoutRetry:
         with pytest.raises(HarnessTimeoutError, match="DEADLINE_EXCEEDED"):
             run_game(client, DECKS, seed=1, player_types=REMOTE)
         assert client.get_decision_calls == MAX_DECISION_TIMEOUTS
-        assert client.stopped is None  # no stop_game on failure
+        # P3: failure cleanup best-effort stops the started game.
+        assert client.stopped == client.game_id
 
     def test_non_deadline_connection_error_propagates_immediately(self):
         client = DeadlineFlakyClient(
@@ -324,10 +326,28 @@ class TestDefaultPolicy:
         )
         assert default_policy(ctx) == ("blockers", [])
 
-    def test_assign_combat_damage_all_to_defender(self):
+    def test_assign_combat_damage_to_first_blocker(self):
+        # Blocked attacker: all damage must go to the first blocker. Sending it
+        # to the defending player would be rule-invalid for a non-trampler.
         ctx = self._ctx(
             pb.DECISION_TYPE_ASSIGN_COMBAT_DAMAGE,
-            candidates=_candidates(30),
+            candidates=_candidates(30, 31),
+            defender_players=[1],
+            damage_amount=4,
+            damage_source_card=20,
+        )
+        answer = default_policy(ctx)
+        arm, payload = answer
+        assert arm == "damage"
+        assert [item.as_tuple() if isinstance(item, DamageTarget) else item for item in payload] == [
+            (30, None, 4)
+        ]
+
+    def test_assign_combat_damage_to_player_when_unblocked(self):
+        # No blockers: route damage to the defending player.
+        ctx = self._ctx(
+            pb.DECISION_TYPE_ASSIGN_COMBAT_DAMAGE,
+            candidates=[],
             defender_players=[1],
             damage_amount=4,
             damage_source_card=20,
@@ -428,9 +448,10 @@ class TestRunnerDispatch:
 
 
 class TestValidationErrorPath:
-    def test_invalid_answer_surfaces_stale_and_decision_stays_outstanding(self):
-        """Server INVALID_ARGUMENT on a bad answer must surface as
-        StaleDecisionError without consuming the outstanding decision."""
+    def test_wrong_answer_arm_is_invalid_request_and_decision_stays_outstanding(self):
+        """Q4: a deterministic policy bug (wrong answer arm) is a malformed
+        request, not a stale decision — it surfaces as InvalidRequestError and
+        the outstanding decision is not consumed."""
         stub = MagicMock()
         stub.StartGame.return_value = pb.StartResponse(game_id=1)
         stub.IsGameOver.side_effect = [
@@ -457,7 +478,7 @@ class TestValidationErrorPath:
 
         client = ForgeEnvClient(port=59999)
         client._stub = stub
-        with pytest.raises(StaleDecisionError, match="wrong answer kind"):
+        with pytest.raises(InvalidRequestError, match="wrong answer kind"):
             client.submit_decision(1, 4, ("option_id", 0))
         # The outstanding decision is untouched: same decision_id still valid.
         assert stub.GetDecision.return_value.decision_id == 4
@@ -467,6 +488,20 @@ class TestValidationErrorPath:
         req = stub.SubmitDecision.call_args[0][0]
         assert req.WhichOneof("answer") == "attackers"
         assert req.decision_id == 4  # echoed, not a re-prompt
+
+    def test_stale_answer_still_surfaces_stale_decision(self):
+        """A genuinely stale submit (watchdog detail) stays retryable as
+        StaleDecisionError."""
+        stub = MagicMock()
+        stub.StartGame.return_value = pb.StartResponse(game_id=1)
+        stub.SubmitDecision.side_effect = [
+            _rpc_error("INVALID_ARGUMENT", "stale decision 4, outstanding 5"),
+            pb.StepResult(events=[pb.GameEvent(seq=1, type="TurnStarted")]),
+        ]
+        client = ForgeEnvClient(port=59999)
+        client._stub = stub
+        with pytest.raises(StaleDecisionError, match="stale decision"):
+            client.submit_decision(1, 4, ("option_id", 0))
 
 
 class StaleSubmitClient(FakeClient):
@@ -509,11 +544,14 @@ class TestStaleDecisionRetry:
         assert client.stopped == client.game_id
 
     def test_stale_bounded_then_raises(self):
-        client = StaleSubmitClient(self.STREAM, fail_submits=MAX_STALE_RETRIES)
+        # MAX_STALE_RETRIES is the number of retries AFTER the initial
+        # rejection, i.e. up to MAX_STALE_RETRIES + 1 rejected attempts.
+        client = StaleSubmitClient(self.STREAM, fail_submits=MAX_STALE_RETRIES + 1)
         with pytest.raises(StaleDecisionError, match="watchdog"):
             run_game(client, DECKS, seed=1, player_types=REMOTE)
-        assert len(client.submits) == MAX_STALE_RETRIES
-        assert client.stopped is None  # no stop_game on failure
+        assert len(client.submits) == MAX_STALE_RETRIES + 1
+        # Failure cleanup (P3): run_game best-effort stops the started game.
+        assert client.stopped == client.game_id
 
     def test_success_resets_stale_counter(self):
         # One stale rejection per decision id (retry then accepted), never
@@ -555,3 +593,54 @@ class TestStaleDecisionRetry:
         client = StaleGetClient(self.STREAM, fail_gets=1)
         result = run_game(client, DECKS, seed=1, player_types=REMOTE)
         assert [e[0] for e in result.events] == [1, 2]
+
+
+class TestRunGameCleanupAndPollRetry:
+    """P3: transient poll timeouts are retried; any failure stops the game."""
+
+    STREAM = [ev(1, "A")]
+
+    def test_transient_poll_timeout_retried(self):
+        class FlakyPollClient(FakeClient):
+            def __init__(self, stream):
+                super().__init__([stream])
+                self.poll_failures = 2
+
+            def is_game_over(self, game_id):
+                if self.poll_failures > 0:
+                    self.poll_failures -= 1
+                    raise HarnessTimeoutError(
+                        "DEADLINE_EXCEEDED", code=grpc.StatusCode.DEADLINE_EXCEEDED
+                    )
+                return super().is_game_over(game_id)
+
+        client = FlakyPollClient(self.STREAM)
+        result = run_game(client, DECKS, seed=1, player_types=REMOTE)
+        assert result.n_events == 1
+
+    def test_failure_cleanup_stops_started_game(self):
+        class AlwaysTimeoutClient(FakeClient):
+            def is_game_over(self, game_id):
+                raise HarnessTimeoutError(
+                    "DEADLINE_EXCEEDED", code=grpc.StatusCode.DEADLINE_EXCEEDED
+                )
+
+        client = AlwaysTimeoutClient([self.STREAM])
+        with pytest.raises(HarnessTimeoutError):
+            run_game(client, DECKS, seed=1, player_types=REMOTE)
+        assert client.stopped == client.game_id  # best-effort stop on failure
+
+    def test_cleanup_swallows_stop_errors(self):
+        class BadStopClient(FakeClient):
+            def is_game_over(self, game_id):
+                raise HarnessTimeoutError(
+                    "DEADLINE_EXCEEDED", code=grpc.StatusCode.DEADLINE_EXCEEDED
+                )
+
+            def stop_game(self, game_id):
+                raise HarnessConnectionError("UNAVAILABLE during cleanup")
+
+        client = BadStopClient([self.STREAM])
+        # Cleanup failure must not mask the original error.
+        with pytest.raises(HarnessTimeoutError):
+            run_game(client, DECKS, seed=1, player_types=REMOTE)
