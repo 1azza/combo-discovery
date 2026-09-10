@@ -1,10 +1,10 @@
-"""End-to-end smoke test against a live harness (protocol v2).
+"""End-to-end smoke test against a live harness (protocol v3).
 
 Checks: ping + protocol version, goldfish-vs-goldfish game via the raw client
 (drain events, verify seq strictly increasing from 1, check GameOver.outcome,
-stop_game), a remote-driven game, and a determinism section (two same-seed
-goldfish games must produce identical event streams, excluding game_id; a
-different seed must differ).
+stop_game), a remote-driven game over the v3 typed-decision interface, and a
+determinism section (two same-seed goldfish games must produce identical event
+streams, excluding game_id; a different seed must differ).
 
 Requires a running harness on localhost:50051 (see the Java harness lane).
 """
@@ -99,19 +99,44 @@ def main() -> int:
         print("OK: stop_game")
 
         # --- Section 2: remote-driven game (client answers decisions) --------
-        from combo_discovery.runner import run_game
+        from combo_discovery.runner import DecisionContext, default_policy, run_game
+
+        seen_types: set[int] = set()
+
+        def tracking_policy(ctx: DecisionContext):
+            seen_types.add(ctx.decision_type)
+            return default_policy(ctx)
 
         result = run_game(
             client,
             DECKS,
             seed=7,
+            policy=tracking_policy,
             player_types=[pb.PLAYER_TYPE_REMOTE, pb.PLAYER_TYPE_GOLDFISH],
             max_turns=20,
             timeout_seconds=120,
         )
         print(
             f"OK: remote-driven game_id={result.game_id} turns={result.turns} "
-            f"n_events={result.n_events} outcome={outcome_name(result.outcome)}"
+            f"n_events={result.n_events} outcome={outcome_name(result.outcome)} "
+            f"decisions={len(result.decision_trace)} "
+            f"types={sorted(pb.DecisionType.Name(t) for t in seen_types)}"
+        )
+        # v3: REQUIRE at least one non-PRIORITY decision type. The goldfish_A/B
+        # decks always trigger a London mulligan at minimum, so this is
+        # guaranteed for any game that got past mulligan; DECLARE_ATTACKERS is
+        # also expected but deck-dependent, so it is not asserted here.
+        known = set(pb.DecisionType.values())
+        assert seen_types, "no decisions observed in remote-driven game"
+        assert seen_types <= known, f"unknown decision types: {seen_types - known}"
+        non_priority = seen_types - {pb.DECISION_TYPE_PRIORITY}
+        assert non_priority, (
+            "expected at least one non-PRIORITY decision (mulligan at minimum), "
+            f"only saw {[pb.DecisionType.Name(t) for t in seen_types]}"
+        )
+        print(
+            "OK: non-PRIORITY decision types observed: "
+            f"{sorted(pb.DecisionType.Name(t) for t in non_priority)}"
         )
 
         # --- Section 3: determinism ------------------------------------------

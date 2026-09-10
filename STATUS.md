@@ -1,6 +1,6 @@
 # Project Status
 
-Last verified during the v2 protocol/lifecycle gate work.
+Last verified during the v3 typed-decision round (gate item 4, partial).
 
 ## Verified
 
@@ -10,56 +10,61 @@ Last verified during the v2 protocol/lifecycle gate work.
 - [x] Shaded harness jar builds successfully
 - [x] Forge card database boots headlessly
 - [x] Python gRPC client connects to the harness
-- [x] `Ping` works and reports `protocol_version=2`; client rejects mismatches
+- [x] `Ping` works and reports `protocol_version=3`; client rejects mismatches
 - [x] Games can be started from `.dck` files
 - [x] Forge AI, goldfish, and remote player types are represented
-- [x] Protocol v2: every per-game RPC routes by `game_id`; unknown/stale ids →
-      `INVALID_ARGUMENT`, wrong-state calls → `FAILED_PRECONDITION`
-- [x] Decisions carry a monotonic `decision_id`; submissions must echo it and an
-      option that belongs to the outstanding decision; violations rejected
-- [x] `PollEvents(cursor)` returns the per-game event buffer in seq order;
-      seq is per-game monotonic starting at 1 and includes game/turn/phase metadata
-- [x] Events are decoupled from `SubmitDecision`: goldfish-only and Forge-AI-only
-      games stream their full event history without any remote decisions
-- [x] Lifecycle state machine `CREATED → RUNNING → OVER → CLOSED`
-- [x] `max_turns` is enforced: bounded games end as `OUTCOME_TURN_LIMIT`,
-      winner `-1`, reason `turn_limit`
-- [x] Outcome classification: `OUTCOME_WIN` (natural end observed live),
-      `OUTCOME_TURN_LIMIT`, `OUTCOME_TIMEOUT`, `OUTCOME_ERROR`, `OUTCOME_STOPPED`
-- [x] `GetDecision` waiters are woken on every terminal transition and receive
-      `FAILED_PRECONDITION` instead of hanging
-- [x] Remote-driven games run to natural completion (`OUTCOME_WIN` observed)
-- [x] Determinism: same `(decks, seed, config)` produces byte-identical event
-      streams including the final `GameOver` event (game_id excluded); a
-      different seed diverges. Verified live on the real harness.
-- [x] Nondeterministic GameOver event found and fixed: engine match-tally
-      narration (HashMap-iteration winner credit on forced ends) no longer
-      enters the event buffer; GameOver events are harness-generated from the
-      deterministic terminal record
-- [x] Deck fixture fixed: `goldfish_A.dck` manabase Plains → Forest
-      (Grizzly Bears `{1}{G}` was uncastable, so games could never end naturally)
-- [x] Smoke script bounded by `max_turns`, uses absolute deck paths, and cleans
-      up the active game on failure
-- [x] Client: dedicated long `decision_timeout` for the blocking GetDecision
-      wait, bounded retry on transient deadlines, typed error mapping
-- [x] Python unit tests pass: `43 passed, 1 skipped` (live test opt-in)
-- [x] Live protocol test passes against the real harness
+- [x] Protocol v2 semantics: `game_id` registry routing, `decision_id` +
+      option validation, `PollEvents` with per-game monotonic seq, lifecycle
+      state machine, outcome classification, wake-on-terminal
+- [x] Protocol v3 typed decisions (10 decision types with per-type payloads
+      and oneof answers, per-type server validation; invalid arm/ids/sizes →
+      `INVALID_ARGUMENT` with the decision left outstanding and retryable):
+      `PRIORITY`, `MULLIGAN_KEEP`, `MULLIGAN_TUCK`, `DECLARE_ATTACKERS`,
+      `DECLARE_BLOCKERS`, `ASSIGN_COMBAT_DAMAGE`, `ORDER_BLOCKERS`,
+      `CHOOSE_CARDS`, `ANNOUNCE`, `SCRY_ARRANGE`
+- [x] Live combat: a remote player declared Grizzly Bears as attackers
+      (observed `DECLARE_ATTACKERS` + `MULLIGAN_KEEP` in the smoke run), the
+      Forge AI opponent blocked/fought, and the game ended in a natural
+      `OUTCOME_WIN` for the remote player
+- [x] Deterministic `max_turns`: enforced on the game thread at the first
+      turn boundary beyond N (max_turns=3 → turn 4 in every run; max_turns=20
+      → turn 21 in every run). The wall-clock monitor remains only for
+      `timeout_seconds`/`OUTCOME_TIMEOUT`.
+- [x] Determinism gate holds at natural game end too (`max_turns=0`,
+      unbounded, same seed → byte-identical streams incl. the GameOver tail)
+- [x] Engine gameplay determinism confirmed by side-by-side log comparison:
+      two same-seed runs were byte-identical through event 510 (turn 34)
+      before the (now-fixed) turn-limit monitor race diverged them — no
+      engine randomness issue exists on the exercised paths
+- [x] `GameResult.decision_trace` records `(decision_id, decision_type,
+      answer)` per remote decision; `default_policy` answers every v3 type
+- [x] Client: protocol negotiation, dedicated blocking-wait timeout with
+      bounded retry, typed error mapping, `GameNotActiveError` treated as
+      normal game-over exit from the remote loop
+- [x] Python unit tests pass: `69 passed, 1 skipped` (live test opt-in)
+- [x] Live protocol test passes against the real harness (protocol v3)
 - [x] Java Maven compile/package succeeds
 - [x] End-to-end smoke passes: `SMOKE PASS` (turn-limit game, remote-driven
-      win, determinism check)
+      natural win with typed decisions, determinism check)
 
 ## Known Gaps
 
-- [ ] Typed decision callbacks beyond priority (targets, modes, X values,
-      mulligans, combat, selections) — gate item 4, next round
-- [ ] `Snapshot`/`Restore` return `UNIMPLEMENTED`; no state hashing — gate item 5
+- [ ] Spell targeting and mode selection are still engine-internal: a remote
+      player's spells resolve with AI-chosen targets/modes
+      (`chooseTargetsFor`/`chooseModeForAbility` not yet surfaced) — next
+      slice of gate item 4, together with optional costs
+- [ ] Long-tail callbacks deliberately keep AI defaults (mana payment,
+      generic confirms, trigger ordering, votes/dice/sectors) — documented in
+      the proto header, not a defect
+- [ ] `Snapshot`/`Restore` return `UNIMPLEMENTED`; no state hashing — gate
+      item 5
 - [ ] `FullState` is a partial inspection state, not a complete search state
-- [ ] One active game per harness process at a time (v2 registry routes by
-      `game_id` and rejects stale ids, but concurrent games are not hosted yet)
-- [ ] Goldfish behavior is still a minimal pass/do-nothing-class policy
+- [ ] One active game per harness process at a time (registry routes by
+      `game_id`, concurrent games not hosted yet)
+- [ ] Goldfish behavior is still AI-defaults + empty priority
 - [ ] Cancellation tests for timeout, client disconnect, and server shutdown
-- [ ] Event taxonomy is best-effort mapping of raw Forge log types, not yet a
-      normalized research vocabulary; raw log text is not preserved separately
+- [ ] Event taxonomy is best-effort mapping of raw Forge log types; raw log
+      text is not preserved separately
 - [ ] Trajectory persistence is not implemented
 - [ ] Ontology/card-script extraction has not started
 - [ ] Candidate generation and combo validation have not started
@@ -69,8 +74,8 @@ Last verified during the v2 protocol/lifecycle gate work.
 
 ## Next Work
 
-Remaining gate items before Layer 2 (see `ARCHITECTURE.md`):
-
-1. Typed decision callbacks beyond priority (gate item 4).
-2. Snapshot/restore and state hashing (gate item 5), plus controller
-   conformance tests for every decision callback Forge uses.
+1. Finish gate item 4: surface spell targeting (`chooseTargetsFor`),
+   mode selection (`chooseModeForAbility`), and optional costs
+   (`chooseOptionalCosts`) — the spell-casting-path decisions.
+2. Gate item 5: snapshot/restore and state hashing, plus controller
+   conformance tests.

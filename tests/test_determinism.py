@@ -1,12 +1,23 @@
 import grpc
 import pytest
+from unittest.mock import MagicMock
 
-from combo_discovery.env import HarnessConnectionError
+from combo_discovery.env import (
+    DamageTarget,
+    ForgeEnvClient,
+    ForgeEnvError,
+    HarnessConnectionError,
+    HarnessTimeoutError,
+    StaleDecisionError,
+)
 from combo_discovery.generated import forge_env_pb2 as pb
 from combo_discovery.runner import (
     MAX_DECISION_TIMEOUTS,
+    MAX_STALE_RETRIES,
+    DecisionContext,
     DeterminismError,
     compare_event_streams,
+    default_policy,
     determinism_check,
     run_game,
 )
@@ -16,31 +27,55 @@ REMOTE = [pb.PLAYER_TYPE_REMOTE, pb.PLAYER_TYPE_REMOTE]
 GOLDFISH = [pb.PLAYER_TYPE_GOLDFISH, pb.PLAYER_TYPE_GOLDFISH]
 
 
+def _rpc_error(code_name: str, details: str = ""):
+    err = grpc.RpcError()
+    status = grpc.StatusCode[code_name]
+    err.code = lambda: status
+    err.details = lambda: details
+    return err
+
+
 def ev(seq, type_, turn=1, phase="Main1", player=0, card="", detail=""):
     return pb.GameEvent(
         seq=seq, type=type_, turn=turn, phase=phase, player=player, card_name=card, detail=detail
     )
 
 
+def _decision(dtype: int, decision_id: int = 1, **payload) -> pb.DecisionRequest:
+    """A synthetic v3 DecisionRequest of the given type with payload fields."""
+    return pb.DecisionRequest(
+        game_id=1, decision_id=decision_id, player=0, turn=1, phase="Main1",
+        decision_type=dtype, **payload
+    )
+
+
+def _candidates(*ids):
+    return [pb.CardCandidate(card_id=i, name=f"Card{i}") for i in ids]
+
+
 class FakeClient:
-    """Mimics ForgeEnvClient v2 just enough for run_game/determinism_check.
+    """Mimics ForgeEnvClient v3 just enough for run_game/determinism_check.
 
     In remote mode each submit appends one event from the scripted stream;
     the game is over once the whole stream has been produced. In goldfish
-    mode the game flips to over after two IsGameOver polls.
+    mode the game flips to over after two IsGameOver polls. decision_script
+    (if given) cycles the DecisionType of successive requests.
     """
 
-    def __init__(self, streams, goldfish=False, over_outcome=pb.OUTCOME_WIN):
+    def __init__(self, streams, goldfish=False, over_outcome=pb.OUTCOME_WIN,
+                 decision_script=None):
         self.streams = [list(s) for s in streams]
         self.goldfish = goldfish
         self.over_outcome = over_outcome
+        self.decision_script = decision_script
         self.calls = 0
         self.game_id = 0
         self.collected: list[pb.GameEvent] = []
-        self.submits: list[tuple[int, int, int]] = []
+        self.submits: list[tuple[int, int, object]] = []
         self.get_decision_calls = 0
         self.stopped: int | None = None
         self._over_polls = 0
+        self.outstanding: pb.DecisionRequest | None = None
 
     def start_game(self, decks, seed, player_types=None, **kw):
         self.calls += 1
@@ -60,17 +95,25 @@ class FakeClient:
 
     def get_decision(self, game_id):
         self.get_decision_calls += 1
-        return pb.DecisionRequest(
-            game_id=game_id,
-            decision_id=len(self.collected) + 1,
-            player=0,
-            turn=len(self.collected) + 1,
-            phase="Main1",
-            options=[pb.Option(id=0, kind="pass")],
+        n = len(self.collected) + 1
+        dtype = (
+            self.decision_script[(n - 1) % len(self.decision_script)]
+            if self.decision_script else pb.DECISION_TYPE_PRIORITY
         )
+        req = pb.DecisionRequest(
+            game_id=game_id,
+            decision_id=n,
+            player=0,
+            turn=n,
+            phase="Main1",
+            decision_type=dtype,
+        )
+        if dtype == pb.DECISION_TYPE_PRIORITY:
+            req.options.add(id=0, kind="pass")
+        return req
 
-    def submit_decision(self, game_id, decision_id, option_id):
-        self.submits.append((game_id, decision_id, option_id))
+    def submit_decision(self, game_id, decision_id, answer):
+        self.submits.append((game_id, decision_id, answer))
         e = self.streams[self.calls - 1][len(self.collected)]
         self.collected.append(e)
         return pb.StepResult(events=[e])
@@ -101,7 +144,22 @@ class TestRunnerV2:
         stream = [ev(1, "A"), ev(2, "B")]
         client = FakeClient([stream])
         run_game(client, DECKS, seed=1, player_types=REMOTE)
-        assert client.submits == [(client.game_id, 1, 0), (client.game_id, 2, 0)]
+        assert client.submits == [
+            (client.game_id, 1, ("option_id", 0)),
+            (client.game_id, 2, ("option_id", 0)),
+        ]
+
+    def test_decision_trace_recorded(self):
+        stream = [ev(1, "A"), ev(2, "B")]
+        client = FakeClient(
+            [stream],
+            decision_script=[pb.DECISION_TYPE_PRIORITY, pb.DECISION_TYPE_MULLIGAN_KEEP],
+        )
+        result = run_game(client, DECKS, seed=1, player_types=REMOTE)
+        assert result.decision_trace == [
+            (1, pb.DECISION_TYPE_PRIORITY, ("option_id", 0)),
+            (2, pb.DECISION_TYPE_MULLIGAN_KEEP, ("boolean_answer", True)),
+        ]
 
     def test_goldfish_game_never_calls_get_decision(self):
         client = FakeClient([[]], goldfish=True)
@@ -109,6 +167,7 @@ class TestRunnerV2:
         assert client.get_decision_calls == 0
         assert client.submits == []
         assert result.outcome == pb.OUTCOME_WIN
+        assert result.decision_trace == []
 
 
 class TestCompareEventStreams:
@@ -145,15 +204,22 @@ class DeadlineFlakyClient(FakeClient):
     """get_decision raises a deadline error for the first `fail_calls` calls,
     mimicking a harness that does not wake a blocked waiter in time."""
 
-    def __init__(self, stream, fail_calls, code=grpc.StatusCode.DEADLINE_EXCEEDED):
+    def __init__(
+        self,
+        stream,
+        fail_calls,
+        code=grpc.StatusCode.DEADLINE_EXCEEDED,
+        error_cls: "type[ForgeEnvError]" = HarnessTimeoutError,
+    ):
         super().__init__([stream])
         self.fail_calls = fail_calls
         self.code = code
+        self.error_cls = error_cls
 
     def get_decision(self, game_id):
         if self.get_decision_calls < self.fail_calls:
             self.get_decision_calls += 1
-            raise HarnessConnectionError(f"{self.code.name} from harness", code=self.code)
+            raise self.error_cls(f"{self.code.name} from harness", code=self.code)
         return super().get_decision(game_id)
 
 
@@ -168,14 +234,15 @@ class TestDecisionTimeoutRetry:
 
     def test_raises_after_bounded_consecutive_timeouts(self):
         client = DeadlineFlakyClient(self.STREAM, fail_calls=MAX_DECISION_TIMEOUTS)
-        with pytest.raises(HarnessConnectionError, match="DEADLINE_EXCEEDED"):
+        with pytest.raises(HarnessTimeoutError, match="DEADLINE_EXCEEDED"):
             run_game(client, DECKS, seed=1, player_types=REMOTE)
         assert client.get_decision_calls == MAX_DECISION_TIMEOUTS
         assert client.stopped is None  # no stop_game on failure
 
     def test_non_deadline_connection_error_propagates_immediately(self):
         client = DeadlineFlakyClient(
-            self.STREAM, fail_calls=1, code=grpc.StatusCode.UNAVAILABLE
+            self.STREAM, fail_calls=1, code=grpc.StatusCode.UNAVAILABLE,
+            error_cls=HarnessConnectionError,
         )
         with pytest.raises(HarnessConnectionError, match="UNAVAILABLE"):
             run_game(client, DECKS, seed=1, player_types=REMOTE)
@@ -211,3 +278,280 @@ class TestDeterminismCheck:
         client = FakeClient([stream, stream, list(stream)])
         with pytest.raises(DeterminismError, match="identical"):
             determinism_check(client, DECKS, seed=1, divergent_seed=2)
+
+
+class TestDefaultPolicy:
+    """default_policy returns a legal answer for a synthetic request per type."""
+
+    def _ctx(self, dtype, **payload):
+        return DecisionContext(request=_decision(dtype, **payload))
+
+    def test_priority_highest_option_id(self):
+        req = _decision(
+            pb.DECISION_TYPE_PRIORITY,
+            options=[pb.Option(id=1, kind="pass"), pb.Option(id=3, kind="play_card")],
+        )
+        assert default_policy(DecisionContext(req)) == ("option_id", 3)
+        # ids, not positions: highest id wins even if listed first
+        req2 = _decision(pb.DECISION_TYPE_PRIORITY, options=[pb.Option(id=9, kind="pass")])
+        assert default_policy(DecisionContext(req2)) == ("option_id", 9)
+
+    def test_mulligan_keep_true(self):
+        answer = default_policy(self._ctx(pb.DECISION_TYPE_MULLIGAN_KEEP))
+        assert answer == ("boolean_answer", True)
+
+    def test_mulligan_tuck_last_cards_in_order(self):
+        ctx = self._ctx(
+            pb.DECISION_TYPE_MULLIGAN_TUCK,
+            candidates=_candidates(10, 11, 12, 13),
+            cards_to_return=2,
+        )
+        assert default_policy(ctx) == ("card_ids", [12, 13])
+
+    def test_declare_attackers_all_vs_first_defender(self):
+        ctx = self._ctx(
+            pb.DECISION_TYPE_DECLARE_ATTACKERS,
+            candidates=_candidates(20, 21),
+            defender_players=[1, 0],
+        )
+        assert default_policy(ctx) == ("attackers", [(20, 1), (21, 1)])
+
+    def test_declare_blockers_nothing(self):
+        ctx = self._ctx(
+            pb.DECISION_TYPE_DECLARE_BLOCKERS,
+            candidates=_candidates(30, 31),
+            attacker_cards=[20],
+        )
+        assert default_policy(ctx) == ("blockers", [])
+
+    def test_assign_combat_damage_all_to_defender(self):
+        ctx = self._ctx(
+            pb.DECISION_TYPE_ASSIGN_COMBAT_DAMAGE,
+            candidates=_candidates(30),
+            defender_players=[1],
+            damage_amount=4,
+            damage_source_card=20,
+        )
+        answer = default_policy(ctx)
+        arm, payload = answer
+        assert arm == "damage"
+        assert [item.as_tuple() if isinstance(item, DamageTarget) else item for item in payload] == [
+            (None, 1, 4)
+        ]
+
+    def test_order_blockers_unchanged(self):
+        ctx = self._ctx(pb.DECISION_TYPE_ORDER_BLOCKERS, candidates=_candidates(40, 41, 42))
+        assert default_policy(ctx) == ("card_ids", [40, 41, 42])
+
+    def test_choose_cards(self):
+        mandatory = self._ctx(
+            pb.DECISION_TYPE_CHOOSE_CARDS,
+            candidates=_candidates(50, 51, 52),
+            min_choices=2,
+            max_choices=2,
+        )
+        assert default_policy(mandatory) == ("card_ids", [50, 51])
+        optional = self._ctx(
+            pb.DECISION_TYPE_CHOOSE_CARDS,
+            candidates=_candidates(50, 51),
+            min_choices=0,
+            max_choices=1,
+            optional=True,
+        )
+        assert default_policy(optional) == ("card_ids", [])
+
+    def test_announce_max_number(self):
+        ctx = self._ctx(pb.DECISION_TYPE_ANNOUNCE, min_number=0, max_number=5)
+        assert default_policy(ctx) == ("number_answer", 5)
+
+    def test_scry_keep_all_on_top(self):
+        ctx = self._ctx(pb.DECISION_TYPE_SCRY_ARRANGE, candidates=_candidates(60, 61))
+        assert default_policy(ctx) == ("scry", ([60, 61], []))
+
+    def test_unspecified_type_raises(self):
+        with pytest.raises(ValueError, match="no default policy"):
+            default_policy(self._ctx(pb.DECISION_TYPE_UNSPECIFIED))
+
+
+class TestRunnerDispatch:
+    """The remote loop hands each DecisionRequest type to the policy."""
+
+    def test_scripted_policy_receives_each_type(self):
+        stream = [ev(1, "A"), ev(2, "B")]
+        client = FakeClient(
+            [stream],
+            decision_script=[
+                pb.DECISION_TYPE_MULLIGAN_KEEP,
+                pb.DECISION_TYPE_DECLARE_ATTACKERS,
+            ],
+        )
+        seen: list[int] = []
+
+        def policy(ctx: DecisionContext):
+            seen.append(ctx.decision_type)
+            if ctx.decision_type == pb.DECISION_TYPE_MULLIGAN_KEEP:
+                return ("boolean_answer", False)
+            return ("attackers", [])
+
+        result = run_game(client, DECKS, seed=1, policy=policy, player_types=REMOTE)
+        assert seen == [pb.DECISION_TYPE_MULLIGAN_KEEP, pb.DECISION_TYPE_DECLARE_ATTACKERS]
+        assert client.submits == [
+            (client.game_id, 1, ("boolean_answer", False)),
+            (client.game_id, 2, ("attackers", [])),
+        ]
+        assert [t for _, t, _ in result.decision_trace] == [
+            pb.DECISION_TYPE_MULLIGAN_KEEP,
+            pb.DECISION_TYPE_DECLARE_ATTACKERS,
+        ]
+
+    def test_default_policy_drives_mixed_script(self):
+        stream = [ev(1, "A"), ev(2, "B"), ev(3, "C")]
+        client = FakeClient(
+            [stream],
+            decision_script=[
+                pb.DECISION_TYPE_PRIORITY,
+                pb.DECISION_TYPE_SCRY_ARRANGE,
+                pb.DECISION_TYPE_ANNOUNCE,
+            ],
+        )
+        result = run_game(
+            client,
+            DECKS,
+            seed=1,
+            player_types=REMOTE,
+        )
+        assert [a for _, _, a in result.decision_trace] == [
+            ("option_id", 0),
+            ("scry", ([], [])),  # no candidates on the synthetic request
+            ("number_answer", 0),  # max_number defaults to 0
+        ]
+
+
+class TestValidationErrorPath:
+    def test_invalid_answer_surfaces_stale_and_decision_stays_outstanding(self):
+        """Server INVALID_ARGUMENT on a bad answer must surface as
+        StaleDecisionError without consuming the outstanding decision."""
+        stub = MagicMock()
+        stub.StartGame.return_value = pb.StartResponse(game_id=1)
+        stub.IsGameOver.side_effect = [
+            pb.GameOver(over=False),
+            pb.GameOver(over=False),
+            pb.GameOver(over=True),
+        ]
+        outstanding = pb.DecisionRequest(
+            game_id=1,
+            decision_id=4,
+            player=0,
+            turn=2,
+            phase="Combat",
+            decision_type=pb.DECISION_TYPE_DECLARE_ATTACKERS,
+            candidates=[pb.CardCandidate(card_id=1, name="Grizzly Bears")],
+            defender_players=[1],
+        )
+        stub.GetDecision.return_value = outstanding
+        # First submit uses a wrong arm (option_id for an attackers decision):
+        stub.SubmitDecision.side_effect = [
+            _rpc_error("INVALID_ARGUMENT", "wrong answer kind"),
+            pb.StepResult(events=[pb.GameEvent(seq=1, type="AttacksDeclared")]),
+        ]
+
+        client = ForgeEnvClient(port=59999)
+        client._stub = stub
+        with pytest.raises(StaleDecisionError, match="wrong answer kind"):
+            client.submit_decision(1, 4, ("option_id", 0))
+        # The outstanding decision is untouched: same decision_id still valid.
+        assert stub.GetDecision.return_value.decision_id == 4
+        # Corrected answer submits fine.
+        client.submit_decision(1, 4, ("attackers", [(1, 1)]))
+        assert stub.SubmitDecision.call_count == 2
+        req = stub.SubmitDecision.call_args[0][0]
+        assert req.WhichOneof("answer") == "attackers"
+        assert req.decision_id == 4  # echoed, not a re-prompt
+
+
+class StaleSubmitClient(FakeClient):
+    """submit_decision raises StaleDecisionError (watchdog released the
+    decision mid-submit) for the first `fail_submits` calls without consuming
+    the outstanding decision; later submits succeed."""
+
+    def __init__(self, stream, fail_submits):
+        super().__init__([stream])
+        self.fail_submits = fail_submits
+        self.refetches = 0
+
+    def submit_decision(self, game_id, decision_id, answer):
+        if len(self.submits) < self.fail_submits:
+            self.submits.append((game_id, decision_id, answer))
+            raise StaleDecisionError(
+                "INVALID_ARGUMENT: decision released by watchdog",
+                code=grpc.StatusCode.INVALID_ARGUMENT,
+            )
+        return super().submit_decision(game_id, decision_id, answer)
+
+    def get_decision(self, game_id):
+        if self.submits and len(self.submits) <= self.fail_submits:
+            self.refetches += 1  # each retry refetches the current decision
+        return super().get_decision(game_id)
+
+
+class TestStaleDecisionRetry:
+    STREAM = [ev(1, "A"), ev(2, "B")]
+
+    def test_recovers_from_stale_submit(self):
+        client = StaleSubmitClient(self.STREAM, fail_submits=1)
+        result = run_game(client, DECKS, seed=1, player_types=REMOTE)
+        # Both events drained; the retried submit went through.
+        assert [e[0] for e in result.events] == [1, 2]
+        assert result.outcome == pb.OUTCOME_WIN
+        assert client.refetches >= 1  # decision was refetched after the stale
+        # Trace records only the accepted submissions.
+        assert len(result.decision_trace) == 2
+        assert client.stopped == client.game_id
+
+    def test_stale_bounded_then_raises(self):
+        client = StaleSubmitClient(self.STREAM, fail_submits=MAX_STALE_RETRIES)
+        with pytest.raises(StaleDecisionError, match="watchdog"):
+            run_game(client, DECKS, seed=1, player_types=REMOTE)
+        assert len(client.submits) == MAX_STALE_RETRIES
+        assert client.stopped is None  # no stop_game on failure
+
+    def test_success_resets_stale_counter(self):
+        # One stale rejection per decision id (retry then accepted), never
+        # three in a row → must complete.
+        class OneStaleEachClient(FakeClient):
+            def __init__(self, stream):
+                super().__init__([stream])
+                self.rejected: set[int] = set()
+
+            def submit_decision(self, game_id, decision_id, answer):
+                if decision_id not in self.rejected:
+                    self.rejected.add(decision_id)
+                    self.submits.append((game_id, decision_id, answer))
+                    raise StaleDecisionError(
+                        "INVALID_ARGUMENT: stale",
+                        code=grpc.StatusCode.INVALID_ARGUMENT,
+                    )
+                return super().submit_decision(game_id, decision_id, answer)
+
+        client = OneStaleEachClient(self.STREAM)
+        result = run_game(client, DECKS, seed=1, player_types=REMOTE)
+        assert [e[0] for e in result.events] == [1, 2]
+        assert len(result.decision_trace) == 2
+
+    def test_stale_on_get_decision_retries(self):
+        class StaleGetClient(FakeClient):
+            def __init__(self, stream, fail_gets):
+                super().__init__([stream])
+                self.fail_gets = fail_gets
+
+            def get_decision(self, game_id):
+                if self.get_decision_calls <= self.fail_gets:
+                    self.get_decision_calls += 1
+                    raise StaleDecisionError(
+                        "INVALID_ARGUMENT: stale", code=grpc.StatusCode.INVALID_ARGUMENT
+                    )
+                return super().get_decision(game_id)
+
+        client = StaleGetClient(self.STREAM, fail_gets=1)
+        result = run_game(client, DECKS, seed=1, player_types=REMOTE)
+        assert [e[0] for e in result.events] == [1, 2]

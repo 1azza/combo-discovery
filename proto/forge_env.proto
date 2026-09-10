@@ -1,22 +1,26 @@
-// ForgeEnv gRPC contract — v2 (protocol/lifecycle gate).
+// ForgeEnv gRPC contract — v3 (typed decision callbacks; gate item 4).
 // Canonical copy lives in the Python repo: combo-discovery/proto/forge_env.proto.
 // The Java harness mirrors it at forge-harness/src/main/proto/forge_env.proto.
-// Both the Java harness server and the Python research client are generated from this file.
 //
 // Message conventions:
 //  - All ints are 0-indexed player slots unless noted.
-//  - Card identity: Forge card name (e.g. "Kiki-Jiki, Mirror Breaker").
+//  - Card identity: Forge card id (int32, stable within a game) + card name.
 //  - Determinism: same (decks, seed, config) MUST yield byte-identical event streams.
 //
-// v2 changes (breaking; regenerate stubs on both sides):
-//  - Every per-game RPC carries an explicit game_id; unknown/stale ids are
-//    rejected with INVALID_ARGUMENT, wrong-state calls with FAILED_PRECONDITION.
-//  - Decisions carry a monotonic decision_id; submissions must echo the
-//    outstanding decision_id and an option_id that belongs to that decision.
-//  - Events carry a per-game monotonic seq and are independently pollable via
-//    PollEvents, decoupled from SubmitDecision.
-//  - Outcomes are classified with an Outcome enum; max_turns is enforced.
-//  - Snapshot/Restore remain UNIMPLEMENTED pending the state-work round.
+// v3 changes (breaking; regenerate stubs on both sides):
+//  - DecisionRequest carries a DecisionType enum plus a per-type payload:
+//    candidate cards, selection constraints (min/max/optional), number ranges,
+//    combat context (defender players, attackers, damage amount).
+//  - DecisionSubmit carries a typed oneof answer; the server validates the
+//    answer against the outstanding decision's type and payload. A wrong
+//    answer kind, out-of-range ids, size violations, or an invalid partition
+//    is INVALID_ARGUMENT.
+//  - Every re-prompt (e.g. engine retry after an invalid attack declaration)
+//    is a NEW decision_id; the previous one becomes stale.
+//  - protocol_version is now 3.
+//  - Unsurfaced callback classes (mana payment, generic confirms, trigger
+//    ordering, votes/dice/sectors, chooseSingleEntityForEffect) keep AI
+//    defaults via the controller inheritance chain, by design.
 
 syntax = "proto3";
 package forgeenv;
@@ -34,7 +38,6 @@ service ForgeEnv {
   // Full state inspection of current game.
   rpc GetState(GameQuery) returns (FullState);
   // Poll events with seq > cursor. cursor=0 returns from the first event.
-  // Valid while the game exists (including after game over, until StopGame).
   rpc PollEvents(PollRequest) returns (EventBatch);
   // MCTS support: opaque state tokens (only valid within same game).
   rpc Snapshot(GameQuery) returns (StateToken);
@@ -52,7 +55,7 @@ message Empty {}
 message Pong {
   string version = 1;
   bool game_active = 2;
-  int32 protocol_version = 3;  // 2 for this contract
+  int32 protocol_version = 3;  // 3 for this contract
 }
 
 message DeckSpec {
@@ -63,15 +66,18 @@ message DeckSpec {
 message StartRequest {
   repeated DeckSpec decks = 1;       // 2 players for M1
   int64 seed = 2;
-  repeated PlayerType player_types = 3;  // one per deck, same order
+  repeated PlayerType player_types = 3;  // one per deck, same order; exactly len(decks) entries
   int32 max_turns = 4;               // 0 = unlimited; game ends as draw beyond this
-  int32 timeout_seconds = 5;         // per-game wall clock, 0 = engine default
+  int32 timeout_seconds = 5;         // per-game wall clock, 0 = no watchdog
+  // Worker recovery: when true, stop any active game first instead of failing
+  // with FAILED_PRECONDITION. Additive in v3; wire-compatible.
+  bool force_stop_active = 6;
 }
 
 enum PlayerType {
   PLAYER_TYPE_UNSPECIFIED = 0;
   PLAYER_TYPE_REMOTE = 1;      // decisions via GetDecision/SubmitDecision
-  PLAYER_TYPE_GOLDFISH = 2;    // dumb scripted: play lands, cast creatures, attack
+  PLAYER_TYPE_GOLDFISH = 2;    // dumb scripted: AI defaults, empty priority
   PLAYER_TYPE_FORGE_AI = 3;    // built-in AI
 }
 
@@ -94,6 +100,49 @@ enum Outcome {
   OUTCOME_STOPPED = 6;      // stopped via StopGame
 }
 
+// The class of the outstanding decision. Drives which payload fields of
+// DecisionRequest are populated and which oneof arm of DecisionSubmit.answer
+// is accepted.
+enum DecisionType {
+  DECISION_TYPE_UNSPECIFIED = 0;
+  // Playable spell/ability list; answer = option_id (options field).
+  DECISION_TYPE_PRIORITY = 1;
+  // London mulligan: keep the hand? answer = boolean_answer.
+  DECISION_TYPE_MULLIGAN_KEEP = 2;
+  // London mulligan after a mulligan: put exactly cards_to_return cards from
+  // candidates (= current hand) on the bottom; answer = card_ids (order is
+  // bottom-stacking order, first = topmost of the tucked group).
+  DECISION_TYPE_MULLIGAN_TUCK = 3;
+  // Declare attackers; candidates = legal attacker cards,
+  // defender_players = legal defenders; answer = attackers (attacker_card ->
+  // defender_player pairs). Empty list = attack with nothing.
+  DECISION_TYPE_DECLARE_ATTACKERS = 4;
+  // Declare blockers; attacker_cards = declared attackers, candidates = legal
+  // blocker cards; answer = blockers (blocker_card -> attacker_card pairs).
+  // Empty list = block with nothing.
+  DECISION_TYPE_DECLARE_BLOCKERS = 5;
+  // Assign an attacker's combat damage; damage_amount = total damage,
+  // candidates = remaining blocker cards, defender_players = the defending
+  // player slot; answer = damage (card-or-player -> amount). Amounts must sum
+  // to damage_amount; the defending player is addressed via the player arm.
+  DECISION_TYPE_ASSIGN_COMBAT_DAMAGE = 6;
+  // Order blockers for damage assignment; candidates = blockers of one
+  // attacker in current order; answer = card_ids in the new order (permutation).
+  DECISION_TYPE_ORDER_BLOCKERS = 7;
+  // Generic card selection from an effect (discard, sacrifice, fetch, ...);
+  // candidates + min/max/optional constraints; answer = card_ids
+  // (size in [min, max], empty allowed iff optional).
+  DECISION_TYPE_CHOOSE_CARDS = 8;
+  // Announce a number (X value, choose-number effects); answer = number_answer
+  // within [min_number, max_number].
+  DECISION_TYPE_ANNOUNCE = 9;
+  // Scry/surveil arrangement; candidates = the top N cards; answer = scry
+  // partition (ordered top group / bottom group; bottom = scry-away or
+  // surveil-graveyard group). Both groups together must be a permutation of
+  // candidates.
+  DECISION_TYPE_SCRY_ARRANGE = 10;
+}
+
 message Option {
   int32 id = 1;                     // stable within this DecisionRequest
   string kind = 2;                  // "play_card" | "activate" | "choose" | "pass" | ...
@@ -102,21 +151,90 @@ message Option {
   string description = 5;           // human-readable
 }
 
+// A selectable card: engine id + display name.
+message CardCandidate {
+  int32 card_id = 1;
+  string name = 2;
+}
+
 message DecisionRequest {
   int64 game_id = 1;
   int64 decision_id = 2;            // monotonic within the game, starts at 1
   int32 player = 3;                 // acting player slot
   int32 turn = 4;
   string phase = 5;                 // "Main1", "Combat", ...
-  string decision_type = 6;         // "priority" for now; typed enums land in the next round
-  repeated Option options = 7;
-  string prompt = 8;                // engine question, human-readable
+  DecisionType decision_type = 6;
+  string prompt = 7;                // engine question, human-readable
+  // --- PRIORITY payload ---
+  repeated Option options = 8;
+  // --- selection payloads (TUCK, BLOCKERS, DAMAGE, ORDER, CHOOSE_CARDS, SCRY) ---
+  repeated CardCandidate candidates = 9;
+  int32 min_choices = 10;           // inclusive lower bound on selection size
+  int32 max_choices = 11;           // inclusive upper bound on selection size
+  bool optional = 12;               // empty selection allowed
+  // --- ANNOUNCE payload ---
+  int32 min_number = 13;
+  int32 max_number = 14;
+  // --- combat payloads ---
+  repeated int32 defender_players = 15;  // DECLARE_ATTACKERS / ASSIGN_COMBAT_DAMAGE
+  repeated int32 attacker_cards = 16;    // DECLARE_BLOCKERS / ASSIGN_COMBAT_DAMAGE
+  int32 damage_amount = 17;              // ASSIGN_COMBAT_DAMAGE: total to distribute
+  int32 damage_source_card = 18;         // ASSIGN_COMBAT_DAMAGE: the attacking card
+  // --- MULLIGAN payload ---
+  int32 cards_to_return = 19;            // MULLIGAN_TUCK: exact tuck count
 }
+
+message IntList {
+  repeated int32 values = 1;
+}
+
+// One attacker -> defender edge. defender_player is a player slot.
+message AttackerAssignment {
+  int32 attacker_card = 1;
+  int32 defender_player = 2;
+}
+
+// One blocker -> attacker edge.
+message BlockerAssignment {
+  int32 blocker_card = 1;
+  int32 attacker_card = 2;
+}
+
+// Combat damage routed to a card (blocker) or the defending player.
+message DamageAssignment {
+  oneof target {
+    int32 card_id = 1;
+    int32 player = 2;   // the defending player slot
+  }
+  int32 amount = 3;
+}
+
+// Scry/surveil partition of the top-N cards into two ordered groups.
+message CardPartition {
+  repeated int32 top = 1;     // keep on top, in order (first = new top card)
+  repeated int32 bottom = 2;  // put away (bottom of library / graveyard)
+}
+
+// Wrapper lists: oneof arms must not be repeated, so the combat answers are
+// wrapped (same pattern as IntList for card_ids).
+message AttackerList { repeated AttackerAssignment values = 1; }
+message BlockerList { repeated BlockerAssignment values = 1; }
+message DamageList { repeated DamageAssignment values = 1; }
 
 message DecisionSubmit {
   int64 game_id = 1;
   int64 decision_id = 2;            // must equal the outstanding DecisionRequest.decision_id
-  int32 option_id = 3;              // must be one of that request's options
+  // Exactly one arm, matching the outstanding DecisionType.
+  oneof answer {
+    int32 option_id = 3;            // PRIORITY
+    bool boolean_answer = 4;        // MULLIGAN_KEEP
+    IntList card_ids = 5;           // MULLIGAN_TUCK / ORDER_BLOCKERS / CHOOSE_CARDS
+    int64 number_answer = 6;        // ANNOUNCE
+    AttackerList attackers = 7;    // DECLARE_ATTACKERS (wrapper)
+    BlockerList blockers = 8;      // DECLARE_BLOCKERS (wrapper)
+    DamageList damage = 9;         // ASSIGN_COMBAT_DAMAGE (wrapper)
+    CardPartition scry = 10;                      // SCRY_ARRANGE
+  }
 }
 
 message GameEvent {

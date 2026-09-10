@@ -1,19 +1,31 @@
-"""Game drivers: single game, multi-seed runs, and determinism checking (v2).
+"""Game drivers: single game, multi-seed runs, and determinism checking (v3).
 
 The canonical event source is the PollEvents stream (drained via
 client.drain_events); StepResult.events is only a server-side convenience.
 Only PLAYER_TYPE_REMOTE players are driven through GetDecision/SubmitDecision;
 for all-AI/goldfish games the runner simply waits for game over.
+
+v3: decisions are typed. Policies receive a DecisionContext (wrapping the raw
+pb.DecisionRequest) and return an answer tuple consumable by
+ForgeEnvClient.submit_decision — e.g. ("option_id", 3), ("attackers", [...]),
+("scry", (top, bottom)). default_policy implements a simple legal strategy for
+every DecisionType.
 """
 
 from __future__ import annotations
 
-import grpc
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 
-from .env import ForgeEnvClient, GameNotActiveError, HarnessConnectionError
+from .env import (
+    Answer,
+    DamageTarget,
+    ForgeEnvClient,
+    GameNotActiveError,
+    HarnessTimeoutError,
+    StaleDecisionError,
+)
 from .generated import forge_env_pb2 as pb
 
 # Consecutive get_decision deadline failures tolerated before giving up. The
@@ -21,15 +33,183 @@ from .generated import forge_env_pb2 as pb
 # engine stretch; each failure is followed by an is_game_over re-check.
 MAX_DECISION_TIMEOUTS = 3
 
+# Consecutive stale-decision rejections tolerated before giving up. The
+# harness decision watchdog (120s) can release a decision while a slow
+# policy's submit is in flight, surfacing as INVALID_ARGUMENT. Each rejection
+# is followed by a game-over re-check and a refetch of the current decision.
+MAX_STALE_RETRIES = 3
+
 # Identity tuple for one event: everything deterministic about it, minus the
 # game_id (which legitimately differs between runs).
 EventKey = tuple[int, str, int, str, int, str, str]
 # (seq, type, turn, phase, player, card_name, detail)
 
+# One entry of the decision trace: (decision_id, decision_type, answer).
+# decision_type is the pb.DecisionType enum value; answer is the typed answer
+# exactly as submitted.
+DecisionTraceEntry = tuple[int, int, Answer]
+
 
 def event_identity(e: pb.GameEvent) -> EventKey:
     """Deterministic identity of a GameEvent: seq included, game_id excluded."""
     return (e.seq, e.type, e.turn, e.phase, e.player, e.card_name, e.detail)
+
+
+@dataclass
+class DecisionContext:
+    """Typed view over a pb.DecisionRequest, used by policies.
+
+    Exposes the per-type payload fields of the raw request with friendlier
+    names; the raw pb message stays available as `.raw`.
+    """
+
+    request: pb.DecisionRequest
+
+    # -- identity -----------------------------------------------------------
+
+    @property
+    def game_id(self) -> int:
+        return self.request.game_id
+
+    @property
+    def decision_id(self) -> int:
+        return self.request.decision_id
+
+    @property
+    def player(self) -> int:
+        return self.request.player
+
+    @property
+    def turn(self) -> int:
+        return self.request.turn
+
+    @property
+    def phase(self) -> str:
+        return self.request.phase
+
+    @property
+    def decision_type(self) -> int:
+        """pb.DecisionType enum value of the outstanding decision."""
+        return self.request.decision_type
+
+    @property
+    def type_name(self) -> str:
+        return pb.DecisionType.Name(self.request.decision_type)
+
+    @property
+    def prompt(self) -> str:
+        return self.request.prompt
+
+    # -- PRIORITY -----------------------------------------------------------
+
+    @property
+    def options(self) -> list[pb.Option]:
+        return list(self.request.options)
+
+    # -- card-selection payloads --------------------------------------------
+
+    @property
+    def candidate_ids(self) -> list[int]:
+        """Engine card ids of the candidate cards, in request order."""
+        return [c.card_id for c in self.request.candidates]
+
+    @property
+    def candidate_names(self) -> list[str]:
+        return [c.name for c in self.request.candidates]
+
+    @property
+    def candidates(self) -> list[pb.CardCandidate]:
+        return list(self.request.candidates)
+
+    @property
+    def min_choices(self) -> int:
+        return self.request.min_choices
+
+    @property
+    def max_choices(self) -> int:
+        return self.request.max_choices
+
+    @property
+    def is_optional(self) -> bool:
+        return self.request.optional
+
+    # -- ANNOUNCE ------------------------------------------------------------
+
+    @property
+    def min_number(self) -> int:
+        return self.request.min_number
+
+    @property
+    def max_number(self) -> int:
+        return self.request.max_number
+
+    # -- combat ---------------------------------------------------------------
+
+    @property
+    def defender_players(self) -> list[int]:
+        return list(self.request.defender_players)
+
+    @property
+    def attacker_cards(self) -> list[int]:
+        return list(self.request.attacker_cards)
+
+    @property
+    def damage_amount(self) -> int:
+        return self.request.damage_amount
+
+    @property
+    def damage_source_card(self) -> int:
+        return self.request.damage_source_card
+
+    # -- mulligan --------------------------------------------------------------
+
+    @property
+    def cards_to_return(self) -> int:
+        return self.request.cards_to_return
+
+
+def default_policy(ctx: DecisionContext) -> Answer:
+    """A simple legal answer for every decision type.
+
+    Deliberately naive (this is a research harness client, not an AI): the
+    only goal is to return answers the server accepts so games reach an end.
+    """
+    t = ctx.decision_type
+    if t == pb.DECISION_TYPE_PRIORITY:
+        # Previous v2 behavior: highest option id.
+        if not ctx.options:
+            raise ValueError("PRIORITY decision with no options")
+        return ("option_id", sorted(ctx.options, key=lambda o: o.id)[-1].id)
+    if t == pb.DECISION_TYPE_MULLIGAN_KEEP:
+        return ("boolean_answer", True)
+    if t == pb.DECISION_TYPE_MULLIGAN_TUCK:
+        # Tuck the required number of cards, last candidates first, keeping
+        # their current order (bottom-stacking order, first = topmost).
+        ids = ctx.candidate_ids
+        return ("card_ids", ids[-ctx.cards_to_return :] if ctx.cards_to_return else [])
+    if t == pb.DECISION_TYPE_DECLARE_ATTACKERS:
+        defender = ctx.defender_players[0] if ctx.defender_players else 0
+        return ("attackers", [(card_id, defender) for card_id in ctx.candidate_ids])
+    if t == pb.DECISION_TYPE_DECLARE_BLOCKERS:
+        return ("blockers", [])
+    if t == pb.DECISION_TYPE_ASSIGN_COMBAT_DAMAGE:
+        # All damage to the defending player (player arm of DamageAssignment).
+        defender = ctx.defender_players[0] if ctx.defender_players else 0
+        return ("damage", [DamageTarget(player=defender, amount=ctx.damage_amount)])
+    if t == pb.DECISION_TYPE_ORDER_BLOCKERS:
+        # Current order unchanged.
+        return ("card_ids", ctx.candidate_ids)
+    if t == pb.DECISION_TYPE_CHOOSE_CARDS:
+        if ctx.is_optional:
+            return ("card_ids", [])
+        return ("card_ids", ctx.candidate_ids[: ctx.min_choices])
+    if t == pb.DECISION_TYPE_ANNOUNCE:
+        # Just max_number; range validation is server-side.
+        return ("number_answer", ctx.max_number)
+    if t == pb.DECISION_TYPE_SCRY_ARRANGE:
+        # Keep everything on top in the current order.
+        return ("scry", (ctx.candidate_ids, []))
+    raise ValueError(f"no default policy for decision type {ctx.type_name}")
 
 
 @dataclass
@@ -43,25 +223,32 @@ class GameResult:
     outcome: int = 0  # pb.Outcome enum value (OUTCOME_UNSPECIFIED if unknown)
     reason: str = ""
     events: list[EventKey] = field(default_factory=list)
+    decision_trace: list[DecisionTraceEntry] = field(default_factory=list)
 
 
 def run_game(
     client,
     decks: list[tuple[str, str]],
     seed: int,
-    policy: Callable[[pb.DecisionRequest], int] | None = None,
+    policy: Callable[[DecisionContext], Answer] | None = None,
     max_turns: int = 0,
     timeout_seconds: int = 0,
     collect_events: bool = True,
     player_types: Sequence["pb.PlayerType"] | None = None,
+    force_stop_active: bool = False,
 ) -> GameResult:
     """Run one game to completion and return its result.
 
     The trajectory is taken from the poll event stream (drain_events), which
     works for goldfish-only and Forge-AI-only games as well as remote-driven
     ones. GetDecision/SubmitDecision are only used when at least one player
-    is PLAYER_TYPE_REMOTE.
+    is PLAYER_TYPE_REMOTE. ``policy`` receives a DecisionContext and returns
+    a typed answer; None means default_policy. ``force_stop_active`` tells
+    the harness to stop any leftover active game before starting (used by the
+    worker pool when recovering a worker).
     """
+    if policy is None:
+        policy = default_policy
     start = time.monotonic()
     if player_types is None:
         player_types = [pb.PLAYER_TYPE_REMOTE] * len(decks)
@@ -72,10 +259,13 @@ def run_game(
         player_types=list(player_types),
         max_turns=max_turns,
         timeout_seconds=timeout_seconds,
+        force_stop_active=force_stop_active,
     )
     turns = 0
+    trace: list[DecisionTraceEntry] = []
     if has_remote:
         deadline_failures = 0
+        stale_failures = 0
         while True:
             over = client.is_game_over(game_id)
             if over.over:
@@ -89,9 +279,7 @@ def run_game(
                 if not over.over:
                     raise
                 break
-            except HarnessConnectionError as e:
-                if e.code is not grpc.StatusCode.DEADLINE_EXCEEDED:
-                    raise
+            except HarnessTimeoutError:
                 # Blocking wait timed out (slow engine stretch). Re-check game
                 # over at the top of the loop and retry; raise after too many
                 # consecutive deadlines.
@@ -100,15 +288,23 @@ def run_game(
                     raise
                 time.sleep(0.1)
                 continue
+            except StaleDecisionError:
+                # The watchdog released this decision before our submit (or a
+                # re-prompt invalidated it). Re-check game over at the top of
+                # the loop and refetch the current decision; raise after too
+                # many consecutive stale rejections.
+                stale_failures += 1
+                if stale_failures >= MAX_STALE_RETRIES:
+                    raise
+                time.sleep(0.05)
+                continue
             deadline_failures = 0
             turns = req.turn
-            if policy is None:
-                option_id = sorted(req.options, key=lambda o: o.id)[-1].id
-            else:
-                option_id = policy(req)
-            # Echo the outstanding decision id back to the server.
+            ctx = DecisionContext(request=req)
+            answer = policy(ctx)
+            # Echo the outstanding decision id back with the typed answer.
             try:
-                client.submit_decision(game_id, req.decision_id, option_id)
+                client.submit_decision(game_id, req.decision_id, answer)
             except GameNotActiveError:
                 # Game ended between fetching and submitting (e.g. turn-limit
                 # fired mid-decision). Normal exit path.
@@ -116,6 +312,17 @@ def run_game(
                 if not over.over:
                     raise
                 break
+            except StaleDecisionError:
+                # The watchdog released this decision while our (possibly
+                # slow) submit was in flight; the server's next decision has a
+                # NEW id. Re-check game over, refetch, retry — bounded.
+                stale_failures += 1
+                if stale_failures >= MAX_STALE_RETRIES:
+                    raise
+                time.sleep(0.05)
+                continue
+            stale_failures = 0
+            trace.append((req.decision_id, req.decision_type, answer))
     else:
         # No remote decisions: the harness drives itself; just wait it out.
         while True:
@@ -137,6 +344,7 @@ def run_game(
         outcome=over.outcome,
         reason=over.reason,
         events=events,
+        decision_trace=trace,
     )
 
 
@@ -144,10 +352,11 @@ def run_games(
     client,
     decks: list[tuple[str, str]],
     seeds: list[int],
-    policy: Callable[[pb.DecisionRequest], int] | None = None,
+    policy: Callable[[DecisionContext], Answer] | None = None,
     max_turns: int = 0,
     timeout_seconds: int = 0,
     player_types: Sequence["pb.PlayerType"] | None = None,
+    force_stop_active: bool = False,
 ) -> list[GameResult]:
     return [
         run_game(
@@ -158,6 +367,7 @@ def run_games(
             max_turns=max_turns,
             timeout_seconds=timeout_seconds,
             player_types=player_types,
+            force_stop_active=force_stop_active,
         )
         for seed in seeds
     ]

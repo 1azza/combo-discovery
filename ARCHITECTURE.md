@@ -72,11 +72,14 @@ process isolation.
 Protocol v2 resolved the M1 identity, event-stream, and lifecycle gaps: every
 per-game RPC routes by `game_id`, decisions carry a validated monotonic
 `decision_id`, events are independently pollable with per-game sequence
-numbers, `max_turns` is enforced, and outcomes are classified. What remains:
+numbers, `max_turns` is enforced deterministically at turn boundaries, and
+outcomes are classified. Protocol v3 added typed decision callbacks (10
+classes: priority, mulligans, combat declaration/damage/ordering, generic
+card selection, announce, scry). What remains:
 
-1. Only priority spell/ability choices are exposed remotely. Targets, modes,
-   mulligans, selections, combat, and other Forge callbacks still use defaults.
-   (Gate item 4, next round.)
+1. Spell targeting, mode selection, and optional costs are still
+   engine-internal: a remote player's spells resolve with AI-chosen
+   targets/modes. (Remaining slice of gate item 4.)
 2. `Snapshot` and `Restore` are declared but return `UNIMPLEMENTED`. (Gate
    item 5.)
 3. `FullState` is a partial inspection state, not yet a complete search state.
@@ -85,6 +88,8 @@ numbers, `max_turns` is enforced, and outcomes are classified. What remains:
 5. One active game per harness process. The v2 registry routes by `game_id`
    and rejects stale ids from previous games, but concurrent games are not
    hosted yet.
+6. Long-tail callbacks (mana payment, generic confirms, trigger ordering,
+   votes/dice) deliberately keep AI defaults — documented in the proto header.
 
 ## Required Gate Before Layer 2
 
@@ -93,12 +98,17 @@ following are complete:
 
 1. [x] Add `game_id`, `decision_id`, and action validation. — done (protocol v2)
 2. [x] Add sequence-numbered independent event delivery. — done (`PollEvents`, seq from 1)
-3. [x] Enforce `max_turns` and make outcome classification reliable. — done
-4. [ ] Implement typed decision callbacks beyond priority.
+3. [x] Enforce `max_turns` and make outcome classification reliable. — done;
+   enforcement is deterministic at turn boundaries (a wall-clock monitor race
+   that made end-turns nondeterministic was found via the replay gate and fixed)
+4. [~] Implement typed decision callbacks beyond priority. — 10 classes done
+   (combat, mulligans, selection, announce, scry); spell targeting, mode
+   selection, and optional costs remain
 5. [ ] Implement snapshot/restore and state hashing.
 6. [x] Add replay tests proving identical `(deck, seed, policy)` trajectories. —
-   done and verified live; this gate caught and fixed a real nondeterminism
-   (engine match-tally leakage into GameOver events)
+   done and verified live; this gate caught two real nondeterminism bugs
+   (engine match-tally leakage into GameOver events; the turn-limit monitor
+   race) and verified engine gameplay is deterministic through natural ends
 
 ## Launching the Harness
 

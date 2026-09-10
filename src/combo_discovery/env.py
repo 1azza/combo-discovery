@@ -1,26 +1,155 @@
-"""Typed synchronous client for the forge-harness gRPC service (protocol v2).
+"""Typed synchronous client for the forge-harness gRPC service (protocol v3).
 
 Mirrors the service defined in proto/forge_env.proto. All methods are blocking;
 use WorkerPool for parallelism.
 
-v2 contract notes:
+Contract notes:
   - Every per-game RPC carries an explicit game_id; start_game returns it.
-  - submit_decision echoes the outstanding DecisionRequest's
-    (game_id, decision_id) plus the chosen option_id.
+  - Decisions are typed: the outstanding DecisionRequest carries a
+    DecisionType enum plus per-type payload; submit_decision echoes
+    (game_id, decision_id) plus a typed answer (see build_submit).
   - Events are independently pollable via poll_events/drain_events.
-  - Server errors: INVALID_ARGUMENT (unknown/stale game or decision id, invalid
-    option) maps to StaleDecisionError; FAILED_PRECONDITION (wrong lifecycle
-    state) maps to GameNotActiveError.
+  - Server errors: INVALID_ARGUMENT (unknown/stale game or decision id, wrong
+    or out-of-range answer) maps to StaleDecisionError; FAILED_PRECONDITION
+    (wrong lifecycle state) maps to GameNotActiveError; DEADLINE_EXCEEDED maps
+    to HarnessTimeoutError (slow call — the server may still be healthy);
+    UNAVAILABLE maps to HarnessConnectionError (transport death).
+
+Answer shapes accepted by submit_decision (one per DecisionType):
+  ("option_id", int)                              PRIORITY
+  ("boolean_answer", bool)                        MULLIGAN_KEEP
+  ("card_ids", list[int])                         MULLIGAN_TUCK / ORDER_BLOCKERS / CHOOSE_CARDS
+  ("number_answer", int)                          ANNOUNCE
+  ("attackers", list[(attacker_card, defender_player)])   DECLARE_ATTACKERS
+  ("blockers", list[(blocker_card, attacker_card)])       DECLARE_BLOCKERS
+  ("damage", list[DamageTarget | (card_id|None, player|None, amount)])  ASSIGN_COMBAT_DAMAGE
+  ("scry", (top_ids, bottom_ids))                 SCRY_ARRANGE
 """
 
 from __future__ import annotations
+
+from typing import Any, cast
 
 import grpc
 
 from .generated import forge_env_pb2 as pb
 from .generated.forge_env_pb2_grpc import ForgeEnvStub
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
+
+# Arm name -> constructor for the corresponding answer payload in
+# pb.DecisionSubmit. Arms that carry message types (card_ids, scry) get their
+# payload built separately in build_submit.
+_ANSWER_ARMS = (
+    "option_id",
+    "boolean_answer",
+    "card_ids",
+    "number_answer",
+    "attackers",
+    "blockers",
+    "damage",
+    "scry",
+)
+
+
+class DamageTarget:
+    """One entry of an ASSIGN_COMBAT_DAMAGE answer: damage routed to a card
+    (a blocker) or to the defending player. Exactly one of card_id / player
+    is set. Plain (card_id | None, player | None, amount) tuples are also
+    accepted by build_submit."""
+
+    __slots__ = ("card_id", "player", "amount")
+
+    def __init__(self, card_id: int | None = None, player: int | None = None, amount: int = 0):
+        if (card_id is None) == (player is None):
+            raise ValueError("DamageTarget needs exactly one of card_id or player")
+        self.card_id = card_id
+        self.player = player
+        self.amount = amount
+
+    def as_tuple(self) -> tuple[int | None, int | None, int]:
+        return (self.card_id, self.player, self.amount)
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, DamageTarget):
+            return self.as_tuple() == other.as_tuple()
+        if isinstance(other, tuple):
+            return self.as_tuple() == other
+        return NotImplemented
+
+    def __repr__(self) -> str:
+        return f"DamageTarget(card_id={self.card_id}, player={self.player}, amount={self.amount})"
+
+
+# Typed answer: (arm_name, payload) — see the module docstring for the exact
+# payload shape accepted per arm. Kept loose at the type level on purpose;
+# build_submit validates at runtime.
+Answer = tuple[str, object] | pb.DecisionSubmit
+
+
+def build_submit(game_id: int, decision_id: int, answer: Answer) -> pb.DecisionSubmit:
+    """Build a pb.DecisionSubmit from a typed answer.
+
+    ``answer`` is an (arm, payload) tuple; see the module docstring for the
+    accepted shapes per arm. A pb.DecisionSubmit with the oneof already set is
+    also accepted and passed through (handy for tests and manual control).
+    """
+    if isinstance(answer, pb.DecisionSubmit):
+        req = pb.DecisionSubmit()
+        req.CopyFrom(answer)
+        req.game_id = game_id
+        req.decision_id = decision_id
+        return req
+    arm, payload = answer
+    # Payload shape is validated per arm at runtime; the type checker sees an
+    # untyped object here by design (see Answer).
+    payload = cast(Any, payload)
+    if arm not in _ANSWER_ARMS:
+        raise ValueError(
+            f"unknown answer arm {arm!r}; expected one of {', '.join(_ANSWER_ARMS)}"
+        )
+    kwargs: dict = {"game_id": game_id, "decision_id": decision_id}
+    if arm == "option_id":
+        kwargs["option_id"] = int(payload)
+    elif arm == "boolean_answer":
+        kwargs["boolean_answer"] = bool(payload)
+    elif arm == "card_ids":
+        kwargs["card_ids"] = pb.IntList(values=[int(c) for c in payload])
+    elif arm == "number_answer":
+        kwargs["number_answer"] = int(payload)
+    elif arm == "attackers":
+        kwargs["attackers"] = pb.AttackerList(
+            values=[
+                pb.AttackerAssignment(attacker_card=a, defender_player=d) for a, d in payload
+            ]
+        )
+    elif arm == "blockers":
+        kwargs["blockers"] = pb.BlockerList(
+            values=[
+                pb.BlockerAssignment(blocker_card=b, attacker_card=a) for b, a in payload
+            ]
+        )
+    elif arm == "damage":
+        entries = []
+        for item in payload:
+            card_id, player, amount = item.as_tuple() if isinstance(item, DamageTarget) else item
+            if (card_id is None) == (player is None):
+                raise ValueError("damage entry needs exactly one of card_id or player")
+            # Set only the winning oneof arm; explicitly assigning both in the
+            # constructor makes the last one silently win.
+            d = pb.DamageAssignment(amount=amount)
+            if card_id is not None:
+                d.card_id = card_id
+            else:
+                d.player = player  # may be 0 — assignment still marks the arm
+            entries.append(d)
+        kwargs["damage"] = pb.DamageList(values=entries)
+    elif arm == "scry":
+        top, bottom = payload
+        kwargs["scry"] = pb.CardPartition(
+            top=[int(c) for c in top], bottom=[int(c) for c in bottom]
+        )
+    return pb.DecisionSubmit(**kwargs)
 
 
 class ForgeEnvError(RuntimeError):
@@ -32,11 +161,20 @@ class ForgeEnvError(RuntimeError):
 
 
 class HarnessConnectionError(ForgeEnvError):
-    """The harness is unreachable or the channel broke mid-call."""
+    """Transport-level failure: the harness is unreachable or the channel
+    broke mid-call (UNAVAILABLE). The channel/stub are reset."""
+
+
+class HarnessTimeoutError(ForgeEnvError):
+    """DEADLINE_EXCEEDED: one call was too slow. NOT proof the server died —
+    under load even quick RPCs can exceed their deadline while the harness is
+    still perfectly healthy. The channel is deliberately left intact; callers
+    decide whether to retry (runner does for get_decision)."""
 
 
 class StaleDecisionError(ForgeEnvError):
-    """INVALID_ARGUMENT: unknown/stale game or decision id, or invalid option_id."""
+    """INVALID_ARGUMENT: unknown/stale game or decision id, wrong or
+    out-of-range answer, or an answer arm that mismatches the decision type."""
 
 
 class GameNotActiveError(ForgeEnvError):
@@ -56,12 +194,29 @@ class ForgeEnvClient:
         timeout: float = 30.0,
         decision_timeout: float = 300.0,
     ):
+        """Timeout triad (load-bearing ordering — do not shuffle):
+
+            server decision watchdog (120s)
+              < server GetDecision wait (130s, DECISION_WAIT_MS)
+                < client decision_timeout (300s)
+
+        The watchdog releases a decision before the GetDecision wait expires,
+        which itself expires well before the client gives up, so a slow game
+        surfaces as StaleDecisionError/GameNotActiveError instead of a client
+        deadline — and a genuinely hung engine is caught by the 300s bound.
+        Changing any one of these (client side, or the harness's) without
+        re-deriving the others reintroduces races: e.g. a client timeout below
+        130s turns normal opponent thinking into HarnessTimeoutError, and a
+        client timeout above the watchdog's release makes the client wait on
+        decisions the server has already abandoned.
+        """
         self._target = f"{host}:{port}"
         self._timeout = timeout
         # GetDecision blocks server-side until the acting remote player has a
         # decision. The server guarantees wake-on-game-over, so this is a
         # safety bound on a slow engine stretch, not the expected wait time —
-        # hence much longer than the general per-RPC timeout.
+        # hence much longer than the general per-RPC timeout (see the triad
+        # above).
         self._decision_timeout = decision_timeout
         self._channel: grpc.Channel | None = None
         self._stub: ForgeEnvStub | None = None
@@ -83,10 +238,19 @@ class ForgeEnvClient:
         except grpc.RpcError as e:
             code = e.code()
             details = e.details()
-            if code in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
+            if code == grpc.StatusCode.UNAVAILABLE:
+                # Transport death: the channel is broken, reset it so the next
+                # call reconnects from scratch.
                 self._stub = None
                 self._channel = None
                 raise HarnessConnectionError(f"{code.name} from {self._target}", code=code) from e
+            if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+                # A slow call, not a dead server: the channel is still usable.
+                # Under load even quick RPCs (IsGameOver, GetState) can trip
+                # their deadline while the harness stays healthy, so this must
+                # NOT be conflated with connection death (pool would kill
+                # healthy workers).
+                raise HarnessTimeoutError(f"{code.name} from {self._target}", code=code) from e
             if code == grpc.StatusCode.INVALID_ARGUMENT:
                 raise StaleDecisionError(f"INVALID_ARGUMENT: {details}", code=code) from e
             if code == grpc.StatusCode.FAILED_PRECONDITION:
@@ -107,7 +271,7 @@ class ForgeEnvClient:
         """Ping the harness and verify the protocol version.
 
         Raises ProtocolMismatchError with a clear message if the harness does
-        not speak protocol v2.
+        not speak protocol v3.
         """
         pong = self.ping()
         if pong.protocol_version != PROTOCOL_VERSION:
@@ -127,10 +291,14 @@ class ForgeEnvClient:
         player_types: list["pb.PlayerType"] | None = None,
         max_turns: int = 0,
         timeout_seconds: int = 0,
+        force_stop_active: bool = False,
     ) -> int:
         """Start a game and return the server-assigned game_id.
 
-        Fails with GameNotActiveError if a game is already active on the harness.
+        Fails with GameNotActiveError if a game is already active on the
+        harness, unless force_stop_active is set — then the leftover game is
+        stopped first (used by the worker pool to recover a worker that was
+        left with an active game by a crashed client).
         """
         if player_types is None:
             player_types = [pb.PLAYER_TYPE_REMOTE] * len(decks)
@@ -140,6 +308,7 @@ class ForgeEnvClient:
             player_types=player_types,
             max_turns=max_turns,
             timeout_seconds=timeout_seconds,
+            force_stop_active=force_stop_active,
         )
         resp: pb.StartResponse = self._call(self._ensure_stub().StartGame, req)
         return resp.game_id
@@ -158,9 +327,16 @@ class ForgeEnvClient:
             timeout=self._decision_timeout,
         )
 
-    def submit_decision(self, game_id: int, decision_id: int, option_id: int) -> pb.StepResult:
-        """Echo the outstanding DecisionRequest's (game_id, decision_id) plus the chosen option."""
-        req = pb.DecisionSubmit(game_id=game_id, decision_id=decision_id, option_id=option_id)
+    def submit_decision(self, game_id: int, decision_id: int, answer: Answer) -> pb.StepResult:
+        """Echo the outstanding DecisionRequest's (game_id, decision_id) plus a typed answer.
+
+        ``answer`` is an (arm, payload) tuple built for the outstanding
+        DecisionType — e.g. ("option_id", 3) for PRIORITY,
+        ("attackers", [(card_id, defender_player), ...]) for DECLARE_ATTACKERS,
+        ("scry", (top_ids, bottom_ids)) for SCRY_ARRANGE. See the module
+        docstring for the full set; build_submit does the oneof encoding.
+        """
+        req = build_submit(game_id, decision_id, answer)
         return self._call(self._ensure_stub().SubmitDecision, req)
 
     def get_state(self, game_id: int) -> pb.FullState:

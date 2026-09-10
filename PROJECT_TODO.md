@@ -42,7 +42,7 @@ Legend:
 - `[x]` Run the game on a background thread
 - `[x]` Report starting life totals
 - `[x]` Report game-over state and winner/draw
-- `[x]` Enforce `max_turns` from `StartRequest` — enforced; bounded games end as `OUTCOME_TURN_LIMIT`
+- `[x]` Enforce `max_turns` from `StartRequest` — enforced deterministically on the game thread at the first turn boundary beyond N (max_turns=3 → turn 4 in every run); the wall-clock monitor remains only for `timeout_seconds`
 - `[x]` Add explicit game/session IDs to every request and response
 - `[x]` Prevent stale decisions from one game being submitted to another
 - `[x]` Add a lifecycle state machine: `CREATED → RUNNING → OVER → CLOSED`
@@ -57,15 +57,15 @@ Legend:
 - `[x]` Surface priority spell/ability choices
 - `[x]` Submit a selected option and continue execution
 - `[x]` Replace the current implicit global decision routing with `(game_id, decision_id)` routing (registry keyed by server-assigned `game_id`; decisions are per-game monotonic)
-- `[!]` Expose all meaningful decision classes, not just priority choices:
-  - `[ ]` targets
-  - `[ ]` modes
-  - `[ ]` X values and announcements
-  - `[ ]` optional costs
-  - `[ ]` trigger ordering
-  - `[ ]` mulligans and scry decisions
-  - `[ ]` combat attackers/blockers
-  - `[ ]` discard/sacrifice/selection effects
+- `[~]` Expose all meaningful decision classes, not just priority choices (protocol v3 surfaced 10 typed decision classes; the spell-casting path remains):
+  - `[ ]` targets (`chooseTargetsFor` — engine-internal, mutates the SA; hardest to serialize)
+  - `[ ]` modes (`chooseModeForAbility`)
+  - `[x]` X values and announcements (`ANNOUNCE`, min/max validated)
+  - `[ ]` optional costs (`chooseOptionalCosts`)
+  - `[~]` trigger ordering — deliberately AI-defaulted for now (hot path, documented in the proto header)
+  - `[x]` mulligans and scry decisions (`MULLIGAN_KEEP`, `MULLIGAN_TUCK`, `SCRY_ARRANGE` incl. surveil)
+  - `[x]` combat attackers/blockers (`DECLARE_ATTACKERS`, `DECLARE_BLOCKERS`, `ASSIGN_COMBAT_DAMAGE`, `ORDER_BLOCKERS`; live-verified with a remote player winning by combat)
+  - `[x]` discard/sacrifice/selection effects (`CHOOSE_CARDS` generic selection with min/max/optional)
 - `[x]` Validate that a submitted option belongs to the outstanding decision
 - `[ ]` Add explicit `PASS_PRIORITY` options instead of relying on empty lists
 - `[ ]` Add a real land-playing/casting goldfish policy

@@ -122,7 +122,6 @@ class ForgeEnvServicer:
 
     def PollEvents(self, request, context):
         """Poll events with seq > cursor. cursor=0 returns from the first event.
-        Valid while the game exists (including after game over, until StopGame).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
