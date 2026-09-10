@@ -11,4 +11,6 @@ proto_version = 6
 max_turns = 0
 timeout_seconds = 0
 n_workers = 8
-base_port = 50060
+# The default local dev harness listens on 50051 (see ARCHITECTURE.md);
+# spawn_servers-based pools use base_port..base_port+n-1 instead.
+base_port = 50051

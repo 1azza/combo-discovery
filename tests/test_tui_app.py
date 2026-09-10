@@ -11,12 +11,12 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from textual.widgets import ContentSwitcher, DataTable, OptionList, Tabs
+from textual.widgets import Button, ContentSwitcher, DataTable, OptionList, Static, Tabs
 
 from combo_discovery.generated import forge_env_pb2 as pb
 from combo_discovery.runner import GameResult
 from combo_discovery.tui.app import ComboDiscoveryApp
-from combo_discovery.tui.data import WorkerProbe
+from combo_discovery.tui.data import ActiveRun, WorkerProbe, build_run_config
 from combo_discovery.tui.views import experiments as exp
 from combo_discovery.tui.widgets import EmptyState
 
@@ -28,6 +28,14 @@ def _fake_probe(host, base_port, n, *, timeout=1.0):
         host=host,
         base_port=base_port,
         results=[(base_port + i, True, "reachable") for i in range(n)],
+    )
+
+
+def _dead_probe(host, base_port, n, *, timeout=1.0):
+    return WorkerProbe(
+        host=host,
+        base_port=base_port,
+        results=[(base_port + i, False, "unreachable") for i in range(n)],
     )
 
 
@@ -130,6 +138,65 @@ async def test_corpus_lists_seeded_cards(tmp_path, monkeypatch):
 
         await pilot.press("j")
         await pilot.pause()
+
+
+async def test_no_harness_note_is_unclipped_and_warn(tmp_path, monkeypatch):
+    monkeypatch.setattr(exp, "probe_workers", _dead_probe)
+    app, _db, _decks = _make_app(tmp_path)
+    async with app.run_test(size=(112, 34)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("2")
+        await pilot.pause()
+
+        note = app.query_one("#exp-form-note", Static)
+        wanted = "no live harness — connection guidance below"
+        assert wanted in str(note.render())
+        # The note owns a full-width row below the buttons, wide enough that the
+        # whole line fits without being clipped by the panel border.
+        assert note.region.width >= len(wanted)
+        assert note.region.y > app.query_one("#exp-start", Button).region.y
+
+        # Render check: the word survives to the rendered SVG (not ellipsised).
+        svg = app.export_screenshot()
+        assert "guidance" in svg
+        assert app.query_one("#exp-guidance").display is True
+
+        # A dead harness while idle is a warning, not an error...
+        assert app.worker_status() == ("0/8 workers reachable", "warn")
+        # ...but zero live workers during an active run is an error.
+        config, _errors = build_run_config(
+            ("A", "/a.dck"), ("B", "/b.dck"), "default", 1, 1, 8, 50060
+        )
+        assert config is not None
+        app.active_run = ActiveRun(run_id="x", config=config, started_at=0.0)
+        assert app.worker_status()[1] == "error"
+
+
+async def test_long_form_note_wraps_not_clipped(tmp_path, monkeypatch):
+    monkeypatch.setattr(exp, "probe_workers", _fake_probe)
+    app, _db, _decks = _make_app(tmp_path)
+    async with app.run_test(size=(112, 34)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("2")
+        await pilot.pause()
+
+        view = app.query_one("#view-experiments")
+        long_note = (
+            "pick a deck for seat A  ·  pick a deck for seat B  ·  "
+            "seed count must be >= 1  ·  workers must be >= 1"
+        )
+        view._set_form_note(long_note, "err")
+        await pilot.pause()
+        await pilot.pause()
+
+        note = app.query_one("#exp-form-note", Static)
+        assert str(note.render()) == long_note
+        # It cannot fit on one row at this width, so it must have wrapped
+        # (grown) rather than being clipped.
+        assert note.region.width < len(long_note)
+        assert note.region.height >= 2
 
 
 class _FakePool:

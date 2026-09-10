@@ -194,6 +194,7 @@ class ComboDiscoveryApp(App[None]):
 
     def worker_status(self) -> tuple[str, str]:
         pool = self.pool
+        running = self.active_run is not None and not self.active_run.finished
         if pool is not None:
             rows = pool_snapshot(pool)
             total = len(rows)
@@ -206,7 +207,10 @@ class ComboDiscoveryApp(App[None]):
         probe = self.probe
         if probe is not None:
             if probe.ok_count == 0:
-                return f"0/{probe.total} workers reachable", "error"
+                # No harness is an expected idle state; only a live run makes
+                # it an error.
+                state = "error" if running else "warn"
+                return f"0/{probe.total} workers reachable", state
             if probe.ok_count == probe.total:
                 return f"{probe.ok_count}/{probe.total} workers reachable", "ok"
             return f"{probe.ok_count}/{probe.total} workers reachable", "degraded"

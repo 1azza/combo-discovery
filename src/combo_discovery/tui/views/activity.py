@@ -192,8 +192,11 @@ class ActivityView(Vertical):
                 Text("\n".join(lines), style=pal.FAINT)
             )
         else:
+            probe_style = (
+                pal.WARN if (probe is not None and probe.ok_count == 0) else pal.FAINT
+            )
             self.query_one("#activity-games", Static).update(
-                Text(probe_line, style=pal.FAINT)
+                Text(probe_line, style=probe_style)
             )
 
 

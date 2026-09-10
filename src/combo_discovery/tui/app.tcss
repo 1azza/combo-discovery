@@ -229,16 +229,34 @@ ActivityView {
     margin: 1 0 0 0;
 }
 
-.form-error {
-    color: $omarchy-err;
-    margin: 0 0 0 1;
-    height: 1;
+.form-note {
+    color: $omarchy-muted;
+    height: auto;
+    width: 100%;
+    margin: 1 0 0 0;
 }
 
 #exp-bar {
     width: 1fr;
     margin: 0 0 1 0;
     background: transparent;
+}
+
+#exp-progress-workers {
+    margin: 0 0 0 0;
+}
+
+/* Cap the port list so a long/uniform list can't stretch the panel and push
+ * the guidance + results down; it scrolls when there are more rows. */
+.worker-list {
+    height: auto;
+    max-height: 7;
+    overflow-y: auto;
+    scrollbar-size-vertical: 1;
+}
+
+.worker-list > Static {
+    height: auto;
 }
 
 #exp-guidance {

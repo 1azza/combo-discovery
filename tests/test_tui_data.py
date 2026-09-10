@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -257,6 +258,47 @@ class TestHelpers:
         assert fmt_duration(5) == "5s"
         assert fmt_duration(65) == "1m 05s"
         assert fmt_duration(3700) == "1h 01m"
+
+
+class TestWorkerTone:
+    """Idle unreachable ports are amber; failed/excluded workers are red."""
+
+    @staticmethod
+    def _style_for(text, word):
+        index = str(text).index(word)
+        styles = [
+            span.style
+            for span in text.spans
+            if span.start <= index < span.end
+        ]
+        assert styles, f"no styled span covered {word!r}"
+        return styles[0]
+
+    @staticmethod
+    def _app(pool, probe):
+        return SimpleNamespace(pool=pool, probe=probe)
+
+    def test_unreachable_ports_use_warn(self):
+        from combo_discovery.tui import theme as pal
+        from combo_discovery.tui.views.experiments import ExperimentsView
+
+        probe = WorkerProbe(
+            "localhost",
+            50060,
+            [(50060, False, "unreachable"), (50061, True, "reachable")],
+        )
+        text = ExperimentsView._worker_rows_text(self._app(None, probe))
+        assert self._style_for(text, "unreachable") == pal.WARN
+
+    def test_excluded_pool_worker_stays_error(self):
+        from combo_discovery.tui import theme as pal
+        from combo_discovery.tui.views.experiments import ExperimentsView
+
+        pool = SimpleNamespace(
+            n_workers=1, base_port=50060, _healthy=[False], _fail_counts=[3]
+        )
+        text = ExperimentsView._worker_rows_text(self._app(pool, None))
+        assert self._style_for(text, "excluded") == pal.ERR
 
 
 # ---------------------------------------------------------------------------

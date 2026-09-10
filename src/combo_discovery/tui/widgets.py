@@ -25,9 +25,10 @@ _STATE_COLORS = {
     "running": pal.ACCENT,
     "ok": pal.OK,
     "finished": pal.OK,
+    "degraded": pal.WARN,
+    "warn": pal.WARN,
     "error": pal.ERR,
     "cancelled": pal.WARN,
-    "degraded": pal.WARN,
 }
 
 

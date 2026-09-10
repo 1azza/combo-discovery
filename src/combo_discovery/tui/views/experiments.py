@@ -11,7 +11,7 @@ from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, DataTable, Input, Label, ProgressBar, Select, Static
 
 from .. import theme as pal
@@ -118,12 +118,14 @@ class ExperimentsView(Vertical):
                     yield Button("Start run", id="exp-start", variant="primary")
                     yield Button("Cancel", id="exp-cancel", variant="error", disabled=True)
                     yield Button("Check harness", id="exp-check")
-                    yield Static("", id="exp-form-error", classes="form-error")
+                yield Static("", id="exp-form-note", classes="form-note")
             with Vertical(id="exp-progress", classes="panel"):
                 yield Static("Idle", id="exp-progress-title", classes="panel-title")
                 yield ProgressBar(total=100, show_eta=False, id="exp-bar")
                 yield Static("", id="exp-progress-stats", classes="dim")
                 yield Static("", id="exp-progress-workers", classes="dim")
+                with VerticalScroll(id="exp-worker-list", classes="worker-list"):
+                    yield Static("", id="exp-worker-list-text", classes="dim")
         with Vertical(id="exp-guidance", classes="panel"):
             yield Static("", id="exp-guidance-text")
         with Horizontal(classes="results-head"):
@@ -159,7 +161,7 @@ class ExperimentsView(Vertical):
             second = self._decks[1][1] if len(self._decks) > 1 else self._decks[0][1]
             self.query_one("#exp-deck-b", Select).value = second
         else:
-            self._set_form_error(f"No .dck decks found in {self.decks_dir}")
+            self._set_form_note(f"No .dck decks found in {self.decks_dir}", "err")
 
         policy = self.query_one("#exp-policy", Select)
         policy.set_options([(label, key) for key, label in POLICY_LABELS.items()])
@@ -172,8 +174,18 @@ class ExperimentsView(Vertical):
 
     # -- form helpers -------------------------------------------------------
 
-    def _set_form_error(self, message: str) -> None:
-        self.query_one("#exp-form-error", Static).update(Text(message, style=pal.ERR))
+    _NOTE_TONES = {
+        "err": pal.ERR,
+        "warn": pal.WARN,
+        "muted": pal.MUTED,
+        "faint": pal.FAINT,
+        "ok": pal.OK,
+    }
+
+    def _set_form_note(self, message: str, tone: str = "muted") -> None:
+        """Set the full-width note under the action buttons (wraps, never clips)."""
+        widget = self.query_one("#exp-form-note", Static)
+        widget.update(Text(message, style=self._NOTE_TONES.get(tone, pal.MUTED)))
 
     def _show_guidance(self, message: str, *, title: str | None = None) -> None:
         panel = self.query_one("#exp-guidance")
@@ -259,7 +271,7 @@ class ExperimentsView(Vertical):
             base_port = self.research.base_port
             workers = self.research.n_workers
         workers = max(1, min(workers, _PROBE_MAX_WORKERS))
-        self._set_form_error("checking harness…")
+        self._set_form_note("checking harness…", "faint")
         self._probe_workers("localhost", base_port, workers)
 
     @work(thread=True, group="probe", exclusive=True)
@@ -272,11 +284,11 @@ class ExperimentsView(Vertical):
         app = cast("ComboDiscoveryApp", self.app)
         app.probe = probe
         if probe.ok_count == 0:
-            self._set_form_error("no live harness — connection guidance below")
+            self._set_form_note("no live harness — connection guidance below", "warn")
             self._show_guidance(no_harness_message(probe), title="No live harness")
             self.notify("no live harness found", severity="warning")
         else:
-            self._set_form_error("")
+            self._set_form_note("")
             self._show_guidance("")
             self.notify(
                 f"{probe.ok_count}/{probe.total} worker ports reachable",
@@ -293,20 +305,20 @@ class ExperimentsView(Vertical):
             return
         config, errors = self._read_config()
         if config is None:
-            self._set_form_error("  ·  ".join(errors))
+            self._set_form_note("  ·  ".join(errors), "err")
             self.notify("check the run configuration", severity="error")
             return
         probe = app.probe
         if probe is None:
             self.action_check_harness()
-            self._set_form_error("checking harness — press ctrl+r again in a moment")
+            self._set_form_note("checking harness — press ctrl+r again in a moment", "muted")
             return
         if probe.ok_count == 0:
-            self._set_form_error("no live harness — connection guidance below")
+            self._set_form_note("no live harness — connection guidance below", "warn")
             self._show_guidance(no_harness_message(probe), title="No live harness")
             return
 
-        self._set_form_error("")
+        self._set_form_note("")
         self._show_guidance("")
         run_id = self.store.start_experiment(
             **self.research.experiment_meta(), config=config.experiment_config()
@@ -407,30 +419,44 @@ class ExperimentsView(Vertical):
             self._update_progress()
 
     @staticmethod
-    def _workers_text(app, label: str, color: str) -> Text:
-        text = Text()
-        text.append(label, style=f"bold {color}")
+    def _worker_rows_text(app) -> Text:
+        """One row per worker port, for the capped scroll area.
+
+        Unreachable ports from a probe are amber: with no run active, "no
+        harness" is an expected idle state, not a failure. Red is reserved for
+        a worker excluded during a run (i.e. one that actually failed).
+        """
+        lines: list[Text] = []
         rows = pool_snapshot(app.pool)
         if rows:
-            for row in rows[:8]:
-                state = "live" if row["healthy"] else "excluded"
-                state_color = pal.OK if row["healthy"] else pal.ERR
-                text.append(f"\n{row['port']}  ")
-                text.append(state, style=state_color)
+            for row in rows:
+                line = Text()
+                line.append(f"{row['port']}  ", style=pal.MUTED)
+                if row["healthy"]:
+                    line.append("live", style=pal.OK)
+                else:
+                    line.append("excluded", style=pal.ERR)
                 if row["failures"]:
-                    text.append(f"  fails {row['failures']}", style=pal.FAINT)
-            return text
-        probe = app.probe
-        if probe is not None:
-            for port, ok, detail in probe.results[:8]:
-                text.append(f"\n{port}  ")
-                text.append(
-                    "ok" if ok else detail,
-                    style=pal.OK if ok else pal.ERR,
-                )
-            return text
-        text.append("\nunchecked — press ctrl+t", style=pal.FAINT)
-        return text
+                    line.append(f"  fails {row['failures']}", style=pal.FAINT)
+                lines.append(line)
+        else:
+            probe = app.probe
+            if probe is not None:
+                for port, ok, detail in probe.results:
+                    line = Text()
+                    line.append(f"{port}  ", style=pal.MUTED)
+                    line.append("ok" if ok else detail, style=pal.OK if ok else pal.WARN)
+                    lines.append(line)
+            else:
+                return Text("unchecked — press ctrl+t", style=pal.FAINT)
+
+        if not lines:
+            return Text("unchecked — press ctrl+t", style=pal.FAINT)
+        combined = lines[0]
+        for line in lines[1:]:
+            combined.append("\n")
+            combined.append_text(line)
+        return combined
 
     def _update_progress(self) -> None:
         app = cast("ComboDiscoveryApp", self.app)
@@ -440,12 +466,17 @@ class ExperimentsView(Vertical):
         bar = self.query_one("#exp-bar", ProgressBar)
         stats = self.query_one("#exp-progress-stats", Static)
         workers = self.query_one("#exp-progress-workers", Static)
+        worker_rows = self.query_one("#exp-worker-list-text", Static)
 
         worker_label, worker_state = app.worker_status()
-        worker_color = {"ok": pal.OK, "degraded": pal.WARN, "error": pal.ERR}.get(
-            worker_state, pal.FAINT
-        )
-        workers.update(self._workers_text(app, worker_label, worker_color))
+        worker_color = {
+            "ok": pal.OK,
+            "degraded": pal.WARN,
+            "warn": pal.WARN,
+            "error": pal.ERR,
+        }.get(worker_state, pal.FAINT)
+        workers.update(Text(worker_label, style=f"bold {worker_color}"))
+        worker_rows.update(self._worker_rows_text(app))
 
         if run is None:
             return
