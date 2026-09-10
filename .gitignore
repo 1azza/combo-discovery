@@ -11,3 +11,6 @@ experiments.sqlite
 experiments.sqlite-*
 *.sqlite-wal
 *.sqlite-shm
+
+# project experiment database (generated)
+research.db
