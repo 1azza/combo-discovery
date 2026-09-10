@@ -29,6 +29,7 @@ from .env import (
     StaleDecisionError,
 )
 from .generated import forge_env_pb2 as pb
+from .store import DecisionRef, ExperimentStore
 
 logger = logging.getLogger(__name__)
 
@@ -389,6 +390,32 @@ class GameResult:
     decision_trace: list[DecisionTraceEntry] = field(default_factory=list)
 
 
+def _record_game_result(
+    store: ExperimentStore,
+    run_id: str,
+    result: GameResult,
+    decks: list[tuple[str, str]],
+    seed: int,
+    player_types: Sequence["pb.PlayerType"],
+    max_turns: int,
+    drained: list[pb.GameEvent],
+) -> int:
+    """Persist a completed game: the game row, its drained events, and every
+    accepted decision in ``result.decision_trace``.
+
+    The trace only retains (decision_id, decision_type, answer), so decisions
+    are recorded via DecisionRef with player=-1 (unknown) rather than a full
+    DecisionContext.
+    """
+    game_row = store.record_game(run_id, result, decks, seed, player_types, max_turns)
+    store.record_events(game_row, drained)
+    for decision_id, decision_type, answer in result.decision_trace:
+        store.record_decision(
+            game_row, DecisionRef(decision_id, decision_type), answer, accepted=True
+        )
+    return game_row
+
+
 def run_game(
     client,
     decks: list[tuple[str, str]],
@@ -399,6 +426,8 @@ def run_game(
     collect_events: bool = True,
     player_types: Sequence["pb.PlayerType"] | None = None,
     force_stop_active: bool = False,
+    store: ExperimentStore | None = None,
+    run_id: str | None = None,
 ) -> GameResult:
     """Run one game to completion and return its result.
 
@@ -409,7 +438,16 @@ def run_game(
     a typed answer; None means default_policy. ``force_stop_active`` tells
     the harness to stop any leftover active game before starting (used by the
     worker pool when recovering a worker).
+
+    When ``store`` is given, the completed game, its drained events, and every
+    accepted decision in ``decision_trace`` are persisted under ``run_id``
+    (required; from ExperimentStore.start_experiment).
     """
+    if store is not None and run_id is None:
+        raise ValueError(
+            "run_game(store=...) requires run_id from "
+            "ExperimentStore.start_experiment()"
+        )
     if policy is None:
         policy = default_policy
     start = time.monotonic()
@@ -511,12 +549,10 @@ def run_game(
                 time.sleep(0.1)
                 turns = _retry_transient_timeout(client.get_state, game_id).turn
         # Drain the full event buffer before StopGame drops it.
-        events = (
-            [event_identity(e) for e in client.drain_events(game_id)]
-            if collect_events
-            else []
-        )
+        drained = client.drain_events(game_id) if collect_events else []
+        events = [event_identity(e) for e in drained]
         client.stop_game(game_id)
+        started_game_id = None  # stopped cleanly; suppress failure cleanup
         result = GameResult(
             game_id=game_id,
             seed=seed,
@@ -529,7 +565,11 @@ def run_game(
             events=events,
             decision_trace=trace,
         )
-        started_game_id = None  # stopped cleanly; suppress failure cleanup
+        if store is not None:
+            assert run_id is not None  # guarded above
+            _record_game_result(
+                store, run_id, result, decks, seed, player_types, max_turns, drained
+            )
         return result
     except BaseException:
         # ANY failure after StartGame leaves a live game on the harness; stop
@@ -556,6 +596,8 @@ def run_games(
     timeout_seconds: int = 0,
     player_types: Sequence["pb.PlayerType"] | None = None,
     force_stop_active: bool = False,
+    store: ExperimentStore | None = None,
+    run_id: str | None = None,
 ) -> list[GameResult]:
     return [
         run_game(
@@ -567,6 +609,8 @@ def run_games(
             timeout_seconds=timeout_seconds,
             player_types=player_types,
             force_stop_active=force_stop_active,
+            store=store,
+            run_id=run_id,
         )
         for seed in seeds
     ]

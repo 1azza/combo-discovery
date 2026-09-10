@@ -198,6 +198,8 @@ class WorkerPool:
         policy=None,
         max_turns: int = 0,
         timeout_seconds: int = 0,
+        store=None,
+        run_id: str | None = None,
     ) -> list[GameResult]:
         decks = list(deck_pair)
         seeds = list(seeds)
@@ -251,7 +253,7 @@ class WorkerPool:
                     f"{attempt_guard} worker attempts); failing seeds: {list(pending)}"
                 )
             result = self._run_seed(
-                candidates, decks, seed, policy, max_turns, timeout_seconds
+                candidates, decks, seed, policy, max_turns, timeout_seconds, store, run_id
             )
             seed_tried[seed].update(candidates)
             if result is not None:
@@ -268,6 +270,8 @@ class WorkerPool:
         policy,
         max_turns: int,
         timeout_seconds: int,
+        store=None,
+        run_id: str | None = None,
     ) -> GameResult | None:
         """Try one seed on the given workers in rotation. Returns the
         GameResult on success, or None if every worker failed this round."""
@@ -277,7 +281,8 @@ class WorkerPool:
         for idx in ordered:
             try:
                 result = self._run_job(
-                    self._clients[idx], decks, seed, policy, max_turns, timeout_seconds
+                    self._clients[idx], decks, seed, policy, max_turns,
+                    timeout_seconds, store, run_id,
                 )
             except JOB_FAILURES as e:
                 logger.warning(
@@ -302,6 +307,8 @@ class WorkerPool:
         policy,
         max_turns: int,
         timeout_seconds: int,
+        store=None,
+        run_id: str | None = None,
     ) -> GameResult:
         # One consumed worker attempt. Counted by the global anti-loop guard.
         self._attempts_consumed += 1
@@ -309,6 +316,7 @@ class WorkerPool:
             return run_game(
                 client, decks, seed, policy,
                 max_turns=max_turns, timeout_seconds=timeout_seconds,
+                store=store, run_id=run_id,
             )
         except GameNotActiveError:
             # A worker left with an active game (crashed client, leftover
@@ -323,6 +331,7 @@ class WorkerPool:
                 client, decks, seed, policy,
                 max_turns=max_turns, timeout_seconds=timeout_seconds,
                 force_stop_active=True,
+                store=store, run_id=run_id,
             )
 
     def _note_failure(self, idx: int) -> None:

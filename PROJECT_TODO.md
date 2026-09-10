@@ -16,8 +16,8 @@ Legend:
 - `[x]` Pin Forge source commit: `4f577da7b2a9074f9f66544aaf99405e38cf5ac3`
 - `[x]` Create separate Python research repository
 - `[x]` Add GPL-3 licensing
-- `[ ]` Add a top-level research configuration file
-- `[ ]` Record exact Forge, Java, Python, protobuf, and model versions in experiment metadata
+- `[x]` Add a top-level research configuration file (`research.toml` + loader)
+- `[~]` Record exact Forge, Java, Python, protobuf, and model versions in experiment metadata (forge commit/proto/model recorded; Java/Python runtime versions pending)
 
 ## 1. Forge harness — Java / Layer 1
 
@@ -147,13 +147,13 @@ Legend:
 
 ## 3. Experiment and data infrastructure
 
-- `[ ]` Add SQLite schema for cards, candidates, games, decisions, events, outcomes, and adjudications
-- `[ ]` Make all experiment records append-only and immutable
-- `[ ]` Store exact deck lists, seeds, engine commit, protocol version, policy version, and model version
-- `[ ]` Store raw protobuf/event trajectories for replay
-- `[ ]` Add migration/versioning for the result database
-- `[ ]` Add artifact export to JSONL/Parquet
-- `[ ]` Add experiment manifests and run IDs
+- `[x]` Add SQLite schema for cards, candidates, games, decisions, events, outcomes, and adjudications (`store.py`; cards table deferred to the card-corpus round)
+- `[x]` Make all experiment records append-only and immutable (WAL, no UPDATE/DELETE, source-scan test)
+- `[x]` Store exact deck lists, seeds, engine commit, protocol version, policy version, and model version (`research.toml` + `experiments` table)
+- `[x]` Store raw protobuf/event trajectories for replay (`events` table from drained streams)
+- `[x]` Add migration/versioning for the result database (`schema_version` + migration registry)
+- `[x]` Add artifact export to JSONL/Parquet (JSONL; Parquet deferred as YAGNI)
+- `[ ]` Add experiment manifests and run IDs (run IDs done; full manifest files pending)
 - `[ ]` Add reproducible notebooks/plots
 - `[ ]` Add CI for Python tests, protobuf generation, and Java compilation
 

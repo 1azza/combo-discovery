@@ -1,0 +1,14 @@
+[meta]
+project = "combo-discovery"
+model = "openrouter/z-ai/glm-5.3-flash"
+policy_version = "default-v1"
+
+[engine]
+forge_commit = "4f577da7b2a9074f9f66544aaf99405e38cf5ac3"
+proto_version = 6
+
+[defaults]
+max_turns = 0
+timeout_seconds = 0
+n_workers = 8
+base_port = 50060
