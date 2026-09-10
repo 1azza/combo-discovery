@@ -1,4 +1,4 @@
-"""Typed synchronous client for the forge-harness gRPC service (protocol v5).
+"""Typed synchronous client for the forge-harness gRPC service (protocol v6).
 
 Mirrors the service defined in proto/forge_env.proto. All methods are blocking;
 use WorkerPool for parallelism.
@@ -45,6 +45,12 @@ caller must refetch via get_decision before submitting — appends a determinist
 `SnapshotRestored` event, and re-seeds the engine RNG so identical post-restore
 action sequences replay byte-identically. Restores do not consume tokens; tokens
 are game-scoped and die with the game.
+
+v6 note (normalized events + FullState v2): GameEvent carries a normalized
+`type` from the fixed research vocabulary, plus card_id, detail_raw,
+old_value/new_value and extra (see runner.EVENT_VOCABULARY). get_state() takes
+`view_as_player` (0 = observer: other players' hands/libraries are counts only)
+and FullState v2 adds typed_mana_pools, stack, exile and command zones.
 """
 
 from __future__ import annotations
@@ -56,7 +62,7 @@ import grpc
 from .generated import forge_env_pb2 as pb
 from .generated.forge_env_pb2_grpc import ForgeEnvStub
 
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 6
 
 # INVALID_ARGUMENT classification for decision calls (get_decision /
 # submit_decision). The harness exposes no machine-readable subcode, so we match
@@ -445,8 +451,16 @@ class ForgeEnvClient:
         req = build_submit(game_id, decision_id, answer)
         return self._call(self._ensure_stub().SubmitDecision, req, decision_call=True)
 
-    def get_state(self, game_id: int) -> pb.FullState:
-        return self._call(self._ensure_stub().GetState, pb.GameQuery(game_id=game_id))
+    def get_state(self, game_id: int, view_as_player: int = 0) -> pb.FullState:
+        """Full state inspection.
+
+        ``view_as_player`` selects hidden-info redaction server-side: 0 is the
+        observer view (other players' hands and libraries are reported as
+        counts only, no card identities); any other value is a player slot and
+        reveals that player's private information. Sent as a GameViewQuery.
+        """
+        req = pb.GameViewQuery(game_id=game_id, view_as_player=view_as_player)
+        return self._call(self._ensure_stub().GetState, req)
 
     def poll_events(self, game_id: int, cursor: int = 0) -> pb.EventBatch:
         """Return all buffered events with seq > cursor, in seq order."""

@@ -1,11 +1,11 @@
-"""End-to-end smoke test against a live harness (protocol v5).
+"""End-to-end smoke test against a live harness (protocol v6).
 
 Checks: ping + protocol version, goldfish-vs-goldfish game via the raw client
 (drain events, verify seq strictly increasing from 1, check GameOver.outcome,
 stop_game), a remote-driven game over the v4 typed-decision interface (incl. the
 spell-casting decisions), a determinism section (two same-seed goldfish games
 must produce identical event streams, excluding game_id; a different seed must
-differ), and a v5 snapshot/restore replay determinism check.
+differ), and a snapshot/restore replay determinism check.
 
 Requires a running harness on localhost:50051 (see the Java harness lane).
 """
@@ -115,6 +115,15 @@ def main() -> int:
         print(f"OK: drained {len(events)} events, seq strictly increasing from 1")
         if events[-1].type != "GameOver":
             raise AssertionError(f"last event type is {events[-1].type!r}, expected GameOver")
+        # v6: every event type must come from the fixed normalized vocabulary.
+        from combo_discovery.runner import EVENT_VOCABULARY, validate_event_stream
+
+        seen_event_types = validate_event_stream(events)
+        print(
+            f"OK: {len(seen_event_types)} distinct event types, all in the v6 "
+            f"vocabulary ({len(EVENT_VOCABULARY)} known): "
+            f"{sorted(seen_event_types)}"
+        )
         client.stop_game(active_game)
         active_game = None
         print("OK: stop_game")
@@ -195,7 +204,7 @@ def main() -> int:
             timeout_seconds=120,
         )
         print("OK: snapshot/restore replay — post-restore event suffix identical "
-              "(v5 MCTS determinism guarantee)")
+              "(MCTS determinism guarantee)")
     except Exception as e:
         print(f"FAIL: {type(e).__name__}: {e}")
         # Never leave a game active on the single-game harness, including a

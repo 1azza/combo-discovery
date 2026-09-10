@@ -1,11 +1,32 @@
 # Project Status
 
-Last verified during the proto v5 round (snapshot/restore + state hashing).
-**Gate item 4 COMPLETE; gate item 5 COMPLETE** — the pre-Layer-2 gate from
-ARCHITECTURE.md is fully closed. Remaining plumbing per PLUMBING_SPEC.md:
-event taxonomy + FullState v2, persistence, hardening.
+Last verified during the proto v6 round (normalized event taxonomy +
+FullState v2). Gate items 1–5 remain complete; events are now
+research-grade structured data.
 
 ## Verified
+
+- [x] Protocol v6 (event taxonomy): the GameLog substring matcher is gone —
+      engine events are built from Forge's structured GameEvent records via
+      a single EventBus-registered collector (synchronous game-thread
+      dispatch, no duplicate sources); 28-type normalized vocabulary
+      (`EVENT_VOCABULARY` in runner.py, validated in the smoke); raw log
+      text preserved in `detail_raw`; GameEvent carries card_id,
+      old_value/new_value (counter/life deltas), and extra (zones, sa/mode
+      descriptions). Deterministic `max_turns` moved to the structured
+      `GameEventTurnBegan` handler (same game-thread timing).
+- [x] Event semantics spot-checked live: SpellCast/LandPlayed/
+      PermanentEntered (from/to zones in extra), LifeChanged with old/new,
+      PlayerDamaged with amount/combat/infect, AttackersDeclared;
+      229/358 events carried raw log text; TurnStarted count == turns+1
+      (single source, no duplication).
+- [x] FullState v2: typed per-player mana pools, stack entries (verified
+      mid-resolution), exile and command zones, hidden-info redaction via
+      `GetState(view_as_player=...)` (observer sees counts only; the chosen
+      slot sees its own hand), and a flat `battlefield_cards` listing with
+      full Permanent detail (typed counters — verified with Arcbound Worker
+      modular — damage, attachments, tokens); `Zone.permanents` ids index
+      into it.
 
 - [x] Protocol v5 (snapshot/restore, gate item 5): `Snapshot` requires an
       outstanding decision (engine parked = quiescent), returns an opaque
@@ -144,9 +165,10 @@ event taxonomy + FullState v2, persistence, hardening.
 - [ ] Long-tail callbacks deliberately keep AI defaults (mana payment,
       generic confirms, trigger ordering, votes/dice/sectors) — documented in
       the proto header, not a defect
-- [ ] FullState is a partial inspection state (graveyard/exile/stack/typed
-      mana/command zone still missing) — PLUMBING_SPEC.md section 3, next
-      round
+- [ ] FullState library zones show counts only; revealed-card state (top
+      card when revealed) is not yet implemented
+- [ ] Non-priority (combat/target) snapshot restores fall back to the abort
+      NO-OP rather than re-presenting the same decision
 - [ ] `FullState` is a partial inspection state, not a complete search state
 - [ ] One active game per harness process at a time (registry routes by
       `game_id`, concurrent games not hosted yet)
@@ -163,8 +185,7 @@ event taxonomy + FullState v2, persistence, hardening.
 
 ## Next Work
 
-1. Event taxonomy + FullState v2 (PLUMBING_SPEC.md section 3).
-2. Trajectory persistence + SQLite + config/metadata (PLUMBING_SPEC.md
+1. Trajectory persistence + SQLite + config/metadata (PLUMBING_SPEC.md
    section 4).
-3. Hardening: legality-filtered priority options, real goldfish, conformance
+2. Hardening: legality-filtered priority options, real goldfish, conformance
    + cancellation tests, CI.

@@ -43,10 +43,10 @@ class TestEnvClient:
 
     def test_ping_returns_pong(self):
         client, stub = make_client()
-        stub.Ping.return_value = pb.Pong(version="0.5.0", game_active=False, protocol_version=5)
+        stub.Ping.return_value = pb.Pong(version="0.6.0", game_active=False, protocol_version=6)
         pong = client.ping()
-        assert pong.version == "0.5.0"
-        assert pong.protocol_version == 5
+        assert pong.version == "0.6.0"
+        assert pong.protocol_version == 6
 
     def test_connection_error_resets_stub(self):
         client, stub = make_client()
@@ -179,24 +179,24 @@ class TestEnvClient:
             client.submit_decision(5, 3, ("option_id", 1))
         assert excinfo.value.code == grpc.StatusCode.FAILED_PRECONDITION
 
-    def test_connect_accepts_protocol_v5(self):
+    def test_connect_accepts_protocol_v6(self):
         client, stub = make_client()
-        stub.Ping.return_value = pb.Pong(version="0.5.0", protocol_version=5)
+        stub.Ping.return_value = pb.Pong(version="0.6.0", protocol_version=6)
         pong = client.connect()
-        assert pong.protocol_version == 5
+        assert pong.protocol_version == 6
 
     def test_connect_rejects_protocol_mismatch(self):
         client, stub = make_client()
-        stub.Ping.return_value = pb.Pong(version="0.4.0", protocol_version=4)
+        stub.Ping.return_value = pb.Pong(version="0.5.0", protocol_version=5)
         with pytest.raises(ProtocolMismatchError, match="protocol version mismatch"):
             client.connect()
-        with pytest.raises(ProtocolMismatchError, match="protocol_version=4"):
+        with pytest.raises(ProtocolMismatchError, match="protocol_version=5"):
             client.connect()
 
     def test_protocol_version_exposed(self):
         client, stub = make_client()
-        stub.Ping.return_value = pb.Pong(protocol_version=5)
-        assert client.protocol_version() == 5
+        stub.Ping.return_value = pb.Pong(protocol_version=6)
+        assert client.protocol_version() == 6
 
     def test_start_game_returns_game_id(self):
         client, stub = make_client()
@@ -286,6 +286,47 @@ class TestEnvClient:
         stub.GetState.return_value = pb.FullState(game_id=9, state_hash="H1")
         assert client.get_state(9).state_hash == "H1"
 
+    # --- v6 FullState v2 / GameViewQuery ----------------------------------
+
+    def test_get_state_sends_game_view_query_default_observer(self):
+        client, stub = make_client()
+        stub.GetState.return_value = pb.FullState(game_id=9)
+        client.get_state(9)
+        req = stub.GetState.call_args[0][0]
+        assert isinstance(req, pb.GameViewQuery)
+        assert (req.game_id, req.view_as_player) == (9, 0)
+
+    def test_get_state_view_as_player_override(self):
+        client, stub = make_client()
+        stub.GetState.return_value = pb.FullState(game_id=9)
+        client.get_state(9, view_as_player=2)
+        assert stub.GetState.call_args[0][0].view_as_player == 2
+
+    def test_full_state_v2_fields_parse(self):
+        client, stub = make_client()
+        state = pb.FullState(game_id=9, state_hash="H1")
+        state.typed_mana_pools.add(white=1, blue=2, black=3, red=4, green=5, colorless=6)
+        entry = state.stack.add(stack_index=0, sa_description="Bolt", card_name="Bolt", controller=1)
+        state.exile.add(cards=[pb.CardRef(name="Exiled Card", count=1)])
+        state.command.add(cards=[pb.CardRef(name="Commander", count=1)])
+        perm = pb.Permanent(id=1, card_name="Bear", typed_counters=[pb.TypedCounter(type="+1/+1", count=2)], damage=3)
+        stub.GetState.return_value = state
+        got = client.get_state(9)
+        assert got.typed_mana_pools[0].white == 1
+        assert got.typed_mana_pools[0].colorless == 6
+        assert (entry.stack_index, entry.sa_description) == (0, "Bolt")
+        assert got.stack[0].card_name == "Bolt"
+        assert got.exile[0].cards[0].name == "Exiled Card"
+        assert got.command[0].cards[0].name == "Commander"
+        assert got.typed_mana_pools[0].green == 5
+        # Permanent v2 fields parse from the same FullState shape.
+        assert perm.typed_counters[0].type == "+1/+1"
+        assert perm.typed_counters[0].count == 2
+        assert perm.damage == 3
+        # The deprecated map field still exists for wire compat.
+        assert pb.Permanent.DESCRIPTOR.fields_by_name["counters"].number == 8
+        assert pb.FullState.DESCRIPTOR.fields_by_name["typed_mana_pools"].number == 13
+
     def test_get_decision_uses_decision_timeout(self):
         client, stub = make_client()
         stub.GetDecision.return_value = pb.DecisionRequest(game_id=9, decision_id=1)
@@ -355,8 +396,8 @@ class TestEnvClient:
         stub.PollEvents.side_effect = [
             pb.EventBatch(
                 events=[
-                    pb.GameEvent(seq=1, game_id=5, type="TurnStarted", detail="1"),
-                    pb.GameEvent(seq=2, game_id=5, type="LifeChanged", detail="20->17"),
+                    pb.GameEvent(seq=1, game_id=5, type="TurnStarted", detail_raw="1"),
+                    pb.GameEvent(seq=2, game_id=5, type="LifeChanged", detail_raw="20->17"),
                 ],
                 next_cursor=2,
             ),

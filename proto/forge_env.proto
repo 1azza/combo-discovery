@@ -1,4 +1,4 @@
-// ForgeEnv gRPC contract — v5 (snapshot/restore + state hashing).
+// ForgeEnv gRPC contract — v6 (normalized event taxonomy + FullState v2).
 // Canonical copy lives in the Python repo: combo-discovery/proto/forge_env.proto.
 // The Java harness mirrors it at forge-harness/src/main/proto/forge_env.proto.
 //
@@ -7,17 +7,23 @@
 //  - Card identity: Forge card id (int32, stable within a game) + card name.
 //  - Determinism: same (decks, seed, config) MUST yield byte-identical event streams.
 //
-// v5 changes on top of v4 (see PLUMBING_SPEC.md section 2):
-//  - Snapshot is now implemented: requires an outstanding decision (the
-//    engine thread is parked, so the game state is quiescent); returns an
-//    opaque in-process StateToken (game-scoped, dies with the game, max 32
-//    live per game) plus a state_hash cache key.
-//  - Restore applies the token's game copy on the parked engine thread,
-//    invalidates the outstanding decision (client must refetch), appends a
-//    deterministic `SnapshotRestored` event, and re-seeds the engine RNG
-//    deterministically from (game_id, token) so identical post-restore
-//    action sequences replay byte-identically.
-//  - protocol_version is now 5.
+// v6 changes on top of v5 (see PLUMBING_SPEC.md section 3):
+//  - Events are normalized: GameEvent.type uses the fixed research vocabulary
+//    (CardDrawn, LandPlayed, SpellCast, SpellResolved, PermanentEntered,
+//    PermanentLeftBattlefield, CardTapped, CardCounters, PlayerCounters,
+//    AttachmentMoved, ManaProduced, ManaSpent, LifeChanged, PlayerDamaged,
+//    CardDamaged, AttackersDeclared, BlockersDeclared, TriggerOrdered,
+//    TurnStarted, Phase, Shuffled, Scry, Surveil, Mulligan,
+//    SnapshotRestored, DecisionTimeout, DecisionGap, GameOver) built from the
+//    engine's structured GameEvent records — the substring-matching of log
+//    text is gone. Raw log text is preserved in detail_raw.
+//  - GameEvent gains card_id (0 = N/A), old_value/new_value (counter/life
+//    deltas), and extra (zone names, sa/target descriptions, mode text).
+//  - FullState v2: typed per-player mana pools, stack entries, exile and
+//    command zones, and hidden-info redaction via GameQuery.view_as_player
+//    (0 = observer: others' hands/libraries are counts only).
+//  - Permanent gains typed counters and damage.
+//  - protocol_version is now 6.
 
 syntax = "proto3";
 package forgeenv;
@@ -32,8 +38,10 @@ service ForgeEnv {
   rpc GetDecision(GameQuery) returns (DecisionRequest);
   // Submit the acting player's choice; engine advances until next decision or game end.
   rpc SubmitDecision(DecisionSubmit) returns (StepResult);
-  // Full state inspection of current game.
-  rpc GetState(GameQuery) returns (FullState);
+  // Full state inspection of current game. view_as_player selects the
+// hidden-info view: 0 = observer (others' hands/libraries are counts only),
+// else the given player slot (their hand visible to them).
+  rpc GetState(GameViewQuery) returns (FullState);
   // Poll events with seq > cursor. cursor=0 returns from the first event.
   rpc PollEvents(PollRequest) returns (EventBatch);
   // MCTS support: opaque in-process state tokens. Snapshot requires an
@@ -54,7 +62,7 @@ message Empty {}
 message Pong {
   string version = 1;
   bool game_active = 2;
-  int32 protocol_version = 3;  // 5 for this contract
+  int32 protocol_version = 3;  // 6 for this contract
 }
 
 message DeckSpec {
@@ -87,6 +95,13 @@ message StartResponse {
 
 message GameQuery {
   int64 game_id = 1;
+}
+
+// GetState query with hidden-info selection. view_as_player = 0 means the
+// observer view; any other slot means that player's private info is visible.
+message GameViewQuery {
+  int64 game_id = 1;
+  int32 view_as_player = 2;         // 0 = observer
 }
 
 enum Outcome {
@@ -271,12 +286,23 @@ message GameEvent {
   int64 game_id = 2;
   int32 turn = 3;
   string phase = 4;
-  string type = 5;                  // "SpellResolved" | "PermanentEntered" | "TriggerFired"
-                                    // | "LifeChanged" | "TurnStarted" | "CardDrawn"
-                                    // | "PermanentLeftBattlefield" | "GameOver"
+  string type = 5;                  // normalized vocabulary (see header):
+                                    // CardDrawn | LandPlayed | SpellCast | SpellResolved
+                                    // | PermanentEntered | PermanentLeftBattlefield
+                                    // | CardTapped | CardCounters | PlayerCounters
+                                    // | AttachmentMoved | ManaProduced | ManaSpent
+                                    // | LifeChanged | PlayerDamaged | CardDamaged
+                                    // | AttackersDeclared | BlockersDeclared
+                                    // | TriggerOrdered | TurnStarted | Phase | Shuffled
+                                    // | Scry | Surveil | Mulligan | SnapshotRestored
+                                    // | DecisionTimeout | DecisionGap | GameOver
   int32 player = 6;                 // acting/affected player
-  string card_name = 7;
-  string detail = 8;                // structured extra info, "key=value;key=value"
+  int32 card_id = 7;                // engine card id; 0 = N/A
+  string card_name = 8;
+  string detail_raw = 9;            // raw log text, preserved verbatim
+  int32 old_value = 10;             // counter/life old value (when applicable)
+  int32 new_value = 11;             // counter/life new value (when applicable)
+  string extra = 12;                // from/to zone names, sa/target/mode descriptions
 }
 
 message StepResult {
@@ -296,6 +322,11 @@ message EventBatch {
   bool game_over = 3;
 }
 
+message TypedCounter {
+  string type = 1;                  // counter type name (e.g. "+1/+1")
+  int32 count = 2;
+}
+
 message Permanent {
   int32 id = 1;
   string card_name = 2;
@@ -304,10 +335,30 @@ message Permanent {
   bool tapped = 5;
   bool attacking = 6;
   bool blocking = 7;
-  map<string, int32> counters = 8;
+  map<string, int32> counters = 8;  // DEPRECATED in v6 (kept for wire compat);
+                                    // prefer typed_counters
   repeated string attachments = 9;  // names of attached permanents (auras/equipment)
   bool is_token = 10;
   string type_line = 11;
+  repeated TypedCounter typed_counters = 12;
+  int32 damage = 13;                // damage currently marked
+}
+
+message StackEntry {
+  int32 stack_index = 1;
+  string sa_description = 2;        // spell/ability text
+  string card_name = 3;
+  int32 controller = 4;
+}
+
+// Typed mana pool per player.
+message ManaPool {
+  int32 white = 1;
+  int32 blue = 2;
+  int32 black = 3;
+  int32 red = 4;
+  int32 green = 5;
+  int32 colorless = 6;
 }
 
 message FullState {
@@ -316,14 +367,22 @@ message FullState {
   string phase = 3;
   int32 active_player = 4;
   repeated int32 life = 5;
-  // Per-player zones: hand/library/graveyard/battlefield. Index = player slot.
+  // Per-player zones. Index = player slot.
   repeated Zone hand = 6;
   repeated Zone battlefield = 7;
   repeated Zone graveyard = 8;
   repeated Zone library = 9;        // top card first; counts only unless revealed
-  map<string, int32> mana_pools = 10;
+  map<string, int32> mana_pools = 10;  // DEPRECATED in v6; prefer typed_mana_pools
   repeated GameEvent recent_events = 11;
   string state_hash = 12;           // SHA-256 projection; cache key only
+  repeated ManaPool typed_mana_pools = 13;  // index = player slot
+  repeated StackEntry stack = 14;   // current stack, bottom first
+  repeated Zone exile = 15;         // per-player exile zones
+  repeated Zone command = 16;       // per-player command zones
+  // Flat battlefield listing; Zone.permanents ids (battlefield zone) index
+  // into this list. Carries the full Permanent detail (typed counters,
+  // damage).
+  repeated Permanent battlefield_cards = 17;
 }
 
 message Zone {

@@ -80,18 +80,18 @@ Legend:
 - `[x]` Decouple event delivery from `SubmitDecision`
 - `[x]` Add `PollEvents(cursor)` (independent event stream; per-game monotonic seq from 1)
 - `[x]` Deliver events for Forge-AI-vs-Forge-AI and goldfish-only games
-- `[ ]` Define a stable event taxonomy for research:
-  - `[ ]` card drawn
-  - `[ ]` card cast
-  - `[ ]` ability activated
-  - `[ ]` spell/ability resolved
-  - `[ ]` permanent entered/left battlefield
-  - `[ ]` trigger created/resolved
-  - `[ ]` mana produced/spent
-  - `[ ]` life/counter changes
-  - `[ ]` combat decisions and damage
-  - `[ ]` game outcome
-- `[ ]` Preserve raw Forge log text alongside normalized events
+- `[x]` Add a stable event taxonomy for research:
+  - `[x]` card drawn
+  - `[x]` card cast
+  - `[x]` ability activated (SpellCast/TriggerOrdered via structured engine events)
+  - `[x]` spell/ability resolved
+  - `[x]` permanent entered/left battlefield
+  - `[~]` trigger created/resolved (TriggerOrdered exists; trigger lifecycle events not separated)
+  - `[x]` mana produced/spent
+  - `[x]` life/counter changes
+  - `[x]` combat decisions and damage
+  - `[x]` game outcome
+- `[x]` Preserve raw Forge log text alongside normalized events (`detail_raw`)
 - `[x]` Add event-stream replay tests (same `(decks, seed)` → byte-identical event streams, verified live)
 
 ### 1.5 State and snapshots
@@ -100,9 +100,9 @@ Legend:
 - `[~]` Define protobuf messages for permanents, zones, counters, attachments, and mana
 - `[x]` Implement `Snapshot` and `Restore` before MCTS or Go-Explore work (proto v5: decision-parked snapshots, reusable tokens, RNG re-seed, byte-identical post-restore replay verified live)
 - `[x]` Make `FullState` semantically complete and versioned — partially: `state_hash` added; zone completeness is the next round
-- `[ ]` Add graveyard, exile, stack, command zone, library counts, and revealed-card state
-- `[ ]` Represent mana as typed colored/colorless quantities rather than a string-keyed map
-- `[ ]` Represent permanents using the defined `Permanent` message rather than only `CardRef`
+- `[~]` Add graveyard, exile, stack, command zone, library counts, and revealed-card state (graveyard/exile/command/stack done in v6; revealed-card state pending)
+- `[x]` Represent mana as typed colored/colorless quantities rather than a string-keyed map (`ManaPool` message; string map deprecated)
+- `[x]` Represent permanents using the defined `Permanent` message rather than only `CardRef` (`FullState.battlefield_cards` with typed counters/damage; `Zone.permanents` indices)
 - `[ ]` Add hidden-information policy: observer view versus player view
 - `[ ]` Add state hashing for cache keys and deterministic replay
 - `[ ]` Verify snapshot/restore equivalence with state hashes and event suffixes

@@ -118,6 +118,14 @@ class GameQuery(_message.Message):
     game_id: int
     def __init__(self, game_id: _Optional[int] = ...) -> None: ...
 
+class GameViewQuery(_message.Message):
+    __slots__ = ("game_id", "view_as_player")
+    GAME_ID_FIELD_NUMBER: _ClassVar[int]
+    VIEW_AS_PLAYER_FIELD_NUMBER: _ClassVar[int]
+    game_id: int
+    view_as_player: int
+    def __init__(self, game_id: _Optional[int] = ..., view_as_player: _Optional[int] = ...) -> None: ...
+
 class Option(_message.Message):
     __slots__ = ("id", "kind", "card_name", "target_names", "description")
     ID_FIELD_NUMBER: _ClassVar[int]
@@ -291,24 +299,32 @@ class DecisionSubmit(_message.Message):
     def __init__(self, game_id: _Optional[int] = ..., decision_id: _Optional[int] = ..., option_id: _Optional[int] = ..., boolean_answer: _Optional[bool] = ..., card_ids: _Optional[_Union[IntList, _Mapping]] = ..., number_answer: _Optional[int] = ..., attackers: _Optional[_Union[AttackerList, _Mapping]] = ..., blockers: _Optional[_Union[BlockerList, _Mapping]] = ..., damage: _Optional[_Union[DamageList, _Mapping]] = ..., scry: _Optional[_Union[CardPartition, _Mapping]] = ..., targets: _Optional[_Union[TargetSelection, _Mapping]] = ...) -> None: ...
 
 class GameEvent(_message.Message):
-    __slots__ = ("seq", "game_id", "turn", "phase", "type", "player", "card_name", "detail")
+    __slots__ = ("seq", "game_id", "turn", "phase", "type", "player", "card_id", "card_name", "detail_raw", "old_value", "new_value", "extra")
     SEQ_FIELD_NUMBER: _ClassVar[int]
     GAME_ID_FIELD_NUMBER: _ClassVar[int]
     TURN_FIELD_NUMBER: _ClassVar[int]
     PHASE_FIELD_NUMBER: _ClassVar[int]
     TYPE_FIELD_NUMBER: _ClassVar[int]
     PLAYER_FIELD_NUMBER: _ClassVar[int]
+    CARD_ID_FIELD_NUMBER: _ClassVar[int]
     CARD_NAME_FIELD_NUMBER: _ClassVar[int]
-    DETAIL_FIELD_NUMBER: _ClassVar[int]
+    DETAIL_RAW_FIELD_NUMBER: _ClassVar[int]
+    OLD_VALUE_FIELD_NUMBER: _ClassVar[int]
+    NEW_VALUE_FIELD_NUMBER: _ClassVar[int]
+    EXTRA_FIELD_NUMBER: _ClassVar[int]
     seq: int
     game_id: int
     turn: int
     phase: str
     type: str
     player: int
+    card_id: int
     card_name: str
-    detail: str
-    def __init__(self, seq: _Optional[int] = ..., game_id: _Optional[int] = ..., turn: _Optional[int] = ..., phase: _Optional[str] = ..., type: _Optional[str] = ..., player: _Optional[int] = ..., card_name: _Optional[str] = ..., detail: _Optional[str] = ...) -> None: ...
+    detail_raw: str
+    old_value: int
+    new_value: int
+    extra: str
+    def __init__(self, seq: _Optional[int] = ..., game_id: _Optional[int] = ..., turn: _Optional[int] = ..., phase: _Optional[str] = ..., type: _Optional[str] = ..., player: _Optional[int] = ..., card_id: _Optional[int] = ..., card_name: _Optional[str] = ..., detail_raw: _Optional[str] = ..., old_value: _Optional[int] = ..., new_value: _Optional[int] = ..., extra: _Optional[str] = ...) -> None: ...
 
 class StepResult(_message.Message):
     __slots__ = ("events", "decision_pending", "game_over")
@@ -338,8 +354,16 @@ class EventBatch(_message.Message):
     game_over: bool
     def __init__(self, events: _Optional[_Iterable[_Union[GameEvent, _Mapping]]] = ..., next_cursor: _Optional[int] = ..., game_over: _Optional[bool] = ...) -> None: ...
 
+class TypedCounter(_message.Message):
+    __slots__ = ("type", "count")
+    TYPE_FIELD_NUMBER: _ClassVar[int]
+    COUNT_FIELD_NUMBER: _ClassVar[int]
+    type: str
+    count: int
+    def __init__(self, type: _Optional[str] = ..., count: _Optional[int] = ...) -> None: ...
+
 class Permanent(_message.Message):
-    __slots__ = ("id", "card_name", "controller", "owner", "tapped", "attacking", "blocking", "counters", "attachments", "is_token", "type_line")
+    __slots__ = ("id", "card_name", "controller", "owner", "tapped", "attacking", "blocking", "counters", "attachments", "is_token", "type_line", "typed_counters", "damage")
     class CountersEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -358,6 +382,8 @@ class Permanent(_message.Message):
     ATTACHMENTS_FIELD_NUMBER: _ClassVar[int]
     IS_TOKEN_FIELD_NUMBER: _ClassVar[int]
     TYPE_LINE_FIELD_NUMBER: _ClassVar[int]
+    TYPED_COUNTERS_FIELD_NUMBER: _ClassVar[int]
+    DAMAGE_FIELD_NUMBER: _ClassVar[int]
     id: int
     card_name: str
     controller: int
@@ -369,10 +395,40 @@ class Permanent(_message.Message):
     attachments: _containers.RepeatedScalarFieldContainer[str]
     is_token: bool
     type_line: str
-    def __init__(self, id: _Optional[int] = ..., card_name: _Optional[str] = ..., controller: _Optional[int] = ..., owner: _Optional[int] = ..., tapped: _Optional[bool] = ..., attacking: _Optional[bool] = ..., blocking: _Optional[bool] = ..., counters: _Optional[_Mapping[str, int]] = ..., attachments: _Optional[_Iterable[str]] = ..., is_token: _Optional[bool] = ..., type_line: _Optional[str] = ...) -> None: ...
+    typed_counters: _containers.RepeatedCompositeFieldContainer[TypedCounter]
+    damage: int
+    def __init__(self, id: _Optional[int] = ..., card_name: _Optional[str] = ..., controller: _Optional[int] = ..., owner: _Optional[int] = ..., tapped: _Optional[bool] = ..., attacking: _Optional[bool] = ..., blocking: _Optional[bool] = ..., counters: _Optional[_Mapping[str, int]] = ..., attachments: _Optional[_Iterable[str]] = ..., is_token: _Optional[bool] = ..., type_line: _Optional[str] = ..., typed_counters: _Optional[_Iterable[_Union[TypedCounter, _Mapping]]] = ..., damage: _Optional[int] = ...) -> None: ...
+
+class StackEntry(_message.Message):
+    __slots__ = ("stack_index", "sa_description", "card_name", "controller")
+    STACK_INDEX_FIELD_NUMBER: _ClassVar[int]
+    SA_DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    CARD_NAME_FIELD_NUMBER: _ClassVar[int]
+    CONTROLLER_FIELD_NUMBER: _ClassVar[int]
+    stack_index: int
+    sa_description: str
+    card_name: str
+    controller: int
+    def __init__(self, stack_index: _Optional[int] = ..., sa_description: _Optional[str] = ..., card_name: _Optional[str] = ..., controller: _Optional[int] = ...) -> None: ...
+
+class ManaPool(_message.Message):
+    __slots__ = ("white", "blue", "black", "red", "green", "colorless")
+    WHITE_FIELD_NUMBER: _ClassVar[int]
+    BLUE_FIELD_NUMBER: _ClassVar[int]
+    BLACK_FIELD_NUMBER: _ClassVar[int]
+    RED_FIELD_NUMBER: _ClassVar[int]
+    GREEN_FIELD_NUMBER: _ClassVar[int]
+    COLORLESS_FIELD_NUMBER: _ClassVar[int]
+    white: int
+    blue: int
+    black: int
+    red: int
+    green: int
+    colorless: int
+    def __init__(self, white: _Optional[int] = ..., blue: _Optional[int] = ..., black: _Optional[int] = ..., red: _Optional[int] = ..., green: _Optional[int] = ..., colorless: _Optional[int] = ...) -> None: ...
 
 class FullState(_message.Message):
-    __slots__ = ("game_id", "turn", "phase", "active_player", "life", "hand", "battlefield", "graveyard", "library", "mana_pools", "recent_events", "state_hash")
+    __slots__ = ("game_id", "turn", "phase", "active_player", "life", "hand", "battlefield", "graveyard", "library", "mana_pools", "recent_events", "state_hash", "typed_mana_pools", "stack", "exile", "command", "battlefield_cards")
     class ManaPoolsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -392,6 +448,11 @@ class FullState(_message.Message):
     MANA_POOLS_FIELD_NUMBER: _ClassVar[int]
     RECENT_EVENTS_FIELD_NUMBER: _ClassVar[int]
     STATE_HASH_FIELD_NUMBER: _ClassVar[int]
+    TYPED_MANA_POOLS_FIELD_NUMBER: _ClassVar[int]
+    STACK_FIELD_NUMBER: _ClassVar[int]
+    EXILE_FIELD_NUMBER: _ClassVar[int]
+    COMMAND_FIELD_NUMBER: _ClassVar[int]
+    BATTLEFIELD_CARDS_FIELD_NUMBER: _ClassVar[int]
     game_id: int
     turn: int
     phase: str
@@ -404,7 +465,12 @@ class FullState(_message.Message):
     mana_pools: _containers.ScalarMap[str, int]
     recent_events: _containers.RepeatedCompositeFieldContainer[GameEvent]
     state_hash: str
-    def __init__(self, game_id: _Optional[int] = ..., turn: _Optional[int] = ..., phase: _Optional[str] = ..., active_player: _Optional[int] = ..., life: _Optional[_Iterable[int]] = ..., hand: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., battlefield: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., graveyard: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., library: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., mana_pools: _Optional[_Mapping[str, int]] = ..., recent_events: _Optional[_Iterable[_Union[GameEvent, _Mapping]]] = ..., state_hash: _Optional[str] = ...) -> None: ...
+    typed_mana_pools: _containers.RepeatedCompositeFieldContainer[ManaPool]
+    stack: _containers.RepeatedCompositeFieldContainer[StackEntry]
+    exile: _containers.RepeatedCompositeFieldContainer[Zone]
+    command: _containers.RepeatedCompositeFieldContainer[Zone]
+    battlefield_cards: _containers.RepeatedCompositeFieldContainer[Permanent]
+    def __init__(self, game_id: _Optional[int] = ..., turn: _Optional[int] = ..., phase: _Optional[str] = ..., active_player: _Optional[int] = ..., life: _Optional[_Iterable[int]] = ..., hand: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., battlefield: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., graveyard: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., library: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., mana_pools: _Optional[_Mapping[str, int]] = ..., recent_events: _Optional[_Iterable[_Union[GameEvent, _Mapping]]] = ..., state_hash: _Optional[str] = ..., typed_mana_pools: _Optional[_Iterable[_Union[ManaPool, _Mapping]]] = ..., stack: _Optional[_Iterable[_Union[StackEntry, _Mapping]]] = ..., exile: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., command: _Optional[_Iterable[_Union[Zone, _Mapping]]] = ..., battlefield_cards: _Optional[_Iterable[_Union[Permanent, _Mapping]]] = ...) -> None: ...
 
 class Zone(_message.Message):
     __slots__ = ("cards", "permanents")

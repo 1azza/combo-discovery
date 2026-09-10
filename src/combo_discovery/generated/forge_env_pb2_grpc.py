@@ -54,7 +54,7 @@ class ForgeEnvStub:
                 _registered_method=True)
         self.GetState = channel.unary_unary(
                 '/forgeenv.ForgeEnv/GetState',
-                request_serializer=forge__env__pb2.GameQuery.SerializeToString,
+                request_serializer=forge__env__pb2.GameViewQuery.SerializeToString,
                 response_deserializer=forge__env__pb2.FullState.FromString,
                 _registered_method=True)
         self.PollEvents = channel.unary_unary(
@@ -114,7 +114,9 @@ class ForgeEnvServicer:
         raise NotImplementedError('Method not implemented!')
 
     def GetState(self, request, context):
-        """Full state inspection of current game.
+        """Full state inspection of current game. view_as_player selects the
+        hidden-info view: 0 = observer (others' hands/libraries are counts only),
+        else the given player slot (their hand visible to them).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -183,7 +185,7 @@ def add_ForgeEnvServicer_to_server(servicer, server):
             ),
             'GetState': grpc.unary_unary_rpc_method_handler(
                     servicer.GetState,
-                    request_deserializer=forge__env__pb2.GameQuery.FromString,
+                    request_deserializer=forge__env__pb2.GameViewQuery.FromString,
                     response_serializer=forge__env__pb2.FullState.SerializeToString,
             ),
             'PollEvents': grpc.unary_unary_rpc_method_handler(
@@ -323,7 +325,7 @@ class ForgeEnv:
             request,
             target,
             '/forgeenv.ForgeEnv/GetState',
-            forge__env__pb2.GameQuery.SerializeToString,
+            forge__env__pb2.GameViewQuery.SerializeToString,
             forge__env__pb2.FullState.FromString,
             options,
             channel_credentials,

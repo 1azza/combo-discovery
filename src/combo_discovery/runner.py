@@ -52,9 +52,43 @@ MAX_POLL_TIMEOUTS = 3
 POLL_BACKOFF_S = 0.1
 
 # Identity tuple for one event: everything deterministic about it, minus the
-# game_id (which legitimately differs between runs).
-EventKey = tuple[int, str, int, str, int, str, str]
-# (seq, type, turn, phase, player, card_name, detail)
+# game_id (which legitimately differs between runs). v6 shape:
+# (seq, type, turn, phase, player, card_id, card_name, detail_raw,
+#  old_value, new_value, extra)
+EventKey = tuple[int, str, int, str, int, int, str, str, int, int, str]
+
+# The fixed v6 normalized event vocabulary (proto GameEvent.type). Any event
+# type outside this set is a contract violation: validate_event_stream raises.
+EVENT_VOCABULARY = frozenset({
+    "CardDrawn",
+    "LandPlayed",
+    "SpellCast",
+    "SpellResolved",
+    "PermanentEntered",
+    "PermanentLeftBattlefield",
+    "CardTapped",
+    "CardCounters",
+    "PlayerCounters",
+    "AttachmentMoved",
+    "ManaProduced",
+    "ManaSpent",
+    "LifeChanged",
+    "PlayerDamaged",
+    "CardDamaged",
+    "AttackersDeclared",
+    "BlockersDeclared",
+    "TriggerOrdered",
+    "TurnStarted",
+    "Phase",
+    "Shuffled",
+    "Scry",
+    "Surveil",
+    "Mulligan",
+    "SnapshotRestored",
+    "DecisionTimeout",
+    "DecisionGap",
+    "GameOver",
+})
 
 # One entry of the decision trace: (decision_id, decision_type, answer).
 # decision_type is the pb.DecisionType enum value; answer is the typed answer
@@ -63,8 +97,51 @@ DecisionTraceEntry = tuple[int, int, Answer]
 
 
 def event_identity(e: pb.GameEvent) -> EventKey:
-    """Deterministic identity of a GameEvent: seq included, game_id excluded."""
-    return (e.seq, e.type, e.turn, e.phase, e.player, e.card_name, e.detail)
+    """Full deterministic identity of a v6 GameEvent.
+
+    Includes every event field except game_id (which legitimately differs
+    between runs): seq, type, turn, phase, player, card_id, card_name,
+    detail_raw, old_value, new_value, extra.
+    """
+    return (
+        e.seq,
+        e.type,
+        e.turn,
+        e.phase,
+        e.player,
+        e.card_id,
+        e.card_name,
+        e.detail_raw,
+        e.old_value,
+        e.new_value,
+        e.extra,
+    )
+
+
+def _event_type(e: pb.GameEvent | EventKey) -> str:
+    return e.type if isinstance(e, pb.GameEvent) else e[1]
+
+
+def validate_event_stream(events: Iterable[pb.GameEvent | EventKey]) -> set[str]:
+    """Validate every event type against the v6 EVENT_VOCABULARY.
+
+    Returns the distinct normalized types seen (handy for logging). Raises
+    ValueError listing any type outside the vocabulary; research code and the
+    smoke use this to catch an un-normalized/legacy event source early.
+    """
+    seen: set[str] = set()
+    unknown: set[str] = set()
+    for e in events:
+        t = _event_type(e)
+        seen.add(t)
+        if t not in EVENT_VOCABULARY:
+            unknown.add(t)
+    if unknown:
+        raise ValueError(
+            f"event type(s) outside the v6 vocabulary: {sorted(unknown)}; "
+            f"known types: {sorted(EVENT_VOCABULARY)}"
+        )
+    return seen
 
 
 def _retry_transient_timeout(fn, *args):
@@ -511,7 +588,11 @@ def compare_event_streams(
     game_over_a: tuple[int, int, str] | None = None,
     game_over_b: tuple[int, int, str] | None = None,
 ) -> None:
-    """Assert two event streams are identical (identity tuples incl. seq).
+    """Assert two event streams are identical.
+
+    Comparison uses the full v6 identity (see ``event_identity``): seq, type,
+    turn, phase, player, card_id, card_name, detail_raw, old_value, new_value,
+    extra — with game_id excluded (it legitimately differs between runs).
 
     game_over_* are optional (outcome, winner, reason) triples from the final
     GameOver of each run; when both are given they are compared too.

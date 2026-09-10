@@ -14,6 +14,7 @@ from combo_discovery.env import (
 )
 from combo_discovery.generated import forge_env_pb2 as pb
 from combo_discovery.runner import (
+    EVENT_VOCABULARY,
     MAX_DECISION_TIMEOUTS,
     MAX_STALE_RETRIES,
     SNAPSHOT_RESTORED_TYPE,
@@ -22,8 +23,10 @@ from combo_discovery.runner import (
     compare_event_streams,
     default_policy,
     determinism_check,
+    event_identity,
     run_game,
     snapshot_replay_check,
+    validate_event_stream,
 )
 
 DECKS = [("a", "/tmp/a.dck"), ("b", "/tmp/b.dck")]
@@ -39,9 +42,13 @@ def _rpc_error(code_name: str, details: str = ""):
     return err
 
 
-def ev(seq, type_, turn=1, phase="Main1", player=0, card="", detail=""):
+def ev(seq, type_, turn=1, phase="Main1", player=0, card="", card_id=0,
+       detail_raw="", old_value=0, new_value=0, extra=""):
+    """A v6-shaped GameEvent fixture (normalized type + structured fields)."""
     return pb.GameEvent(
-        seq=seq, type=type_, turn=turn, phase=phase, player=player, card_name=card, detail=detail
+        seq=seq, type=type_, turn=turn, phase=phase, player=player,
+        card_id=card_id, card_name=card, detail_raw=detail_raw,
+        old_value=old_value, new_value=new_value, extra=extra,
     )
 
 
@@ -227,7 +234,7 @@ class FakeClient:
         self.collected = self.collected[:length]
         self.answered = length
         self._next_seq = length + 1
-        marker = pb.GameEvent(seq=self._next_seq, type=SNAPSHOT_RESTORED_TYPE, detail="restored")
+        marker = pb.GameEvent(seq=self._next_seq, type=SNAPSHOT_RESTORED_TYPE, detail_raw="restored")
         self.collected.append(marker)
         self._next_seq += 1
         # Restore re-parks the decision at the snapshot point (client refetch).
@@ -239,12 +246,12 @@ class FakeClient:
 
 class TestRunnerV2:
     def test_run_game_collects_events_from_poll_stream(self):
-        client = FakeClient([[ev(1, "TurnStarted", detail="1")]])
+        client = FakeClient([[ev(1, "TurnStarted", detail_raw="1")]])
         result = run_game(client, DECKS, seed=3, player_types=REMOTE)
         assert result.seed == 3
         assert result.game_id == client.game_id
         assert result.n_events == 1
-        assert result.events == [(1, "TurnStarted", 1, "Main1", 0, "", "1")]
+        assert result.events == [(1, "TurnStarted", 1, "Main1", 0, 0, "", "1", 0, 0, "")]
         assert result.outcome == pb.OUTCOME_WIN
         assert result.reason == "lethal"
         assert client.stopped == client.game_id  # stop_game called, game_id routed
@@ -290,8 +297,8 @@ class TestCompareEventStreams:
         compare_event_streams([a], [b])
 
     def test_rejects_divergent_streams(self):
-        a = [ev(1, "A"), ev(2, "B", detail="20->17")]
-        b = [ev(1, "A"), ev(2, "B", detail="20->18")]
+        a = [ev(1, "A"), ev(2, "B", detail_raw="20->17")]
+        b = [ev(1, "A"), ev(2, "B", detail_raw="20->18")]
         with pytest.raises(DeterminismError, match="20->18"):
             compare_event_streams(a, b)
 
@@ -361,13 +368,13 @@ class TestDecisionTimeoutRetry:
 
 class TestDeterminismCheck:
     def test_same_seed_identical_streams_pass(self):
-        stream = [ev(1, "SpellResolved", card="Bolt"), ev(2, "LifeChanged", detail="20->17")]
+        stream = [ev(1, "SpellResolved", card="Bolt"), ev(2, "LifeChanged", detail_raw="20->17")]
         client = FakeClient([stream, stream])
         determinism_check(client, DECKS, seed=1)
 
     def test_detects_divergence(self):
-        s1 = [ev(1, "SpellResolved", card="Bolt"), ev(2, "LifeChanged", detail="20->17")]
-        s2 = [ev(1, "SpellResolved", card="Bolt"), ev(2, "LifeChanged", detail="20->18")]
+        s1 = [ev(1, "SpellResolved", card="Bolt"), ev(2, "LifeChanged", detail_raw="20->17")]
+        s2 = [ev(1, "SpellResolved", card="Bolt"), ev(2, "LifeChanged", detail_raw="20->18")]
         client = FakeClient([s1, s2])
         with pytest.raises(DeterminismError, match="20->18"):
             determinism_check(client, DECKS, seed=1)
@@ -685,7 +692,7 @@ class TestValidationErrorPath:
         # First submit uses a wrong arm (option_id for an attackers decision):
         stub.SubmitDecision.side_effect = [
             _rpc_error("INVALID_ARGUMENT", "wrong answer kind"),
-            pb.StepResult(events=[pb.GameEvent(seq=1, type="AttacksDeclared")]),
+            pb.StepResult(events=[pb.GameEvent(seq=1, type="AttackersDeclared")]),
         ]
 
         client = ForgeEnvClient(port=59999)
@@ -928,7 +935,7 @@ class TestSnapshotReplayCheck:
                 step = super().submit_decision(game_id, decision_id, answer)
                 if self.replaying:
                     # Mutate the buffered event (StepResult copies its input).
-                    self.collected[-1].detail = "diverged"
+                    self.collected[-1].detail_raw = "diverged"
                 return step
 
         client = DivergentReplayClient(list(self.STREAM))
@@ -959,3 +966,73 @@ class TestSnapshotReplayCheck:
         client = FakeClient([[ev(1, "GameOver")]])
         with pytest.raises(DeterminismError, match="ended at the branch decision"):
             snapshot_replay_check(client, DECKS, seed=1)
+
+
+class TestEventIdentityV6:
+    """event_identity is the full v6 deterministic identity (game_id excluded)."""
+
+    def test_full_identity_tuple(self):
+        e = pb.GameEvent(
+            seq=5, game_id=99, type="LifeChanged", turn=3, phase="Main1", player=1,
+            card_id=42, card_name="Bear", detail_raw="raw", old_value=20,
+            new_value=17, extra="zone=A->B",
+        )
+        assert event_identity(e) == (
+            5, "LifeChanged", 3, "Main1", 1, 42, "Bear", "raw", 20, 17, "zone=A->B"
+        )
+
+    def test_game_id_excluded_from_identity(self):
+        a = pb.GameEvent(seq=1, game_id=1, type="TurnStarted", turn=1)
+        b = pb.GameEvent(seq=1, game_id=999, type="TurnStarted", turn=1)
+        assert event_identity(a) == event_identity(b)
+
+    def test_identity_is_deterministic_and_sensitive_to_every_field(self):
+        base = pb.GameEvent(
+            seq=1, game_id=1, type="CardDrawn", turn=1, phase="Main1", player=0,
+            card_id=7, card_name="Forest", detail_raw="drawn", old_value=1,
+            new_value=2, extra="library->hand",
+        )
+        assert event_identity(base) == event_identity(base)
+        for kw in (
+            "seq", "type", "turn", "phase", "player", "card_id", "card_name",
+            "detail_raw", "old_value", "new_value", "extra",
+        ):
+            altered = pb.GameEvent()
+            altered.CopyFrom(base)
+            if kw in ("seq", "turn", "player", "card_id", "old_value", "new_value"):
+                setattr(altered, kw, getattr(base, kw) + 1)
+            elif kw == "type":
+                altered.type = "LandPlayed"
+            else:
+                setattr(altered, kw, getattr(base, kw) + "X")
+            assert event_identity(altered) != event_identity(base), kw
+
+
+class TestEventVocabulary:
+    def test_accepts_every_vocabulary_type(self):
+        events = [
+            pb.GameEvent(seq=i + 1, type=t)
+            for i, t in enumerate(sorted(EVENT_VOCABULARY))
+        ]
+        seen = validate_event_stream(events)
+        assert seen == set(EVENT_VOCABULARY)
+        assert len(EVENT_VOCABULARY) == 28
+
+    def test_accepts_identity_tuples(self):
+        seen = validate_event_stream(
+            [(1, "TurnStarted", 1, "Main1", 0, 0, "", "", 0, 0, "")]
+        )
+        assert seen == {"TurnStarted"}
+
+    def test_rejects_unknown_type(self):
+        # SpellRemovedFromStack is in the design doc's table but NOT in the v6
+        # proto vocabulary, so it must be rejected.
+        events = [
+            pb.GameEvent(seq=1, type="TurnStarted"),
+            pb.GameEvent(seq=2, type="SpellRemovedFromStack"),
+        ]
+        with pytest.raises(ValueError, match="outside the v6 vocabulary"):
+            validate_event_stream(events)
+
+    def test_empty_stream_is_valid(self):
+        assert validate_event_stream([]) == set()
