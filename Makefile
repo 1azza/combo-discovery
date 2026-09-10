@@ -1,4 +1,4 @@
-.PHONY: stubs test smoke lint
+.PHONY: stubs test smoke check lint
 
 stubs:
 	bash scripts/gen_stubs.sh
@@ -8,3 +8,6 @@ test:
 
 smoke:
 	uv run python scripts/run_smoke.py
+
+check:
+	bash scripts/check.sh

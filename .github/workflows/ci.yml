@@ -1,0 +1,113 @@
+# CI for the Python research client (combo-discovery).
+#
+# Two lanes:
+#   python — regenerate the gRPC stubs from proto/forge_env.proto and run the
+#            unit tests. The live harness test skips itself when
+#            FORGE_TEST_HARNESS is unset, so this lane needs no server.
+#   java   — build and test the forge-harness Maven module.
+#
+# Java note (honest starter): the harness lives in the separate Forge fork,
+# which is not public and is not vendored in this repository. The java job is
+# path-filtered to changes under forge-harness/** (or this workflow), and its
+# build step only runs when forge-harness/pom.xml is actually present. To use
+# it, get the fork's forge-harness/ module into the checkout (see the commented
+# step) and grant whatever token that private repo needs; no secret is
+# referenced here.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# dorny/paths-filter reads the PR file list; contents:read covers checkout.
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # -- Python lane ---------------------------------------------------------
+  python:
+    name: python (stubs + pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python (from .python-version)
+        run: uv python install
+
+      - name: Regenerate gRPC stubs
+        run: bash scripts/gen_stubs.sh
+
+      - name: Run unit tests
+        # The live test self-skips without FORGE_TEST_HARNESS=host:port.
+        run: uv run pytest
+
+  # -- Path filter for the Java lane --------------------------------------
+  # Path filters cannot be scoped per-job natively, so a tiny changes job
+  # feeds the java job's `if`. Only harness sources or this workflow trigger it.
+  changes:
+    name: detect harness changes
+    runs-on: ubuntu-latest
+    outputs:
+      harness: ${{ steps.filter.outputs.harness }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            harness:
+              - 'forge-harness/**'
+              - '.github/workflows/ci.yml'
+
+  # -- Java lane -----------------------------------------------------------
+  java:
+    name: java (forge-harness)
+    needs: changes
+    if: needs.changes.outputs.harness == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Forge fork (with forge-harness/) is not public. When it becomes
+      # accessible, check it out here so the expected layout exists, e.g.:
+      #   - uses: actions/checkout@v4
+      #     with:
+      #       repository: <owner>/forge
+      #       ref: 4f577da7b2a9074f9f66544aaf99405e38cf5ac3
+      #       token: ${{ secrets.FORGE_REPO_TOKEN }}
+      - name: Detect harness module
+        id: detect
+        run: |
+          if [ -f forge-harness/pom.xml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No forge-harness/pom.xml at the repo root; skipping the Maven build."
+            echo "Check the Forge fork out at the repo root (or adjust working-directory)."
+          fi
+
+      - name: Set up Java 21 (temurin)
+        if: steps.detect.outputs.present == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          # Maven dependency cache keyed on the harness pom(s).
+          cache: maven
+
+      - name: Install protobuf compiler
+        if: steps.detect.outputs.present == 'true'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Build and test forge-harness
+        if: steps.detect.outputs.present == 'true'
+        # WORKING-DIRECTORY ASSUMPTION: forge-harness/ is a module at the repo
+        # root (the Forge fork layout). If you vendor the fork elsewhere, set
+        # working-directory accordingly.
+        run: mvn -pl forge-harness -am package -DskipTests=false

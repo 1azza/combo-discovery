@@ -17,13 +17,34 @@ protocol changes required before research-scale search. See
 - `forge-harness` (Java, separate repo/fork of Forge): embeds `forge-game`, exposes a steppable game environment via gRPC (contract: `proto/forge_env.proto`).
 - this repo (Python): environment client, worker pool, search policies, ontology, candidate generation, evaluation.
 
+## Protocol (v6)
+
+The frozen contract is `proto/forge_env.proto`; regenerate stubs with
+`bash scripts/gen_stubs.sh`.
+
+- **Typed decisions.** `GetDecision` returns a `DecisionType` plus a per-type
+  payload and `SubmitDecision` echoes a typed answer. All 13 types are covered:
+  `PRIORITY`, `MULLIGAN_KEEP`/`MULLIGAN_TUCK`, `DECLARE_ATTACKERS`/
+  `DECLARE_BLOCKERS`/`ASSIGN_COMBAT_DAMAGE`/`ORDER_BLOCKERS`,
+  `CHOOSE_CARDS`, `ANNOUNCE`, `SCRY_ARRANGE`, `CHOOSE_TARGETS`,
+  `CHOOSE_MODE`, `OPTIONAL_COSTS`.
+- **Normalized events.** The event stream is the fixed 28-type research
+  vocabulary (`runner.EVENT_VOCABULARY` — `LandPlayed`, `CardDrawn`,
+  `LifeChanged`, …), with structured `card_id`/`old_value`/`new_value`/`extra`
+  fields; raw log text is preserved in `detail_raw`.
+- **Snapshot/restore.** `Snapshot` (requires an outstanding decision) returns
+  an opaque token + state hash; `Restore` re-seeds the engine RNG and appends a
+  deterministic `SnapshotRestored` event, so an identical action suffix replays
+  byte-identically.
+
 ## Layout
 
 ```
 proto/forge_env.proto        frozen gRPC contract (shared with Java harness)
 src/combo_discovery/
   env.py                     ForgeEnvClient — typed sync gRPC wrapper
-  runner.py                  run_game / run_games / determinism_check
+  runner.py                  run_game / run_games / determinism_check; default_policy
+  goldfish.py                GoldfishPolicy — deterministic goldfish driver for REMOTE games
   pool.py                    WorkerPool — round-robin over harness servers
   store.py                   ExperimentStore — append-only SQLite persistence
   research_config.py         research.toml loader
@@ -31,15 +52,25 @@ src/combo_discovery/
   generated/                 protobuf stubs (do not edit)
 research.toml                research metadata + batch defaults
 scripts/gen_stubs.sh         regenerate stubs from proto
-scripts/run_smoke.py         connectivity check against localhost:50051
+scripts/run_smoke.py         end-to-end check against a live harness
+scripts/check.sh             local run: gen_stubs + pytest + optional Java compile
+.github/workflows/ci.yml     CI: Python lane + path-filtered Java harness lane
 ```
 
 ## Usage
 
 ```bash
 uv sync                                    # install
-uv run python scripts/run_smoke.py         # after starting the Java harness
+bash scripts/gen_stubs.sh                  # regenerate protobuf/gRPC stubs
+
+# Boot the Java harness (from the Forge fork). --assets points Forge at its
+# data/asset root so deck paths resolve regardless of the working directory.
+java -Djava.awt.headless=true -jar forge-harness-*.jar \
+  --port 50051 --assets /path/to/forge/forge-gui-desktop
+
+uv run python scripts/run_smoke.py         # end-to-end smoke (needs the harness)
 uv run pytest                              # unit tests (no live server needed)
+bash scripts/check.sh                      # gen_stubs + pytest + optional Java compile
 ```
 
 Start worker servers once the harness jar exists:

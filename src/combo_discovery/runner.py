@@ -29,6 +29,7 @@ from .env import (
     StaleDecisionError,
 )
 from .generated import forge_env_pb2 as pb
+from .goldfish import GoldfishPolicy  # noqa: F401  (re-exported for convenience)
 from .store import DecisionRef, ExperimentStore
 
 logger = logging.getLogger(__name__)
@@ -450,6 +451,11 @@ def run_game(
         )
     if policy is None:
         policy = default_policy
+    # Per-game reset hook for stateful policies (e.g. GoldfishPolicy's mulligan
+    # counter). Plain functions have no hook and are used as-is.
+    new_game = getattr(policy, "new_game", None)
+    if callable(new_game):
+        new_game()
     start = time.monotonic()
     if player_types is None:
         player_types = [pb.PLAYER_TYPE_REMOTE] * len(decks)

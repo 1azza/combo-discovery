@@ -31,7 +31,7 @@ Legend:
 - `[x]` Add `Ping`
 - `[x]` Add deterministic seed injection
 - `[x]` Add per-game timeout watchdog
-- `[!]` Make asset paths independent of the process working directory
+- `[!]` Make asset paths independent of the process working directory (`--assets` CLI arg; harness launchable from anywhere)
 - `[ ]` Add a stable harness version/build identifier
 - `[ ]` Add structured startup and shutdown logging
 
@@ -47,7 +47,7 @@ Legend:
 - `[x]` Prevent stale decisions from one game being submitted to another
 - `[x]` Add a lifecycle state machine: `CREATED → RUNNING → OVER → CLOSED`
 - `[x]` Clear completed runners and release all scheduled timeout resources
-- `[ ]` Add cancellation tests for timeout, client disconnect, and server shutdown
+- `[x]` Add cancellation tests for timeout, client disconnect, and server shutdown (Python fakes: game-over/UNAVAILABLE mid-decision + cleanup, store integrity, pool retry; Java: StopGame/timeout live-verified)
 
 ### 1.3 Player control
 
@@ -68,8 +68,8 @@ Legend:
   - `[x]` discard/sacrifice/selection effects (`CHOOSE_CARDS` generic selection with min/max/optional)
 - `[x]` Validate that a submitted option belongs to the outstanding decision
 - `[ ]` Add explicit `PASS_PRIORITY` options instead of relying on empty lists
-- `[ ]` Add a real land-playing/casting goldfish policy
-- `[ ]` Add controller conformance tests for every decision callback used by Forge
+- `[x]` Add a real land-playing/casting goldfish policy (`GoldfishPolicy`: land → cheapest cast → pass, mulligan ladder, attack-everything)
+- `[x]` Add controller conformance tests for every decision callback used by Forge (Java JUnit validation table for all 13 types + Python live acceptance)
 
 ### 1.4 Event capture
 
@@ -155,7 +155,7 @@ Legend:
 - `[x]` Add artifact export to JSONL/Parquet (JSONL; Parquet deferred as YAGNI)
 - `[ ]` Add experiment manifests and run IDs (run IDs done; full manifest files pending)
 - `[ ]` Add reproducible notebooks/plots
-- `[ ]` Add CI for Python tests, protobuf generation, and Java compilation
+- `[x]` Add CI for Python tests, protobuf generation, and Java compilation (`.github/workflows/ci.yml` + `scripts/check.sh`)
 
 ## 4. Card data and ontology — Layer 2, Tier 0
 

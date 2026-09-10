@@ -119,6 +119,25 @@ class TestPoolScheduling:
         assert bad.start_game.called
         assert good.start_game.called
 
+    def test_worker_dying_mid_game_is_retried_then_excluded(self):
+        """A worker that dies after start_game (mid-game, not at StartGame)
+        fails the job; its seed moves to the healthy worker and, after
+        CONSECUTIVE_FAILURES_BEFORE_EXCLUDE failures, it is excluded while the
+        map still completes every seed."""
+        dying = MagicMock()
+        dying.start_game.return_value = 1
+        dying.is_game_over.side_effect = HarnessConnectionError(
+            "UNAVAILABLE from harness", code=grpc.StatusCode.UNAVAILABLE
+        )
+        dying.drain_events.return_value = []
+        good = good_client(9)
+        pool = make_pool([dying, good])
+        results = pool.map_games(DECK_PAIR, seeds=[1, 2, 3])
+        assert [r.game_id for r in results] == [9, 9, 9]
+        assert good.start_game.call_count == 3
+        assert pool._healthy[0] is False  # failed worker excluded
+        assert pool._healthy[1] is True
+
     def test_harness_timeout_is_worker_failure_not_fatal(self):
         bad = failing_client(
             HarnessTimeoutError("DEADLINE_EXCEEDED", code=grpc.StatusCode.DEADLINE_EXCEEDED)
