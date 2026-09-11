@@ -12,11 +12,17 @@ Contract notes (the Java harness is implemented in a parallel lane):
 
 * ``Scenario`` -> the v7 ``SetupScenarioRequest`` is built in
   :meth:`combo_discovery.env.ForgeEnvClient.setup_scenario`.
+* ``SetupScenario`` now requires the first turn to have started (it rejects the
+  pre-game/mulligan window with FAILED_PRECONDITION), so ``run_witness`` first
+  drives the mulligan decisions to the first PRIORITY decision
+  (:func:`_drive_pregame`) and only then injects.
 * Injection requires a LIVE outstanding decision (the engine is parked) and
   invalidates it; the caller MUST refetch ``GetDecision`` afterwards.
 * Injection appends a deterministic ``ScenarioInjected`` event and folds the
   scenario hash into ``state_hash``.
 * Library list order is the library order (index 0 = top).
+* Deck paths are resolved to absolute paths against the invoking CWD before
+  ``start_game`` (the harness resolves them against its own CWD).
 
 Nothing here launches a harness; ``run_witness`` drives whatever client it is
 given, which is how the test-suite uses fakes.
@@ -27,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -64,6 +71,11 @@ DEFAULT_WITNESS_DECKS: list[tuple[str, str]] = [
 #: The combo player is remote (driven by the policy); the opponent is a harmless
 #: goldfish so it never competes for decisions.
 DEFAULT_PLAYER_TYPES = [pb.PLAYER_TYPE_REMOTE, pb.PLAYER_TYPE_GOLDFISH]
+
+#: Upper bound on pre-game (mulligan) decisions answered before the first
+#: PRIORITY decision.  A real London mulligan window needs only a handful; a
+#: longer run means the engine is not making progress and the run fails cleanly.
+MAX_PREGAME_DECISIONS = 20
 
 #: Structural types that mean "this card starts on the battlefield".  Anything
 #: else (Instant/Sorcery/...) is presumed to need casting and starts in hand.
@@ -819,11 +831,80 @@ def _is_over(client: Any, game_id: int) -> bool:
         return False
 
 
+def _drive_pregame(
+    client: Any,
+    game_id: int,
+    policy: Callable[[DecisionContext], Answer],
+) -> None:
+    """Answer pre-game (mulligan) decisions until the first PRIORITY decision.
+
+    ``setup_scenario`` now requires the first turn to have started, so injecting
+    while the engine is parked on a mulligan is rejected with FAILED_PRECONDITION
+    (the live-run failure this guards against).  This drives the London mulligan
+    window with ``policy`` — expected to keep hands — and returns with the first
+    PRIORITY decision still outstanding, so the caller can inject the scenario
+    (injection invalidates it; the caller refetches).
+
+    Deterministic: the answers are exactly the policy's, and the loop is bounded
+    by :data:`MAX_PREGAME_DECISIONS`, so a non-progressing engine fails cleanly
+    instead of spinning.
+
+    Raises:
+        ValueError: the game ended in the pre-game window, or the decision bound
+            was hit without reaching a PRIORITY decision.
+    """
+
+    def _ended() -> ValueError:
+        return ValueError(
+            "game ended during the pre-game window (no first-turn decision)"
+        )
+
+    for _ in range(MAX_PREGAME_DECISIONS):
+        if _is_over(client, game_id):
+            raise _ended()
+        try:
+            req = client.get_decision(game_id)
+        except GameNotActiveError as exc:
+            raise _ended() from exc
+        except StaleDecisionError:
+            # The watchdog released a decision mid-drive; refetch.  The loop
+            # bound still applies, so a persistently stale engine fails cleanly.
+            continue
+        if req.decision_type == pb.DECISION_TYPE_PRIORITY:
+            # First turn has started and the engine is parked: ready to inject.
+            return
+        ctx = DecisionContext(request=req)
+        try:
+            client.submit_decision(game_id, req.decision_id, policy(ctx))
+        except GameNotActiveError as exc:
+            raise _ended() from exc
+        except StaleDecisionError:
+            continue
+    raise ValueError(
+        f"pre-game window did not reach a PRIORITY decision within "
+        f"{MAX_PREGAME_DECISIONS} decisions"
+    )
+
+
+def _absolute_deck_paths(
+    decks: Sequence[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Resolve deck paths to absolute paths against the invoking client's CWD.
+
+    The harness resolves deck paths against *its own* working directory, not
+    the client's, so a relative path (e.g. ``decks/goldfish_A.dck``) fails with
+    ``INVALID_ARGUMENT: deck file not found``.  Making them absolute here is the
+    single choke point before they reach ``start_game``.
+    """
+    return [(str(name), os.path.abspath(str(path))) for name, path in decks]
+
+
 def _run_witness_seed(
     client: Any,
     scenario: Scenario,
     policy: Callable[[DecisionContext], Answer],
     *,
+    pregame_policy: Callable[[DecisionContext], Answer],
     seed: int,
     max_iterations: int,
     max_decisions: int,
@@ -885,8 +966,12 @@ def _run_witness_seed(
                 **start_game_kwargs,
             )
         )
-        # SetupScenario needs a LIVE outstanding decision (the engine is parked).
-        client.get_decision(game_id)
+        # setup_scenario rejects the pre-game/mulligan window (the first turn
+        # must have started), so drive the mulligan decisions to the first
+        # PRIORITY decision before injecting.
+        _drive_pregame(client, game_id, pregame_policy)
+        # SetupScenario needs a LIVE outstanding decision (the engine is parked
+        # on the first PRIORITY decision).
         state_hash_before = str(
             client.get_state(game_id, view_as_player=view_as_player).state_hash
         )
@@ -980,6 +1065,7 @@ def run_witness(
     card_names: Sequence[str] = (),
     infinite: bool = False,
     stop_on_loop: bool = True,
+    pregame_policy: Callable[[DecisionContext], Answer] | None = None,
 ) -> WitnessResult:
     """Start a game, inject ``scenario``, and drive ``policy`` for N iterations.
 
@@ -987,15 +1073,22 @@ def run_witness(
     with ``stop_on_loop`` the first ``loops`` verdict is returned immediately,
     otherwise the strongest verdict across seeds is returned (preference:
     loops > inconclusive > no_loop > refuted > error).
+
+    Deck paths are resolved to absolute paths against the invoking CWD before
+    ``start_game`` (the harness resolves them against its own CWD).  The
+    pre-game/mulligan window is driven to the first PRIORITY decision with
+    ``pregame_policy`` (default :func:`runner.default_policy`, which keeps
+    hands) before the scenario is injected; see :func:`_drive_pregame`.
     """
     seed_list = [int(seeds)] if isinstance(seeds, int) else [int(s) for s in seeds]
     if not seed_list:
         raise ValueError("run_witness needs at least one seed")
-    deck_list: list[tuple[str, str]] = [
-        (str(name), str(path)) for name, path in (decks or DEFAULT_WITNESS_DECKS)
-    ]
+    deck_list: list[tuple[str, str]] = _absolute_deck_paths(
+        [(str(name), str(path)) for name, path in (decks or DEFAULT_WITNESS_DECKS)]
+    )
     types = list(player_types) if player_types is not None else list(DEFAULT_PLAYER_TYPES)
     view = player if view_as_player is None else int(view_as_player)
+    pregame = pregame_policy or default_policy
 
     results: list[WitnessResult] = []
     for seed in seed_list:
@@ -1003,6 +1096,7 @@ def run_witness(
             client,
             scenario,
             policy,
+            pregame_policy=pregame,
             seed=seed,
             max_iterations=int(max_iterations),
             max_decisions=int(max_decisions),
@@ -1311,6 +1405,7 @@ __all__ = [
     "CardSpec",
     "DEFAULT_WITNESS_DECKS",
     "LinkPlan",
+    "MAX_PREGAME_DECISIONS",
     "Observation",
     "PlayerScenario",
     "Scenario",

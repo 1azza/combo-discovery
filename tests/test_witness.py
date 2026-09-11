@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 import pytest
@@ -12,10 +13,12 @@ from combo_discovery.runner import DecisionContext
 from combo_discovery.witness import (
     CardSpec,
     LinkPlan,
+    MAX_PREGAME_DECISIONS,
     Observation,
     PlayerScenario,
     Scenario,
     WitnessPolicy,
+    _absolute_deck_paths,
     build_observation,
     build_scenario,
     detect_loop,
@@ -436,6 +439,58 @@ class FakeWitnessClient:
         self.stopped = game_id
 
 
+class FakePregameClient(FakeWitnessClient):
+    """Answers ``mulligans`` MULLIGAN_KEEP decisions, then PRIORITY.
+
+    Records the ordered RPC narrative (``"mulligan"`` / ``"priority"`` /
+    ``"setup"``) and every submitted answer so a test can assert the
+    drive-past-pre-game-then-inject sequence and that injection happens once.
+    """
+
+    def __init__(self, mulligans: int = 2):
+        super().__init__()
+        self.mulligans_left = int(mulligans)
+        self.sequence: list[str] = []
+        self.answers: list = []
+
+    def get_decision(self, game_id):
+        if self.mulligans_left > 0:
+            self.mulligans_left -= 1
+            self.decision_seq += 1
+            self.sequence.append("mulligan")
+            return pb.DecisionRequest(
+                game_id=game_id,
+                decision_id=self.decision_seq,
+                player=0,
+                turn=0,
+                decision_type=pb.DECISION_TYPE_MULLIGAN_KEEP,
+            )
+        self.sequence.append("priority")
+        return super().get_decision(game_id)
+
+    def setup_scenario(self, game_id, scenario):
+        self.sequence.append("setup")
+        return super().setup_scenario(game_id, scenario)
+
+    def submit_decision(self, game_id, decision_id, answer):
+        self.answers.append(answer)
+        return super().submit_decision(game_id, decision_id, answer)
+
+
+class FakeEndlessPregameClient(FakeWitnessClient):
+    """Always a MULLIGAN_KEEP decision: the pre-game window never ends."""
+
+    def get_decision(self, game_id):
+        self.decision_seq += 1
+        return pb.DecisionRequest(
+            game_id=game_id,
+            decision_id=self.decision_seq,
+            player=0,
+            turn=0,
+            decision_type=pb.DECISION_TYPE_MULLIGAN_KEEP,
+        )
+
+
 class TestRunWitness:
     def _policy(self):
         return WitnessPolicy(links=[LinkPlan("A", "B"), LinkPlan("B", "A")], player=0)
@@ -454,6 +509,65 @@ class TestRunWitness:
         assert result.state_hash_before == "H0"
         assert client.stopped == 77
         assert client.setup_calls and client.setup_calls[0] is scenario
+
+    def test_pregame_drive_answers_mulligans_then_injects_once(self):
+        client = FakePregameClient(mulligans=3)
+        scenario = build_scenario(combo_ab())
+        result = run_witness(
+            client, scenario, self._policy(), seeds=[1], max_iterations=2
+        )
+        # The pre-game decisions were answered with the default keep-hands
+        # policy (boolean_answer=True), never with the witness line policy.
+        assert client.answers[:3] == [("boolean_answer", True)] * 3
+        # Three keeps, then the first PRIORITY decision, then injection — and
+        # the scenario is injected exactly once.
+        assert client.sequence[:5] == [
+            "mulligan",
+            "mulligan",
+            "mulligan",
+            "priority",
+            "setup",
+        ]
+        assert client.sequence.count("setup") == 1
+        assert client.setup_calls == [scenario]
+        assert result.verdict != "error"
+        assert client.stopped == 77
+
+    def test_endless_pregame_window_fails_cleanly(self):
+        client = FakeEndlessPregameClient()
+        result = run_witness(
+            client, build_scenario(combo_ab()), self._policy(), seeds=[1]
+        )
+        assert result.verdict == "error"
+        assert "pre-game window did not reach" in result.error
+        # The bound is deterministic and injection never happened.
+        assert client.decision_seq == MAX_PREGAME_DECISIONS
+        assert client.setup_calls == []
+        assert client.stopped == 77
+
+    def test_relative_deck_paths_are_resolved_to_absolute(self):
+        client = FakeWitnessClient()
+        captured: dict = {}
+
+        def spy_start_game(decks, seed, player_types=None, **kwargs):
+            captured["decks"] = decks
+            return client.game_id
+
+        client.start_game = spy_start_game  # type: ignore[method-assign]
+        run_witness(
+            client,
+            build_scenario(combo_ab()),
+            self._policy(),
+            seeds=[1],
+            max_iterations=1,
+            decks=[("a", "decks/a.dck"), ("b", "decks/b.dck")],
+        )
+        paths = [path for _, path in captured["decks"]]
+        assert paths == [
+            os.path.abspath("decks/a.dck"),
+            os.path.abspath("decks/b.dck"),
+        ]
+        assert all(os.path.isabs(path) for path in paths)
 
     def test_setup_failure_reports_error(self):
         client = FakeWitnessClient()
@@ -489,6 +603,22 @@ class TestRunWitness:
         assert results[0]["id"] == result_id
         assert results[0]["verdict"] == result.verdict
         assert results[0]["iterations"] == result.iterations
+
+
+# ---------------------------------------------------------------------------
+# Deck path resolution
+# ---------------------------------------------------------------------------
+
+
+class TestDeckPaths:
+    def test_relative_path_resolved_against_cwd(self):
+        resolved = _absolute_deck_paths([("a", "decks/a.dck")])
+        assert resolved == [("a", os.path.abspath("decks/a.dck"))]
+        assert os.path.isabs(resolved[0][1])
+
+    def test_absolute_path_is_unchanged(self):
+        already = os.path.abspath("decks/goldfish_A.dck")
+        assert _absolute_deck_paths([("a", already)]) == [("a", already)]
 
 
 # ---------------------------------------------------------------------------
