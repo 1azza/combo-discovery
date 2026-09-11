@@ -26,12 +26,24 @@ the (large) ``enables`` fan-out only has to be explored around those anchors.
    model: it does **not** track quantities, timing, stack order, summoning
    sickness or interaction between the produced resources.
 
-**Scoring.**  ``score = base(query) × Π enrichment_weight(link motif)`` where the
-motifs are the same cross-card tokens the enrichment analysis stores
-(``COPIES_CREATURE~ETB_TRIGGER``, ...).  Weights come from the latest
-``motif_enrichment`` run when available (lift clipped to ``[0.1, 2.0]``), else
-1.0.  Any link whose motif weight is below :data:`HOSTILE_LIFT` suppresses the
-cycle.  The product is clamped to 1.0.  The whole scheme is transparent and
+**Scoring.**  ``score = base(query) × motif_factor × evidence`` where
+
+* ``base`` is the highest base score among the matched queries;
+* ``motif_factor`` is the *count-normalized* enrichment support: the geometric
+  mean of the matched motifs' weights (the same cross-card tokens the enrichment
+  analysis stores, e.g. ``COPIES_CREATURE~ETB_TRIGGER``) is mapped by
+  ``mean / WEIGHT_SCALE`` so a neutral lift contributes 0.5, a doubled lift
+  saturates at 1.0 and an anti-enriched lift is damped.  Using the mean rather
+  than the raw product keeps a longer cycle from being penalised just for
+  containing more links, while preserving the enrichment spread;
+* ``evidence`` is the structural support in ``(0, 1)``: the number and
+  independence of ``re_trigger`` links closing the loop, the number of distinct
+  link kinds, and a penalty for each undischarged gate.
+
+The result is bounded to ``(0, 1]`` but no longer collapses to a single mass.
+Motif weights come from the latest ``motif_enrichment`` run when available
+(lift clipped to ``[0.1, 2.0]``), else 1.0.  Any link whose motif weight is below
+:data:`HOSTILE_LIFT` suppresses the cycle.  The whole scheme is transparent and
 exposed via :func:`load_motif_weights`.
 """
 
@@ -59,7 +71,6 @@ from .links import (
     _port_satisfies_gate,
     build_links,
     link_hostile,
-    link_weight,
     ports_enable,
 )
 from .ports import AbilitySig
@@ -376,11 +387,49 @@ def _gate_preconditions(abilities: Sequence[AbilitySig]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(preconditions))
 
 
-def _motif_score(links: Sequence[Link], weights: Mapping[str, float] | None) -> float:
-    score = 1.0
-    for link in links:
-        score *= link_weight(link, dict(weights) if weights else None)
-    return score
+#: Max clipped enrichment lift returned by :func:`lift_to_weight`; each motif's
+#: count-normalized support is its lift divided by this, so neutral (1.0) is 0.5.
+WEIGHT_SCALE = 2.0
+#: Relative support cost of one undischarged gate.
+GATE_PENALTY = 0.75
+#: Smoothing so a minimal 2-card cycle still has a non-zero structural support.
+SUPPORT_SMOOTHING = 0.5
+
+
+def _motif_factor(links: Sequence[Link], weights: Mapping[str, float] | None) -> float:
+    """Count-normalized enrichment support in ``[0.05, 1.0]``.
+
+    Uses the geometric mean of the per-motif lifts (clipped to ``[0.1, 2.0]``)
+    so the score is not systematically penalised for longer cycles with more
+    links, then maps it by ``mean / WEIGHT_SCALE``.  Neutral lift -> 0.5,
+    doubled lift -> 1.0, anti-enriched lift -> damped.
+    """
+    motifs = sorted({link.motif for link in links if link.motif})
+    if not motifs:
+        return 1.0
+    weight_map = dict(weights) if weights else {}
+    log_sum = 0.0
+    for motif in motifs:
+        weight = float(weight_map.get(motif, 1.0))
+        weight = min(2.0, max(0.1, weight))
+        log_sum += math.log(weight)
+    mean = math.exp(log_sum / len(motifs))
+    return min(1.0, mean / WEIGHT_SCALE)
+
+
+def _evidence_factor(links: Sequence[Link], gate_count: int) -> float:
+    """Structural support in ``(0, 1)``: closure evidence minus gate cost.
+
+    Encodes real evidence, not just the query label: number/independence of the
+    ``re_trigger`` links that close the loop, the number of distinct link kinds
+    (enables+satisfies is stronger than a single mechanism), extra links beyond
+    the distinct kinds, and a penalty per undischarged gate.
+    """
+    n_links = len(links)
+    n_retrigger = sum(1 for link in links if link.kind == "re_trigger")
+    n_kinds = len({link.kind for link in links})
+    closing = n_retrigger + 0.5 * (n_kinds - 1) + 0.25 * max(0, n_links - n_kinds)
+    return closing / (closing + GATE_PENALTY * gate_count + SUPPORT_SMOOTHING)
 
 
 def _mechanism(cards: Sequence[int], links: Sequence[Link], graph: Graph) -> str:
@@ -439,10 +488,13 @@ def _make_combo(
     if not matched:
         return None
     base = max(query.base_score for query in matched)
-    weight_product = _motif_score(ordered_links, weights)
-    score = min(1.0, base * weight_product)
-
     preconditions = _gate_preconditions(abilities)
+    # Bounded, discriminative score: enrichment evidence (count-normalized so
+    # longer cycles are not penalised) times structural closure evidence.
+    motif_factor = _motif_factor(ordered_links, weights)
+    evidence = _evidence_factor(ordered_links, len(preconditions))
+    score = min(1.0, base * motif_factor * evidence)
+
     infinite = any(
         p.kind in ("mana", "token", "damage", "extra_phase", "counters",
                    "life_gain", "copy_permanent")
@@ -462,6 +514,23 @@ def _make_combo(
         patterns=tuple(query.name for query in matched),
         infinite=infinite,
         motifs=motifs,
+    )
+
+
+def _combo_rank(combo: Combo) -> tuple[Any, ...]:
+    """Deterministic evidence ordering for equal-score cycles (smaller is better).
+
+    Tie-breakers encode real closure evidence rather than an arbitrary id:
+    more independent ``re_trigger`` links first, then more links, then fewer
+    undischarged gates, then the sorted card names as the final stable key.
+    """
+    n_retrigger = sum(1 for link in combo.links if link.kind == "re_trigger")
+    return (
+        -combo.score,
+        -n_retrigger,
+        -len(combo.links),
+        len(combo.preconditions),
+        combo.cards,
     )
 
 
@@ -514,11 +583,9 @@ def find_combos(
             continue
         key = frozenset(combo.card_ids)
         current = best.get(key)
-        if current is None or combo.score > current.score:
+        if current is None or _combo_rank(combo) < _combo_rank(current):
             best[key] = combo
-    combos = ComboList(sorted(
-        best.values(), key=lambda c: (-c.score, c.cards)
-    ))
+    combos = ComboList(sorted(best.values(), key=_combo_rank))
     combo_truncated = budget.truncated
     combos.truncated = bool(graph_truncated or combo_truncated)
     if combo_truncated:

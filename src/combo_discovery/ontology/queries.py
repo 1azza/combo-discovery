@@ -96,7 +96,21 @@ def _sacrifice_loop(ctx: ComboContext) -> bool:
 
 
 def _mana_loop(ctx: ComboContext) -> bool:
-    return ctx.any_produces("mana") and ctx.any_consumes("mana")
+    """A genuine closed mana loop.
+
+    Tightened from "the cycle contains a mana producer and a mana consumer"
+    (which matched any cycle that happened to include a mana rock or sink) to
+    requiring an actual ``enables`` link whose matched ports are mana -> mana:
+    one card in the cycle produces mana that structurally pays another card's
+    mana cost.  A cycle without that closed edge is not called a mana loop.
+    """
+    for link in ctx.links:
+        if link.kind != "enables":
+            continue
+        if any(produced.kind == "mana" and consumed.kind == "mana"
+               for produced, consumed in link.matched):
+            return True
+    return False
 
 
 def _any_cycle(ctx: ComboContext) -> bool:
@@ -142,10 +156,12 @@ QUERIES: tuple[Query, ...] = (
     ),
     Query(
         name="mana_loop",
-        description="Mana production plus a mana sink inside the cycle.",
+        description="A closed mana loop: a producer in the cycle pays another "
+                    "cycle card's mana cost (an actual mana->mana enables link), "
+                    "not merely co-occurring mana ports.",
         base_score=0.50,
         predicate=_mana_loop,
-        rule={"produces": ["mana"], "consumes": ["mana"], "confidence": "low"},
+        rule={"enables": ["mana -> mana"], "confidence": "low"},
     ),
     Query(
         name="any_cycle",

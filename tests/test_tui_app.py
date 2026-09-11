@@ -648,9 +648,11 @@ async def test_live_card_lab_read_only(monkeypatch):
 
         metrics = view.query_one("#lab-metrics-text", Static)
         assert await _wait_text(pilot, metrics, "by pattern", timeout=30.0)
-        # Kiki over the combined legacy + algebra proposal surface:
-        # 40 known / 79 proposed (precision 0.506), recall 0.388, F1 0.440.
-        assert "P 0.506" in str(metrics.render())
+        # Kiki over the combined legacy + algebra proposal surface after the
+        # tuning round (unique-pair metrics + Alchemy exclusion + score spread):
+        # 15 known / 36 proposed (precision 0.417), recall 0.192, F1 0.263,
+        # precision@10 0.900.
+        assert "P 0.417" in str(metrics.render())
         diagnostics = view.query_one("#lab-diagnostics-text", Static)
         assert "misses" in str(diagnostics.render())
 

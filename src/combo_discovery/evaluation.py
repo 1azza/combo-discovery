@@ -76,6 +76,10 @@ class Metrics:
     f1: float = 0.0
     precision_incl_partial: float = 0.0
     precision_at_k: dict[int, float] = field(default_factory=dict)
+    #: Row-level proposal count before unique-pair deduplication (a pair matched
+    #: by several queries is counted once per query).  ``true_positives`` etc. are
+    #: unique-pair numbers; this preserves the raw surface size for reporting.
+    raw_proposals: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +89,7 @@ class Metrics:
             "precision": self.precision, "recall": self.recall, "f1": self.f1,
             "precision_incl_partial": self.precision_incl_partial,
             "precision_at_k": {str(k): v for k, v in self.precision_at_k.items()},
+            "raw_proposals": self.raw_proposals,
         }
 
 
@@ -294,6 +299,48 @@ def classify_pairs(
 # ---------------------------------------------------------------------------
 
 
+def _dedupe_pairs(subset: list[PairVerdict]) -> list[PairVerdict]:
+    """Collapse a pair proposed under several queries into one verdict.
+
+    The interaction row-level aggregate double-counts a pair that matches more
+    than one query (a cyclic pair is often both ``q:any_cycle`` and a named
+    loop).  Metrics are computed on unique pairs; the occurrence with the best
+    score wins, and ties are broken deterministically by the pattern name and
+    the ordered card names so the ranking is stable.
+    """
+    best: dict[str, PairVerdict] = {}
+    for verdict in subset:
+        current = best.get(verdict.pair_hash)
+        key = (
+            verdict.score, verdict.pattern or "",
+            verdict.source_name, verdict.target_name,
+        )
+        if current is None:
+            best[verdict.pair_hash] = verdict
+            continue
+        current_key = (
+            current.score, current.pattern or "",
+            current.source_name, current.target_name,
+        )
+        if key > current_key:
+            best[verdict.pair_hash] = verdict
+    return list(best.values())
+
+
+def _verdict_rank(verdict: PairVerdict) -> tuple[Any, ...]:
+    """Deterministic ordering: score descending, then a stable key.
+
+    The stable key makes precision@k reproducible when two pairs share a score
+    (the old ``-score`` sort fell back to insertion order).
+    """
+    return (
+        -verdict.score,
+        verdict.source_name,
+        verdict.target_name,
+        verdict.pattern or "",
+    )
+
+
 def _metrics_for(
     subset: list[PairVerdict],
     missed: int,
@@ -303,6 +350,8 @@ def _metrics_for(
     pattern: str | None,
     k_values: Iterable[int],
 ) -> Metrics:
+    raw_proposals = len(subset)
+    subset = _dedupe_pairs(subset)
     tp = sum(1 for v in subset if v.verdict == "known_pair")
     partials = sum(1 for v in subset if v.verdict == "contained_in_known")
     fp = sum(1 for v in subset if v.verdict == "unmatched")
@@ -310,7 +359,7 @@ def _metrics_for(
     precision = tp / proposed if proposed else 0.0
     recall = tp / (tp + missed) if (tp + missed) else 0.0
     f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
-    ordered = sorted(subset, key=lambda v: -v.score)
+    ordered = sorted(subset, key=_verdict_rank)
     at_k: dict[int, float] = {}
     for k in k_values:
         top = ordered[:k]
@@ -321,6 +370,7 @@ def _metrics_for(
         recall=round(recall, 4), f1=round(f1, 4),
         precision_incl_partial=round((tp + partials) / proposed, 4) if proposed else 0.0,
         precision_at_k={k: round(v, 4) for k, v in at_k.items()},
+        raw_proposals=raw_proposals,
     )
 
 

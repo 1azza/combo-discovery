@@ -183,13 +183,33 @@ def _port_satisfies_gate(produced: Port, gate: Port, holder: AbilitySig) -> bool
 # ---------------------------------------------------------------------------
 
 
+#: Trigger kinds a *copy* can re-fire.  A copy creates a fresh permanent, so an
+#: enters-the-battlefield or attack trigger fires again; a ``phase`` trigger
+#: (e.g. White Plume Adventurer: "At the beginning of each opponent's upkeep,
+#: untap a creature you control") fires once per phase occurrence and is **not**
+#: re-fired by a copy.  It is deliberately excluded: modelling it only ever
+#: produced non-loops (a one-shot untap per turn cannot close a copy loop), and
+#: re-adding it lowers precision.  ``extra_phase`` engines remain scoped to
+#: attack triggers, which are the only ones a fresh combat phase re-fires.
+_COPY_RE_TRIGGER_KINDS = frozenset({"enters_battlefield", "attacks"})
+
+#: Listener trigger kinds the re-trigger scan considers at all.  Phase triggers
+#: are excluded here as well as in :data:`_COPY_RE_TRIGGER_KINDS`; both must be
+#: extended together if a future engine genuinely re-fires a phase trigger.
+_RE_TRIGGER_LISTENER_KINDS = frozenset({"enters_battlefield", "attacks"})
+
+
 def _evidence(sig: AbilitySig, port: Port) -> dict[str, Any]:
     return {"card_id": sig.card_id, "name": sig.card_name,
             "ability_ref": sig.ability_ref, "port": port.to_dict()}
 
 
 def link_re_trigger(engine: AbilitySig, listener: AbilitySig) -> Link | None:
-    """A fresh copy/phase/reanimation that fires ``listener``'s trigger again."""
+    """A fresh copy/phase/reanimation that fires ``listener``'s trigger again.
+
+    Only :data:`_COPY_RE_TRIGGER_KINDS` are re-fired by a ``copy_permanent``
+    engine; ``phase`` triggers are intentionally absent (see the constant).
+    """
     if engine.card_id == listener.card_id:
         return None
     trigger = listener.triggers_on
@@ -197,7 +217,7 @@ def link_re_trigger(engine: AbilitySig, listener: AbilitySig) -> Link | None:
         return None
 
     for produced in engine.produces:
-        if produced.kind == "copy_permanent" and trigger.kind in ("enters_battlefield", "attacks"):
+        if produced.kind == "copy_permanent" and trigger.kind in _COPY_RE_TRIGGER_KINDS:
             if copy_accepts(produced, listener):
                 return Link(
                     "re_trigger", "copy", engine, listener,
@@ -421,7 +441,7 @@ def build_links(
     # -- re_trigger ---------------------------------------------------------
     closure_listeners: list[AbilitySig] = []
     listener_producers: dict[str, list[AbilitySig]] = {}
-    for kind in ("enters_battlefield", "attacks"):
+    for kind in sorted(_RE_TRIGGER_LISTENER_KINDS):
         for listener in listener_index.get(kind, ()):
             if _closure_rank(listener) == 0:
                 closure_listeners.append(listener)
@@ -450,7 +470,7 @@ def build_links(
                 unique = {s.key: s for s in closure_listeners}
         else:
             unique = {}
-            for kind in ("enters_battlefield", "attacks"):
+            for kind in sorted(_RE_TRIGGER_LISTENER_KINDS):
                 for listener in listener_index.get(kind, ()):
                     unique.setdefault(listener.key, listener)
         ordered = sorted(
@@ -573,6 +593,8 @@ __all__ = [
     "HOSTILE_LIFT",
     "Link",
     "LinkOptions",
+    "_COPY_RE_TRIGGER_KINDS",
+    "_RE_TRIGGER_LISTENER_KINDS",
     "build_links",
     "copy_accepts",
     "link_enables",

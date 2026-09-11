@@ -39,6 +39,7 @@ from .names import (
     ResolvedCard,
     combo_hash,
     front_face_name,
+    is_non_vintage_printing,
     normalize_card_name,
     pair_hash,
     resolve_spellbook_use,
@@ -114,6 +115,11 @@ class VintageLegality:
     ) -> bool:
         if scryfall_legalities is not None:
             return bool(scryfall_legalities.get("vintage"))
+        # Alchemy rebalances (``A-*``) and Un-set/sticker placeholder names are
+        # not Vintage-legal regardless of the banned list; the banned list holds
+        # only real card names and cannot catch them.
+        if is_non_vintage_printing(name):
+            return False
         normalized = normalize_card_name(name)
         if not normalized:
             return True

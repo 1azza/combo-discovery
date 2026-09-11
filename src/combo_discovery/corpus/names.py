@@ -28,6 +28,12 @@ from typing import Any, Iterable
 _NON_ALNUM = re.compile(r"[^a-z0-9 ]+")
 DFC_SEP = " // "
 
+#: Un-set / sticker reprint markers.  Sticker cards are never Vintage-legal, but
+#: their names carry no ``A-`` prefix, so they need an explicit marker.  The
+#: match is deliberately conservative (the exact sticker placeholder, not the
+#: substring "sticker", which legitimate cards such as Nimble Birdsticker use).
+_UNSET_NAME_RE = re.compile(r'^\s*"?name sticker"?', re.IGNORECASE)
+
 
 def normalize_card_name(name: str | None) -> str:
     """NFKD-fold, lowercase, punctuation -> space, collapse whitespace."""
@@ -42,6 +48,20 @@ def normalize_card_name(name: str | None) -> str:
 def is_alchemy(name: str | None) -> bool:
     """True for Alchemy rebalances (``A-...``), which we exclude."""
     return bool(name) and name.startswith("A-")
+
+
+def is_unset(name: str | None) -> bool:
+    """True for Un-set / sticker placeholder names (never Vintage-legal)."""
+    return bool(name) and bool(_UNSET_NAME_RE.match(name))
+
+
+def is_non_vintage_printing(name: str | None) -> bool:
+    """True for prints that exist only outside Vintage (Alchemy / Un-set).
+
+    This is the name-level legality guard shared by the Spellbook importer and
+    the ontology pool so an ``A-*`` rebalance can never leak into a proposal.
+    """
+    return is_alchemy(name) or is_unset(name)
 
 
 def split_dfc(name: str | None) -> list[str]:
@@ -137,6 +157,8 @@ __all__ = [
     "combo_hash",
     "front_face_name",
     "is_alchemy",
+    "is_non_vintage_printing",
+    "is_unset",
     "normalize_card_name",
     "pair_hash",
     "resolve_spellbook_use",

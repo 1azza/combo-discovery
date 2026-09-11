@@ -372,6 +372,30 @@ class TestEvaluation:
         pattern = report.by_pattern["infinite_etb_loop"]
         assert pattern.precision == 0.25 and pattern.recall == 0.5
 
+    def test_metrics_dedupe_pairs_and_use_stable_tie_order(self):
+        """A pair proposed under several queries is one proposal; equal scores
+        rank deterministically by source/target name."""
+        from combo_discovery.evaluation import PairVerdict, metrics
+
+        known = PairVerdict(
+            "known_pair", "q:x", 1, 2, "alpha", "beta", "hash-known", score=0.5,
+        )
+        unmatched = PairVerdict(
+            "unmatched", "q:x", 3, 4, "gamma", "delta", "hash-unmatched",
+            score=0.5,
+        )
+        duplicate = PairVerdict(
+            "unmatched", "q:y", 1, 2, "alpha", "beta", "hash-known", score=0.4,
+        )
+        report = metrics([unmatched, known, duplicate], k_values=(1, 2))
+        agg = report.aggregate
+        # Three rows collapse to two unique pairs; the best (0.5) occurrence wins.
+        assert agg.raw_proposals == 3
+        assert agg.true_positives + agg.partials + agg.false_positives == 2
+        # At the tied score the known pair (alpha/beta) sorts before gamma/delta.
+        assert agg.precision_at_k[1] == 1.0
+        assert agg.precision_at_k[2] == 0.5
+
     def test_diagnostics_clusters(self, gt_store):
         store, import_id, _report = gt_store
         diag = diagnostics(store, self._classified(store, import_id))

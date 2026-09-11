@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from combo_discovery.corpus.importer import import_corpus, normalize_name
+from combo_discovery.corpus.names import is_non_vintage_printing, is_unset
+from combo_discovery.corpus.spellbook import VintageLegality
 from combo_discovery.ontology.budget import (
     BudgetExceeded,
     SearchBudget,
@@ -22,13 +24,19 @@ from combo_discovery.ontology.budget import (
 )
 from combo_discovery.ontology.cycles import (
     ComboList,
+    _evidence_factor,
     _gate_preconditions,
+    _motif_factor,
     build_graph,
     find_combos,
     load_motif_weights,
+    tight_pool,
+    vintage_pool,
 )
 from combo_discovery.ontology.extractor import CardContext, load_contexts
 from combo_discovery.ontology.links import (
+    _COPY_RE_TRIGGER_KINDS,
+    _RE_TRIGGER_LISTENER_KINDS,
     LinkOptions,
     copy_accepts,
     link_enables,
@@ -37,7 +45,12 @@ from combo_discovery.ontology.links import (
     ports_enable,
 )
 from combo_discovery.ontology.ports import AbilitySig, Port, build_signatures
-from combo_discovery.ontology.queries import QUERIES, get_query, iter_queries
+from combo_discovery.ontology.queries import (
+    QUERIES,
+    ComboContext,
+    get_query,
+    iter_queries,
+)
 from combo_discovery.ontology.restrictions import parse_restriction
 from combo_discovery.store import ExperimentStore
 
@@ -300,8 +313,12 @@ class TestStructuralMatching:
         boosted = find_combos(cycle, max_len=3, weights={"CREATES_TOKEN~SACRIFICE_OUTLET": 2.0})[0]
         penalised = find_combos(cycle, max_len=3,
                                 weights={"CREATES_TOKEN~SACRIFICE_OUTLET": 0.8})[0]
-        assert base.score == pytest.approx(penalised.score / 0.8)
-        assert boosted.score >= base.score
+        # Score is monotone in the enrichment weight.  It is now a bounded
+        # (count-normalized) motif factor rather than a raw product, so the
+        # exact old ratio no longer holds, but the ordering must.
+        assert penalised.score < base.score < boosted.score
+        assert 0.0 < penalised.score <= 1.0
+        assert 0.0 < boosted.score <= 1.0
         assert base.motifs and "CREATES_TOKEN~SACRIFICE_OUTLET" in base.motifs
 
 
@@ -420,3 +437,124 @@ class TestBudgetsAndPreflight:
         assert combos
         assert combos.truncated is False
         assert combos.truncation_reason is None
+
+
+# ---------------------------------------------------------------------------
+# Tuning round: the four measured defects
+# ---------------------------------------------------------------------------
+
+
+class TestNonVintagePoolExclusion:
+    """Fix 1: Alchemy (A-*) / Un-set names never enter the candidate pool."""
+
+    def test_name_guards(self):
+        assert is_non_vintage_printing("A-Goldspan Dragon") is True
+        assert is_non_vintage_printing("A-Esika's Chariot") is True
+        assert is_unset('"Name Sticker" Goblin') is True
+        # A real card whose name merely starts with "A " is not Alchemy.
+        assert is_non_vintage_printing("A Display of My Dark Power") is False
+        assert is_non_vintage_printing("Nimble Birdsticker") is False
+
+    def test_vintage_legality_excludes_alchemy_and_unset(self):
+        legality = VintageLegality.permissive()
+        assert legality.is_legal("A-Goldspan Dragon") is False
+        assert legality.is_legal('"Name Sticker" Goblin') is False
+        assert legality.is_legal("Grizzly Bears") is True
+
+    def test_vintage_pool_drops_alchemy_ids(self):
+        names = {1: "A-Goldspan Dragon", 2: "Grizzly Bears"}
+        pool = vintage_pool([1, 2], names, VintageLegality.permissive())
+        assert pool == (2,)
+
+    def test_tight_pool_excludes_alchemy_loop_machinery(self):
+        alchemy = _sig(1, "A-Goldspan Dragon", "a",
+                       produces=(_copy_port("Creature"),))
+        real = _sig(2, "Kiki-Jiki, Mirror Breaker", "b",
+                    produces=(_copy_port("Creature"),))
+        names = {1: "A-Goldspan Dragon", 2: "Kiki-Jiki, Mirror Breaker"}
+        assert tight_pool([alchemy, real], names,
+                          VintageLegality.permissive()) == (2,)
+
+
+class TestScoreDiscrimination:
+    """Fix 2: bounded score with real spread + evidence tie-breakers."""
+
+    def test_score_is_bounded_and_structural_factors_are_interior(self):
+        combo = find_combos(_three_card_cycle(), max_len=3)[0]
+        assert 0.0 < combo.score <= 1.0
+        fact = _motif_factor(combo.links, None)
+        ev = _evidence_factor(combo.links, 0)
+        assert 0.0 < fact <= 1.0
+        assert 0.0 < ev < 1.0
+        # A gate lowers the structural support.
+        assert _evidence_factor(combo.links, 2) < ev
+
+    def test_motif_factor_is_count_normalized(self):
+        cycle = find_combos(_three_card_cycle(), max_len=3)[0]
+        one = cycle.links[:1]
+        assert _motif_factor(one, None) == _motif_factor(cycle.links, None)
+
+    def test_scores_are_not_all_saturated(self):
+        # Across a small synthetic cluster not every cycle should score 1.0.
+        combos = find_combos(_retrigger_cluster(engines=6, listeners=6), max_len=2)
+        assert combos
+        assert any(combo.score < 1.0 for combo in combos)
+
+
+class TestManaLoopTightening:
+    """Fix 3: mana_loop requires a real closed mana link, not incidental mana."""
+
+    def test_requires_closed_mana_link(self):
+        producer = _sig(1, "Mana Rock", "a", type_line="Artifact",
+                        produces=(_mana_port(("U",)),))
+        sink = _sig(2, "Mana Sink", "b",
+                    consumes=(Port("mana", {"colors": ("U",),
+                                            "predicate": "PRODUCES_MANA"}),),
+                    produces=(_untap_port("Creature"),))
+        query = get_query("mana_loop")
+        # Just "produces mana and consumes mana" no longer matches...
+        assert query.matches(ComboContext(abilities=(producer, sink), links=())) is False
+        # ...an explicit mana->mana enables link does.
+        link = link_enables(producer, sink)
+        assert link is not None
+        assert query.matches(
+            ComboContext(abilities=(producer, sink), links=(link,))
+        ) is True
+
+
+class TestPhaseTriggerHandling:
+    """Fix 4: phase triggers are deliberately not copy re-trigger kinds."""
+
+    def _engine(self):
+        return _sig(
+            1, "Kiki-Jiki, Mirror Breaker", "a",
+            type_line="Legendary Creature Goblin",
+            consumes=(Port("tap", {"self": True, "predicate": "TAPS_COST"}),),
+            produces=(_copy_port("Creature.nonLegendary+YouCtrl"),),
+        )
+
+    def test_phase_is_not_a_copy_retrigger_kind(self):
+        assert "phase" not in _COPY_RE_TRIGGER_KINDS
+        assert "phase" not in _RE_TRIGGER_LISTENER_KINDS
+
+    def test_phase_untapper_does_not_close_a_copy_loop(self):
+        engine = self._engine()
+        adventurer = _sig(
+            2, "White Plume Adventurer", "b", kind="trigger",
+            trigger=Port("phase", {"phase": "Upkeep", "predicate": "PHASE"}),
+            produces=(_untap_port("Creature"),),
+        )
+        assert link_re_trigger(engine, adventurer) is None
+        assert find_combos([engine, adventurer], max_len=3) == []
+
+    def test_etb_untapper_still_closes_the_loop(self):
+        engine = self._engine()
+        exarch = _sig(
+            2, "Deceiver Exarch", "b", kind="trigger",
+            trigger=Port("enters_battlefield", {"self": True,
+                                                "predicate": "ETB_TRIGGER"}),
+            produces=(_untap_port("Creature"),),
+        )
+        assert link_re_trigger(engine, exarch) is not None
+        combos = find_combos([engine, exarch], max_len=3)
+        assert combos

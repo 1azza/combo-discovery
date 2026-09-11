@@ -22,7 +22,6 @@ from combo_discovery.ontology.builder import QUERY_PREFIX
 from combo_discovery.ontology.patterns import PATTERNS
 from combo_discovery.ontology.queries import QUERIES
 from combo_discovery.store import ExperimentStore
-
 KIKI = "Kiki-Jiki, Mirror Breaker"
 LEGACY_NAMES = tuple(pattern.name for pattern in PATTERNS)
 ALGEBRA_NAMES = tuple(f"{QUERY_PREFIX}{query.name}" for query in QUERIES)
@@ -32,17 +31,20 @@ KIKI_CHECK = (
 )
 
 HEADER = (
-    f"  {'query/pattern':24} {'proposed':>8} {'known':>7} {'contained':>7} "
+    f"  {'query/pattern':24} {'rows':>7} {'pairs':>7} {'known':>7} {'contained':>7} "
     f"{'unmatched':>8} {'missed':>6} {'P':>7} {'P@10':>6} {'R':>7} {'F1':>7}"
 )
 
 
 def _row(label: str, m) -> str:
+    # ``pairs`` (unique) is the primary precision denominator; ``rows`` is the
+    # raw interaction surface, which double-counts a pair proposed under several
+    # queries.
     proposed = m.true_positives + m.partials + m.false_positives
     p10 = m.precision_at_k.get(10)
     return (
-        f"  {label:24} {proposed:>8} {m.true_positives:>7} {m.partials:>7} "
-        f"{m.false_positives:>8} {m.missed:>6} {m.precision:>7.3f} "
+        f"  {label:24} {m.raw_proposals:>7} {proposed:>7} {m.true_positives:>7} "
+        f"{m.partials:>7} {m.false_positives:>8} {m.missed:>6} {m.precision:>7.3f} "
         f"{(p10 if p10 is not None else 0.0):>6.3f} {m.recall:>7.3f} {m.f1:>7.3f}"
     )
 
@@ -65,6 +67,26 @@ def _kiki_rows(verdicts: Iterable[PairVerdict], partner: str) -> list[PairVerdic
     ]
 
 
+def _nonvintage_proposals(store: ExperimentStore) -> list[tuple[str, str, str]]:
+    """Algebra interactions whose *raw* card name is Alchemy / Un-set.
+
+    Verdicts carry normalized names (which drop the ``A-`` prefix), so the guard
+    has to read the raw ``cards.name`` column.
+    """
+    rows = store._conn.execute(
+        "SELECT DISTINCT s.name AS source_name, t.name AS target_name, "
+        "p.name AS pattern FROM interactions i "
+        "JOIN patterns p ON p.id = i.pattern_id "
+        "JOIN cards s ON s.id = i.source_card_id "
+        "JOIN cards t ON t.id = i.target_card_id "
+        "WHERE p.name LIKE 'q:%' AND ("
+        "s.name LIKE 'A-%' OR t.name LIKE 'A-%' "
+        "OR s.name LIKE '%Name Sticker%' OR t.name LIKE '%Name Sticker%') "
+        "ORDER BY s.name, t.name LIMIT 20"
+    ).fetchall()
+    return [(str(r["source_name"]), str(r["target_name"]), str(r["pattern"])) for r in rows]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="compare-algebra", description=__doc__)
     parser.add_argument("--db", default="research.db")
@@ -84,12 +106,16 @@ def main(argv: list[str] | None = None) -> int:
         kiki_algebra = classify_pairs(store, card=KIKI, patterns=ALGEBRA_NAMES)
         legacy = metrics(legacy_verdicts)
         algebra = metrics(algebra_verdicts)
+        nonvintage = _nonvintage_proposals(store)
     finally:
         store.close()
 
     print("LEGACY vs INTERACTION-ALGEBRA evaluation (same corpus import)")
+    print("(precision / P@10 / recall are computed on UNIQUE pairs; 'rows' is the")
+    print(" raw interaction surface, which double-counts a pair across queries)")
     print()
     _print_table("legacy: aggregate + per pattern", legacy)
+
     _print_table("algebra: aggregate + per query", algebra)
 
     print("Kiki-Jiki detail (verdict per known/algebra partner)")
@@ -123,10 +149,29 @@ def main(argv: list[str] | None = None) -> int:
             print(f"      {v.score:.3f} {v.source_name} + {v.target_name}")
 
     print()
+    print("top unmatched algebra candidates overall (all queries):")
+    top_unmatched = sorted(
+        (v for v in algebra_verdicts if v.verdict == "unmatched"),
+        key=lambda v: (-v.score, v.source_name, v.target_name),
+    )
+    for v in top_unmatched[: args.top]:
+        print(f"      {v.score:.3f} {v.pattern:22} {v.source_name} + {v.target_name}")
+
+    print()
+    print("Alchemy / Un-set leak check (raw names):")
+    if nonvintage:
+        print(f"  FAIL: {len(nonvintage)} non-Vintage printing(s) still proposed")
+        for source_name, target_name, pattern in nonvintage:
+            print(f"      [{pattern}] {source_name} + {target_name}")
+    else:
+        print("  PASS: no A-* / Name Sticker card appears in the algebra proposals")
+
+    print()
     print("comparison summary")
     la, aa = legacy.aggregate, algebra.aggregate
     for label, lv, av in (
-        ("proposed", la.true_positives + la.partials + la.false_positives,
+        ("raw rows", la.raw_proposals, aa.raw_proposals),
+        ("unique pairs", la.true_positives + la.partials + la.false_positives,
          aa.true_positives + aa.partials + aa.false_positives),
         ("known_pair", la.true_positives, aa.true_positives),
         ("contained_in_known", la.partials, aa.partials),
