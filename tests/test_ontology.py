@@ -249,6 +249,40 @@ class TestVocabulary:
         assert mana_value("1 G") == 2
 
 
+class TestPatternRegistry:
+    """The pattern registry isolates each pattern and exposes its metadata."""
+
+    def test_registry_exposes_every_pattern_uniquely(self):
+        from combo_discovery.ontology.patterns import PATTERNS, get_pattern, iter_patterns
+
+        names = [pattern.name for pattern in iter_patterns()]
+        assert names == [
+            "infinite_etb_loop", "sacrifice_recursion", "mana_engine",
+            "free_cast_loops", "storm_engine", "color_lock_mill", "draw_engine",
+        ]
+        assert len(names) == len(set(names)) == 7
+        assert [pattern.name for pattern in PATTERNS] == names
+        for pattern in PATTERNS:
+            assert pattern.description
+            assert isinstance(pattern.rule, dict) and pattern.rule
+            assert callable(pattern.matcher)
+            assert callable(pattern.scorer)
+            assert get_pattern(pattern.name) is pattern
+
+    def test_registry_matchers_reachable_and_countable(self):
+        from combo_discovery.ontology import edges
+        from combo_discovery.ontology.patterns import PATTERNS, get_pattern
+
+        for pattern in PATTERNS:
+            assert list(pattern.match({})) == []
+            assert pattern.count({}) == 0
+            # Every matcher is reachable by its historical module-level name.
+            assert getattr(edges, pattern.name) is pattern.matcher
+        assert get_pattern("infinite_etb_loop").matcher is edges.infinite_etb_loop
+        # The facade re-exports the same registry object.
+        assert edges.PATTERNS is PATTERNS
+
+
 class TestExtractorRules:
     @staticmethod
     def _effect(verb, **params):

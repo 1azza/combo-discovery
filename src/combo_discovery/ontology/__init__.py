@@ -6,6 +6,7 @@ Public surface:
   vocabulary and its documented extraction rules;
 * :mod:`combo_discovery.ontology.extractor` — ``card_effects`` rows ->
   per-card predicates;
+* :mod:`combo_discovery.ontology.patterns` — the per-pattern registry;
 * :mod:`combo_discovery.ontology.edges` — pattern queries -> interactions;
 * :func:`build_ontology` — persist all of the above (schema v3).
 """
@@ -13,7 +14,7 @@ Public surface:
 from __future__ import annotations
 
 from .builder import OntologyReport, build_ontology, latest_import_id, probe_interactions
-from .edges import PATTERNS, CardView, Edge, build_edges, score_edge
+from .edges import PATTERNS, CardView, Edge, build_edges, get_pattern, iter_patterns, score_edge
 from .extractor import (
     CardContext,
     CardEffect,
@@ -38,6 +39,8 @@ __all__ = [
     "describe",
     "extract_card_predicates",
     "extract_import",
+    "get_pattern",
+    "iter_patterns",
     "latest_import_id",
     "probe_interactions",
     "score_edge",

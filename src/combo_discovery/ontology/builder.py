@@ -21,13 +21,15 @@ from typing import Any
 
 from .. import store as store_module
 from ..store import ExperimentStore
-from . import edges as edges_module
+from .edges import build_edges
 from .extractor import (
     CardContext,
     CardPredicate,
     extract_card_predicates,
     load_contexts,
 )
+from .patterns import PATTERNS
+from .patterns.base import CardView, Edge
 
 #: How many top-scoring edges the report keeps in memory for formatting.
 _REPORT_TOP = 200
@@ -124,7 +126,7 @@ def probe_interactions(
 
 def ensure_patterns(conn: sqlite3.Connection) -> dict[str, int]:
     """Insert any missing pattern definitions and return ``name -> id``."""
-    for pattern in edges_module.PATTERNS:
+    for pattern in PATTERNS:
         conn.execute(
             "INSERT OR IGNORE INTO patterns (name, description, pattern_json, version) "
             "VALUES (?, ?, ?, ?)",
@@ -146,7 +148,7 @@ def _write(
     import_id: str,
     contexts: dict[int, CardContext],
     predicates: dict[int, list[CardPredicate]],
-    edges: list[edges_module.Edge],
+    edges: list[Edge],
     pattern_ids: dict[str, int],
 ) -> None:
     predicate_rows = [
@@ -197,7 +199,7 @@ def _report(
     import_id: str,
     contexts: dict[int, CardContext],
     predicates: dict[int, list[CardPredicate]],
-    edges: list[edges_module.Edge],
+    edges: list[Edge],
     duration_s: float,
 ) -> OntologyReport:
     by_type: Counter[str] = Counter()
@@ -274,12 +276,12 @@ def build_ontology(
             for card_id, context in contexts.items()
         }
         views = {
-            card_id: edges_module.CardView.build(
+            card_id: CardView.build(
                 context, predicates.get(card_id, []), effects_by_card.get(card_id, [])
             )
             for card_id, context in contexts.items()
         }
-        built_edges = edges_module.build_edges(views, apply_caps=apply_caps)
+        built_edges = build_edges(views, apply_caps=apply_caps)
 
         with conn:
             pattern_ids = ensure_patterns(conn)
