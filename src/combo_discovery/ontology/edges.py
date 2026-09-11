@@ -19,6 +19,7 @@ not the weights.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -48,18 +49,17 @@ class PatternDef:
 PATTERNS: tuple[PatternDef, ...] = (
     PatternDef(
         "infinite_etb_loop",
-        "Tap-cost engine plus an enters-the-battlefield untapper whose target "
-        "restriction can legally select the engine.",
+        "Copy engine with a tap-cost ability plus an enters-the-battlefield "
+        "untapper that is part of the same repeatable engine.",
         {
-            "engine": ["TAPS_COST", "& one of COPIES_CREATURE/COPIES_SPELL/"
-                       "DEALS_DAMAGE/LOSES_LIFE/DESTROYS/MILLS/DISCARDS/"
-                       "GAINS_CONTROL/ADDS_COUNTERS"],
-            "partner": ["UNTAPS", "ETB_TRIGGER"],
-            "compatibility": ["untapper target type/controller must match engine",
-                              "self-only/opponent/targeted-player/conditional excluded",
-                              "unknown restrictions excluded",
-                              "engine copy restriction checked and scored"],
+            "engine": ["TAPS_COST", "& COPIES_CREATURE", "& same ability"],
+            "partner": ["UNTAPS", "& ETB_TRIGGER", "& ability-linked (no conditional gate)"],
+            "gates": ["ability-scope: untap must be built into the self-ETB engine",
+                      "copyability hard gate: engine must be able to copy the partner",
+                      "reject FirstAttack/Delirium/RolledDie/ActivationLimit/turn/phase gates",
+                      "untapper target type/controller must match engine"],
             "direction": "mutual",
+            "confidence": "high",
         },
     ),
     PatternDef(
@@ -271,6 +271,149 @@ def check_compatibility(
     )
 
 
+# ---------------------------------------------------------------------------
+# Ability-scope: a pattern must not combine two unrelated abilities
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AbilityLink:
+    """Whether an untap is part of the card's self-ETB engine."""
+
+    linked: bool
+    kind: str = "none"  # etb_chain | repeatable_trigger | resource_handoff | none
+    ability_ref: str = ""
+    root_ref: str = ""
+    via: tuple[str, ...] = ()
+    gates: tuple[str, ...] = ()
+
+
+def _ability_details(pred: CardPredicate | None) -> list[dict[str, Any]]:
+    if pred is None:
+        return []
+    details = pred.params.get("ability_details")
+    if isinstance(details, list) and details:
+        return details
+    ref = pred.params.get("ability_ref")
+    if not ref:
+        return []
+    return [{
+        "ability_ref": ref,
+        "root_ability_ref": pred.params.get("root_ability_ref", ref),
+        "via": list(pred.params.get("via") or []),
+        "is_root": bool(pred.params.get("is_root")),
+        "root_kind": pred.params.get("root_kind"),
+        "root_cost": pred.params.get("root_cost", "") or "",
+        "gates": dict(pred.params.get("gates") or {}),
+        "chain_gates": dict(pred.params.get("chain_gates") or {}),
+    }]
+
+
+def _ability_refs(pred: CardPredicate | None) -> set[str]:
+    if pred is None:
+        return set()
+    refs = {str(r) for r in (pred.params.get("ability_refs") or []) if r}
+    ref = pred.params.get("ability_ref")
+    if ref:
+        refs.add(str(ref))
+    return refs
+
+
+def _etb_refs(view: "CardView") -> set[str]:
+    return _ability_refs(view.first(vocab.ETB_TRIGGER))
+
+
+def _same_ability(pred_a: CardPredicate | None, pred_b: CardPredicate | None) -> bool:
+    return bool(_ability_refs(pred_a) & _ability_refs(pred_b))
+
+
+def _cost_has_mana(cost: str) -> bool:
+    """True when an activation cost contains a mana component.
+
+    ``T PayEnergy<2>`` -> False; ``1 T`` -> True.  Angle-bracketed costs
+    (``PayEnergy<...>``, ``Sac<...>``, ``PayLife<...>``) are not mana.
+    """
+    for token in re.split(r"[\s,]+", cost or ""):
+        if not token or "<" in token or token == "T":
+            continue
+        if token.isdigit() or re.fullmatch(r"\{.*\}", token):
+            return True
+        if token.isalpha() and any(ch in token.upper() for ch in "WUBRGCS"):
+            return True
+    return False
+
+
+_RESOURCE_PREDICATES = (vocab.PRODUCES_MANA, vocab.ADDS_COUNTERS, vocab.CREATES_TOKEN)
+
+
+def _etb_resource_predicates(view: "CardView") -> set[str]:
+    """Predicates that belong to the card's self-ETB chain and make a resource."""
+    etb_refs = _etb_refs(view)
+    if not etb_refs:
+        return set()
+    found: set[str] = set()
+    for pred in view.predicates:
+        roots = {str(r) for r in (pred.params.get("root_ability_refs") or []) if r}
+        if roots & etb_refs and pred.predicate in _RESOURCE_PREDICATES:
+            found.add(pred.predicate)
+    return found
+
+
+def check_ability_link(partner: "CardView") -> AbilityLink:
+    """Is the partner's untap part of a repeatable self-ETB engine?
+
+    Three accepted shapes (all require no conditional/one-shot gate):
+
+    * ``etb_chain`` — the untap is reached from the self-ETB root through
+      Execute$/SubAbility$/Choices$/… (the strict ability-scope rule);
+    * ``repeatable_trigger`` — the untap is on a *different* triggered ability
+      that recurs (e.g. an upkeep trigger) with no gate;
+    * ``resource_handoff`` — the untap is an activated ability with no mana cost
+      whose activation resource the self-ETB produces (e.g. energy counters).
+    """
+    etb_refs = _etb_refs(partner)
+    details = _ability_details(partner.first(vocab.UNTAPS))
+    for detail in details:
+        if detail.get("chain_gates"):
+            continue
+        if detail.get("root_ability_ref") in etb_refs or detail.get("ability_ref") in etb_refs:
+            return AbilityLink(
+                True, "etb_chain", str(detail.get("ability_ref") or ""),
+                str(detail.get("root_ability_ref") or ""), tuple(detail.get("via") or []),
+            )
+    for detail in details:
+        if detail.get("chain_gates"):
+            continue
+        if detail.get("root_kind") == "trigger":
+            return AbilityLink(
+                True, "repeatable_trigger", str(detail.get("ability_ref") or ""),
+                str(detail.get("root_ability_ref") or ""), tuple(detail.get("via") or []),
+            )
+    resources = _etb_resource_predicates(partner)
+    for detail in details:
+        if detail.get("chain_gates"):
+            continue
+        if detail.get("root_kind") == "ability" and resources \
+                and not _cost_has_mana(str(detail.get("root_cost") or "")):
+            return AbilityLink(
+                True, "resource_handoff", str(detail.get("ability_ref") or ""),
+                str(detail.get("root_ability_ref") or ""), tuple(detail.get("via") or []),
+            )
+    return AbilityLink(False)
+
+
+def _mana_linked(view: "CardView") -> bool:
+    """True when the card's mana production is part of its ETB or tap ability."""
+    allowed = _ability_refs(view.first(vocab.ETB_TRIGGER)) | _ability_refs(
+        view.first(vocab.TAPS_COST)
+    )
+    if not allowed:
+        return False
+    for detail in _ability_details(view.first(vocab.PRODUCES_MANA)):
+        if detail.get("root_ability_ref") in allowed or detail.get("ability_ref") in allowed:
+            return True
+    return False
+
 
 @dataclass
 class CardView:
@@ -392,21 +535,46 @@ def _make_edge(
 # ---------------------------------------------------------------------------
 
 
-def infinite_etb_loop(views: dict[int, CardView]) -> Iterator[Edge]:
+def infinite_etb_loop(
+    views: dict[int, CardView], stats: dict[str, int] | None = None
+) -> Iterator[Edge]:
+    stats = stats if stats is not None else {}
     engines = [v for v in views.values() if v.has(vocab.TAPS_COST)
                and v.any_of(_IMPACT_PREDICATES)]
     untappers = [v for v in views.values() if v.has(vocab.UNTAPS) and v.has(vocab.ETB_TRIGGER)]
     for engine in engines:
         impact = engine.any_of(_IMPACT_PREDICATES)
+        if impact is None:
+            continue
+        # Hard gate: the engine must re-trigger the partner's ETB by copying it.
+        # A tap-cost engine with no copy predicate needs a third card for a loop;
+        # that synergy is out of scope for this pattern.
+        if engine.first(vocab.COPIES_CREATURE) is None:
+            stats["engine_no_copy_pairs"] = stats.get("engine_no_copy_pairs", 0) + sum(
+                1 for partner in untappers if partner.card_id != engine.card_id
+            )
+            continue
+        # The tap cost and the impact must be the same activated ability.
+        if not _same_ability(engine.first(vocab.TAPS_COST), engine.first(impact)):
+            stats["engine_split_ability"] = stats.get("engine_split_ability", 0) + 1
+            continue
         tap = engine.first(vocab.TAPS_COST)
         tap_verb = (tap.params.get("verb") if tap is not None else "") or ""
         for partner in untappers:
-            if engine.card_id == partner.card_id or impact is None:
+            if engine.card_id == partner.card_id:
                 continue
-            # Precision gate: the untapper must be able to target the engine.
-            # Unknown restrictions are not trusted for this headline pattern.
+            # Precision gates: target type/controller, copyability and
+            # ability-scope must all hold.
             compat = check_compatibility(engine, partner)
             if not compat.target_ok:
+                stats["target_mismatch"] = stats.get("target_mismatch", 0) + 1
+                continue
+            if compat.copy.status != "compatible":
+                stats["copy_mismatch"] = stats.get("copy_mismatch", 0) + 1
+                continue
+            link = check_ability_link(partner)
+            if not link.linked:
+                stats["unlinked"] = stats.get("unlinked", 0) + 1
                 continue
             untap = partner.first(vocab.UNTAPS)
             untap_verb = (untap.params.get("verb") if untap is not None else "") or ""
@@ -416,22 +584,25 @@ def infinite_etb_loop(views: dict[int, CardView]) -> Iterator[Edge]:
                 f"enters-the-battlefield trigger untaps {compat.target_raw or 'a permanent'}, "
                 f"untapping {engine.name} to repeat the loop."
             )
-            # Canonical "copy a creature, then untap it" loops rank above the
-            # broader tap-cost-engine synergies; a creature untapper (the real
-            # Kiki/Exarch shape) edges out an aura/land untapper.
             copy_engine = impact == vocab.COPIES_CREATURE
             bonus = 0.10 if copy_engine else 0.0
             if copy_engine and partner.context.is_creature:
                 bonus += 0.05
-            if compat.copy.status == "incompatible":
-                bonus -= 0.05  # legal untap, but the engine cannot copy the partner
             if untap_verb == "TapOrUntap":
                 bonus -= 0.03  # may tap instead of untap (weaker signal)
+            marker = compat.evidence_entry()
+            marker.update({
+                "ability_linked": True,
+                "link_kind": link.kind,
+                "ability_ref": link.ability_ref,
+                "root_ability_ref": link.root_ref,
+                "via": list(link.via),
+            })
             yield _make_edge(
                 "infinite_etb_loop", engine, partner, mechanism,
                 [_evidence(engine, vocab.TAPS_COST), _evidence(engine, impact),
                  _evidence(partner, vocab.UNTAPS), _evidence(partner, vocab.ETB_TRIGGER),
-                 compat.evidence_entry()],
+                 marker],
                 direction="mutual",
                 score_bonus=bonus,
             )
@@ -517,8 +688,9 @@ def _is_spender(view: CardView) -> bool:
 
 
 def mana_engine(views: dict[int, CardView]) -> Iterator[Edge]:
-    producers = [v for v in views.values()
-                 if _strong_producer(v) and (v.has(vocab.ETB_TRIGGER) or v.has(vocab.TAPS_COST))]
+    # Ability-scope: the mana production must belong to the ETB trigger or the
+    # tap-cost ability, not merely sit on the same card.
+    producers = [v for v in views.values() if _strong_producer(v) and _mana_linked(v)]
     x_spenders = [v for v in views.values() if _is_spender(v)]
     # An X-scaling producer also pairs with artifact mana (Tolarian Academy).
     artifact_mana = [v for v in views.values()
@@ -551,9 +723,12 @@ def mana_engine(views: dict[int, CardView]) -> Iterator[Edge]:
 
 def free_cast_loops(views: dict[int, CardView]) -> Iterator[Edge]:
     freecasters = [v for v in views.values() if v.has(vocab.CASTS_FROM_GRAVEYARD)]
+    # Ability-scope: a self-sacrificing mana source must produce the mana and
+    # sacrifice itself in the same ability (LED), not two unrelated abilities.
     enablers = [
         v for v in views.values()
-        if (v.has(vocab.PRODUCES_MANA) and v.has(vocab.SACRIFICES_SELF))
+        if (v.has(vocab.PRODUCES_MANA) and v.has(vocab.SACRIFICES_SELF)
+            and _same_ability(v.first(vocab.PRODUCES_MANA), v.first(vocab.SACRIFICES_SELF)))
         or v.has(vocab.ALTERNATIVE_COST)
     ]
     for caster in freecasters:
@@ -747,6 +922,7 @@ def build_edges(
 
 
 __all__ = [
+    "AbilityLink",
     "CardView",
     "CompatResult",
     "Compatibility",
@@ -755,6 +931,7 @@ __all__ = [
     "PATTERNS",
     "PatternDef",
     "build_edges",
+    "check_ability_link",
     "check_compatibility",
     "color_lock_mill",
     "draw_engine",

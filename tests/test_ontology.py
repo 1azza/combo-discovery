@@ -90,8 +90,14 @@ KNOWN_COMBOS = [
     {"cards": ("Necropotence", "Brainstorm"), "pattern": "draw_engine",
      "reason": "Necropotence converts life into cards; Brainstorm turns cards into value.",
      "expected": True},
-    {"cards": ("Deceiver Exarch", "Grindstone"), "pattern": "infinite_etb_loop",
-     "reason": "Exarch's ETB untaps any tap-cost engine (here Grindstone).", "expected": True},
+    # Infinite-loop slot.  The previous entry here was Deceiver Exarch + Grindstone,
+    # but Grindstone has no COPIES_CREATURE predicate, so under the round-2 hard
+    # gate (the engine must re-trigger the partner's ETB by copying it) that pair
+    # is correctly out of scope for infinite_etb_loop.  Replaced with another
+    # genuine copy-engine loop to keep this validation set at 11/12.
+    {"cards": ("Kiki-Jiki, Mirror Breaker", "Village Bell-Ringer"), "pattern": "infinite_etb_loop",
+     "reason": "Kiki copies Village Bell-Ringer; its ETB untaps all your creatures, untapping Kiki.",
+     "expected": True},
     {"cards": ("Dockside Extortionist", "Walking Ballista"), "pattern": "mana_engine",
      "reason": "Dockside makes Treasure; Ballista is an X-cost mana sink.", "expected": True},
     {"cards": ("Tendrils of Agony", "Rite of Flame"), "pattern": "storm_engine",
@@ -100,11 +106,8 @@ KNOWN_COMBOS = [
      "reason": "Priest of Gix's ETB ritual pays for an X-cost payoff.", "expected": True},
 ]
 
-#: False positives from the type-compatibility bug report: these cards' ETB
-#: untaps cannot legally target Kiki-Jiki (wrong type, wrong controller,
-#: self-only, or a conditional rider), so no ``infinite_etb_loop`` edge may pair
-#: them with Kiki.
-KIKI_FALSE_POSITIVES = [
+#: Round-1 false positives (type/controller mismatch) — must stay gone.
+KIKI_TYPE_FALSE_POSITIVES = [
     "Bumi, Unleashed",            # UntapAll Land.YouCtrl
     "Zacama, Primal Calamity",    # UntapAll Land.YouCtrl
     "Cloud of Faeries",           # UntapType$ Land
@@ -123,17 +126,31 @@ KIKI_FALSE_POSITIVES = [
     "Xolatoyac, the Smiling Flood",  # Permanent.YouCtrl+HasCounters
 ]
 
-#: True positives: the untapper can legally select Kiki (a creature/permanent
-#: you control), so the edge must survive the compatibility gate.  Some cannot
-#: actually be copied by Kiki (legendary / non-creature) and are therefore
-#: penalised, not dropped.
+#: Round-2 false positives (card-scoped conflation / no copy re-trigger / gates).
+KIKI_ENGINE_FALSE_POSITIVES = [
+    "Fear of Missing Out",        # untap on Attacks + FirstAttack/Delirium, not the ETB
+    "Formidable Speaker",         # untap on a separate activated ability (1 T)
+    "All-Out Assault",            # not a creature: Kiki cannot copy it
+    "Dee Kay, Finder of the Lost",  # untap gated on RolledDie/ValidResult; legendary
+    "Derevi, Empyrial Tactician",   # legendary: Kiki's copy restriction excludes it
+    "Flash Thompson, Spider-Fan",   # legendary
+    "Grim Reaper's Sprint",         # not a creature
+    "Invasion of Segovia",          # not a creature; untap on the back face
+    "Inverted Iceberg",             # not a creature; untap on the back face
+    "Out of Time",                  # not a creature
+    "Sewer-veillance Cam",          # not a creature
+]
+
+#: All negatives the gate must reject (both rounds).
+KIKI_FALSE_POSITIVES = KIKI_TYPE_FALSE_POSITIVES + KIKI_ENGINE_FALSE_POSITIVES
+
+#: True positives: part of the card's repeatable self-ETB engine, target the
+#: engine legally, and are copyable by Kiki.  Must survive every gate.
 KIKI_TRUE_POSITIVES = [
-    "Deceiver Exarch", "Pestermite", "Corridor Monitor", "Village Bell-Ringer",
-    "Sky Hussar", "Hyrax Tower Scout", "Sparring Mummy", "Bounding Krasis",
+    "Deceiver Exarch", "Pestermite", "Bounding Krasis", "Corridor Monitor",
+    "Village Bell-Ringer", "Sky Hussar", "Hyrax Tower Scout", "Sparring Mummy",
     "Breaching Hippocamp", "Little Bear", "White Plume Adventurer",
-    "Derevi, Empyrial Tactician", "Eager Beaver", "Formidable Speaker",
-    "Dee Kay, Finder of the Lost", "Janjeet Sentry", "Glamermite",
-    "Flash Thompson, Spider-Fan", "Grim Reaper's Sprint", "All-Out Assault",
+    "Eager Beaver", "Glamermite", "Janjeet Sentry",
 ]
 
 
@@ -189,6 +206,11 @@ def _query(db: Path, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
 
 def _edge_exists(db: Path, a: str, b: str, pattern: str) -> bool:
     return _interaction(db, a, b, pattern) is not None
+
+
+def _card_exists(db: Path, name: str) -> bool:
+    return bool(_query(db, "SELECT 1 FROM cards WHERE normalized_name = ?",
+                       (normalize_name(name),)))
 
 
 def _interaction(db: Path, a: str, b: str, pattern: str) -> sqlite3.Row | None:
@@ -387,98 +409,345 @@ def _synthetic_view(card_id, name, type_line, predicates, params=None):
     return CardView.build(ctx, preds)
 
 
+def _ability_detail(ref, root, *, is_root=False, root_kind="trigger", root_cost="",
+                    gates=None, via=()):
+    gates = dict(gates or {})
+    return {
+        "ability_ref": ref, "root_ability_ref": root, "via": list(via),
+        "is_root": is_root, "root_kind": root_kind, "root_verb": "",
+        "root_cost": root_cost, "gates": gates, "chain_gates": gates,
+    }
+
+
+def _attach(params: dict, detail: dict) -> dict:
+    merged = dict(params)
+    merged["ability_ref"] = detail["ability_ref"]
+    merged["root_ability_ref"] = detail["root_ability_ref"]
+    merged["ability_refs"] = [detail["ability_ref"]]
+    merged["root_ability_refs"] = [detail["root_ability_ref"]]
+    merged["ability_details"] = [detail]
+    return merged
+
+
+_ENGINE_REF = "line:0:6:A:CopyPermanent"
+_ETB_REF = "line:0:5:T:ChangesZone"
+
+
+def _engine_view(card_id=1, name="Engine", type_line="Legendary Creature",
+                 copy_restriction="Creature.nonLegendary+YouCtrl"):
+    ability = _ability_detail(_ENGINE_REF, _ENGINE_REF, is_root=True,
+                              root_kind="ability", root_cost="T")
+    return _synthetic_view(card_id, name, type_line,
+                           [vocab.TAPS_COST, vocab.COPIES_CREATURE],
+                           {
+                               vocab.TAPS_COST: _attach({"verb": "CopyPermanent"}, ability),
+                               vocab.COPIES_CREATURE: _attach(
+                                   {"copy": parse_restriction(copy_restriction).to_dict()}, ability),
+                           })
+
+
+def _untapper_view(card_id=2, name="Partner", type_line="Creature",
+                   target="Permanent.YouCtrl", verb="Untap",
+                   untap_root=_ETB_REF, root_kind="trigger", root_cost="",
+                   gates=None, with_etb=True):
+    untap_ability = _ability_detail(
+        "svar:0:DBUntap:Untap", untap_root, root_kind=root_kind,
+        root_cost=root_cost, gates=gates, via=("DBUntap",),
+    )
+    preds = [vocab.UNTAPS]
+    params = {vocab.UNTAPS: _attach(
+        {"verb": verb, "target": parse_restriction(target).to_dict()}, untap_ability)}
+    if with_etb:
+        etb_ability = _ability_detail(_ETB_REF, _ETB_REF, is_root=True, root_kind="trigger")
+        preds.append(vocab.ETB_TRIGGER)
+        params[vocab.ETB_TRIGGER] = _attach({}, etb_ability)
+    return _synthetic_view(card_id, name, type_line, preds, params)
+
+
+class TestAbilityLinking:
+    """``build_ability_links`` follows Execute$/SubAbility$ chains per effect."""
+
+    @staticmethod
+    def _effect(effect_id, kind, verb, *, is_svar=False, svar=None, line=5, params=None):
+        return CardEffect(id=effect_id, card_id=1, face_index=0, effect_kind=kind,
+                          verb=verb, is_svar=is_svar, svar_name=svar, line_no=line,
+                          params=params or {})
+
+    def test_execute_subability_chain(self):
+        from combo_discovery.ontology.extractor import build_ability_links
+
+        root = self._effect(1, "trigger", "ChangesZone", line=5, params={"Execute": "TrigUntap"})
+        first = self._effect(2, "ability", "Untap", is_svar=True, svar="TrigUntap", line=6,
+                             params={"SubAbility": "DBExtra", "ValidTgts": "Permanent.YouCtrl"})
+        second = self._effect(3, "ability", "PutCounter", is_svar=True, svar="DBExtra", line=7)
+        links = build_ability_links([root, first, second])
+
+        assert links[2]["root_ability_ref"] == links[1]["ability_ref"]
+        assert links[2]["via"] == ["TrigUntap"]
+        assert links[3]["root_ability_ref"] == links[1]["ability_ref"]
+        assert links[3]["via"] == ["TrigUntap", "DBExtra"]
+        assert links[1]["is_root"] is True
+
+    def test_separate_ability_is_not_linked(self):
+        from combo_discovery.ontology.extractor import build_ability_links
+
+        etb = self._effect(1, "trigger", "ChangesZone", line=5, params={"Execute": "TrigDraw"})
+        draw = self._effect(2, "ability", "Draw", is_svar=True, svar="TrigDraw", line=6)
+        attacks = self._effect(3, "trigger", "Attacks", line=8, params={"Execute": "TrigUntap"})
+        untap = self._effect(4, "ability", "Untap", is_svar=True, svar="TrigUntap", line=9,
+                             params={"ValidTgts": "Creature"})
+        links = build_ability_links([etb, draw, attacks, untap])
+        assert links[4]["root_ability_ref"] == links[3]["ability_ref"] != links[1]["ability_ref"]
+
+    def test_choices_chain_is_followed(self):
+        from combo_discovery.ontology.extractor import build_ability_links
+
+        root = self._effect(1, "trigger", "ChangesZone", line=6, params={"Execute": "TrigCharm"})
+        charm = self._effect(2, "ability", "Charm", is_svar=True, svar="TrigCharm", line=7,
+                             params={"Choices": "DBUntap,DBTap"})
+        untap = self._effect(3, "ability", "Untap", is_svar=True, svar="DBUntap", line=8)
+        links = build_ability_links([root, charm, untap])
+        assert links[3]["root_ability_ref"] == links[1]["ability_ref"]
+        assert links[3]["via"] == ["TrigCharm", "DBUntap"]
+
+    def test_gates_propagate_down_the_chain(self):
+        from combo_discovery.ontology.extractor import build_ability_links
+
+        root = self._effect(1, "trigger", "Attacks", line=8,
+                            params={"Execute": "TrigUntap", "FirstAttack": "True", "Delirium": "True"})
+        untap = self._effect(2, "ability", "Untap", is_svar=True, svar="TrigUntap", line=9)
+        links = build_ability_links([root, untap])
+        assert links[2]["chain_gates"] == {"first_attack": "True", "delirium": "True"}
+
+    def test_effect_gates_capture_conditional_keys(self):
+        from combo_discovery.ontology.extractor import effect_gates
+
+        effect = self._effect(1, "trigger", "Attacks", params={
+            "FirstAttack": "True", "Delirium": "True", "ActivationLimit": "1",
+            "ValidResult": "4", "PlayerTurn": "True",
+        })
+        gates = effect_gates(effect)
+        assert {"first_attack", "delirium", "activation_limit", "valid_result",
+                "turn_restriction"} <= set(gates)
+        rolled = self._effect(2, "trigger", "RolledDie", params={"ValidResult": "4"})
+        assert effect_gates(rolled).get("rolled_die") == "4"
+
+    def test_effect_ref_is_stable(self):
+        from combo_discovery.ontology.extractor import effect_ref
+
+        direct = self._effect(1, "trigger", "ChangesZone", line=6)
+        svar = self._effect(2, "ability", "Untap", is_svar=True, svar="DBUntap", line=8)
+        assert effect_ref(direct) == "line:0:6:T:ChangesZone"
+        assert effect_ref(svar) == "svar:0:DBUntap:Untap"
+
+
+class TestGateRejections:
+    @pytest.mark.parametrize(
+        "gates",
+        [
+            {"first_attack": "True"},
+            {"delirium": "True"},
+            {"rolled_die": "4"},
+            {"activation_limit": "1"},
+            {"turn_restriction": "True"},
+            {"phase_out": "True"},
+        ],
+    )
+    def test_gated_untap_is_not_linked(self, gates):
+        from combo_discovery.ontology.edges import check_ability_link
+
+        partner = _untapper_view(2, "Gated", "Creature", untap_root=_ETB_REF,
+                                 gates=gates)
+        assert check_ability_link(partner).linked is False
+
+    def test_ungated_etb_untap_is_linked(self):
+        from combo_discovery.ontology.edges import check_ability_link
+
+        partner = _untapper_view(2, "Clean", "Creature", untap_root=_ETB_REF)
+        link = check_ability_link(partner)
+        assert link.linked is True and link.kind == "etb_chain"
+
+
+class TestPatternAbilityScope:
+    def test_free_cast_enabler_needs_same_ability(self):
+        from combo_discovery.ontology.edges import free_cast_loops
+
+        caster = _synthetic_view(1, "Caster", "Sorcery", [vocab.CASTS_FROM_GRAVEYARD])
+        mana = _ability_detail("line:0:5:A:Mana", "line:0:5:A:Mana",
+                               is_root=True, root_kind="ability")
+        sac = _ability_detail("line:0:6:A:Sacrifice", "line:0:6:A:Sacrifice",
+                              is_root=True, root_kind="ability")
+        split = _synthetic_view(2, "Split Enabler", "Artifact",
+                                [vocab.PRODUCES_MANA, vocab.SACRIFICES_SELF],
+                                {vocab.PRODUCES_MANA: _attach({}, mana),
+                                 vocab.SACRIFICES_SELF: _attach({}, sac)})
+        assert list(free_cast_loops({1: caster, 2: split})) == []
+
+        same = _synthetic_view(3, "Same Enabler", "Artifact",
+                               [vocab.PRODUCES_MANA, vocab.SACRIFICES_SELF],
+                               {vocab.PRODUCES_MANA: _attach({}, mana),
+                                vocab.SACRIFICES_SELF: _attach({}, mana)})
+        assert len(list(free_cast_loops({1: caster, 3: same}))) == 1
+
+    def test_mana_producer_needs_etb_or_tap_link(self):
+        from combo_discovery.ontology.edges import mana_engine
+
+        etb = _ability_detail(_ETB_REF, _ETB_REF, is_root=True, root_kind="trigger")
+        other = _ability_detail("line:0:9:A:Mana", "line:0:9:A:Mana",
+                                is_root=True, root_kind="ability", root_cost="T")
+        linked = _synthetic_view(
+            1, "Linked Producer", "Creature", [vocab.ETB_TRIGGER, vocab.PRODUCES_MANA],
+            {vocab.ETB_TRIGGER: _attach({}, etb),
+             vocab.PRODUCES_MANA: _attach({"amount": "3"}, etb)},
+        )
+        split = _synthetic_view(
+            2, "Split Producer", "Creature", [vocab.ETB_TRIGGER, vocab.PRODUCES_MANA],
+            {vocab.ETB_TRIGGER: _attach({}, etb),
+             vocab.PRODUCES_MANA: _attach({"amount": "3"}, other)},
+        )
+        spender = CardView.build(
+            CardContext(3, "Spender", "spender", "X", "Sorcery", "", "", ()), []
+        )
+        assert len(list(mana_engine({1: linked, 3: spender}))) == 1
+        assert list(mana_engine({2: split, 3: spender})) == []
+
+
 class TestInfiniteLoopScoring:
-    @staticmethod
-    def _view(card_id, name, type_line, predicates, params=None):
-        return _synthetic_view(card_id, name, type_line, predicates, params)
-
-    @staticmethod
-    def _untap_params(verb, restriction):
-        return {
-            vocab.UNTAPS: {"verb": verb, "target": parse_restriction(restriction).to_dict()}
-        }
-
-    def test_creature_untapper_outranks_uncopyable_aura(self):
-        """The canonical Kiki/Exarch shape scores above a non-creature ETB
-        untapper that Kiki cannot copy."""
+    def test_noncreature_uncopyable_untapper_is_excluded(self):
+        """A non-creature ETB untapper cannot be copied by a creature-copy engine."""
         from combo_discovery.ontology.edges import infinite_etb_loop
 
-        engine = self._view(1, "Engine", "Legendary Creature",
-                            [vocab.TAPS_COST, vocab.COPIES_CREATURE],
-                            {vocab.COPIES_CREATURE: {"copy": parse_restriction(
-                                "Creature.nonLegendary+YouCtrl").to_dict()}})
-        creature = self._view(2, "Creature Untapper", "Creature",
-                              [vocab.UNTAPS, vocab.ETB_TRIGGER],
-                              self._untap_params("Untap", "Permanent.YouCtrl"))
-        aura = self._view(3, "Aura Untapper", "Enchantment Aura",
-                          [vocab.UNTAPS, vocab.ETB_TRIGGER],
-                          self._untap_params("Untap", "Permanent.YouCtrl"))
-        scores = {
-            edge.target.name: edge.score
-            for edge in infinite_etb_loop({1: engine, 2: creature, 3: aura})
+        engine = _engine_view(1, "Engine", "Legendary Creature")
+        creature = _untapper_view(2, "Creature Untapper", "Creature")
+        aura = _untapper_view(3, "Aura Untapper", "Enchantment Aura")
+        targets = {
+            edge.target.name for edge in infinite_etb_loop({1: engine, 2: creature, 3: aura})
         }
-        assert scores["Creature Untapper"] > scores["Aura Untapper"]
+        assert targets == {"Creature Untapper"}
 
     def test_incompatible_untapper_is_excluded(self):
         from combo_discovery.ontology.edges import infinite_etb_loop
 
-        engine = self._view(1, "Engine", "Legendary Creature",
-                            [vocab.TAPS_COST, vocab.COPIES_CREATURE],
-                            {vocab.COPIES_CREATURE: {"copy": parse_restriction(
-                                "Creature.nonLegendary+YouCtrl").to_dict()}})
-        land_untapper = self._view(2, "Land Untapper", "Creature",
-                                   [vocab.UNTAPS, vocab.ETB_TRIGGER],
-                                   self._untap_params("UntapAll", "Land.YouCtrl"))
+        engine = _engine_view()
+        land_untapper = _untapper_view(2, "Land Untapper", "Creature",
+                                       target="Land.YouCtrl", verb="UntapAll")
         assert list(infinite_etb_loop({1: engine, 2: land_untapper})) == []
 
     def test_self_only_untapper_is_excluded(self):
         from combo_discovery.ontology.edges import infinite_etb_loop
 
-        engine = self._view(1, "Engine", "Creature",
-                            [vocab.TAPS_COST, vocab.COPIES_CREATURE],
-                            {vocab.COPIES_CREATURE: {"copy": parse_restriction(
-                                "Creature.nonLegendary+YouCtrl").to_dict()}})
-        self_untapper = self._view(2, "Self Untapper", "Creature",
-                                   [vocab.UNTAPS, vocab.ETB_TRIGGER],
-                                   self._untap_params("Untap", "Card.Self"))
+        engine = _engine_view()
+        self_untapper = _untapper_view(2, "Self Untapper", "Creature", target="Card.Self")
         assert list(infinite_etb_loop({1: engine, 2: self_untapper})) == []
+
+    def test_gated_different_ability_is_excluded(self):
+        """Fear-of-Missing-Out shape: the untap is on a gated Attacks trigger,
+        not the self-ETB engine."""
+        from combo_discovery.ontology.edges import infinite_etb_loop
+
+        engine = _engine_view()
+        partner = _untapper_view(
+            2, "Split Ability", "Creature", untap_root="line:0:8:T:Attacks",
+            gates={"first_attack": "True", "delirium": "True"},
+        )
+        assert list(infinite_etb_loop({1: engine, 2: partner})) == []
+
+    def test_recurring_trigger_untap_is_linked(self):
+        """White-Plume shape: an ungated recurring trigger untaps the engine."""
+        from combo_discovery.ontology.edges import infinite_etb_loop
+
+        engine = _engine_view()
+        partner = _untapper_view(2, "Upkeep Untapper", "Creature",
+                                 untap_root="line:0:7:T:Phase")
+        edges = list(infinite_etb_loop({1: engine, 2: partner}))
+        assert len(edges) == 1
+        marker = next(e for e in edges[0].evidence if e.get("kind") == "compatibility")
+        assert marker["link_kind"] == "repeatable_trigger"
+
+    def test_activated_untap_without_etb_resource_is_excluded(self):
+        """Formidable-Speaker shape: untap is an activated mana-cost ability."""
+        from combo_discovery.ontology.edges import infinite_etb_loop
+
+        engine = _engine_view()
+        partner = _untapper_view(
+            2, "Activated Untap", "Creature", target="Permanent.Other",
+            untap_root="line:0:7:A:Untap", root_kind="ability", root_cost="1 T",
+        )
+        assert list(infinite_etb_loop({1: engine, 2: partner})) == []
+
+    def test_activated_untap_with_etb_energy_resource_is_linked(self):
+        """Janjeet-Sentry shape: ETB gives energy, untap pays energy."""
+        from combo_discovery.ontology.edges import infinite_etb_loop
+
+        engine = _engine_view()
+        etb = _ability_detail(_ETB_REF, _ETB_REF, is_root=True, root_kind="trigger")
+        energy = _ability_detail("svar:0:TrigEnergy:PutCounter", _ETB_REF,
+                                 root_kind="trigger", via=("TrigEnergy",))
+        untap = _ability_detail("line:0:7:A:TapOrUntap", "line:0:7:A:TapOrUntap",
+                                is_root=True, root_kind="ability", root_cost="T PayEnergy<2>")
+        partner = _synthetic_view(2, "Energy Untapper", "Creature",
+                                  [vocab.ETB_TRIGGER, vocab.ADDS_COUNTERS, vocab.UNTAPS], {
+                                      vocab.ETB_TRIGGER: _attach({}, etb),
+                                      vocab.ADDS_COUNTERS: _attach({}, energy),
+                                      vocab.UNTAPS: _attach(
+                                          {"verb": "TapOrUntap",
+                                           "target": parse_restriction("Artifact,Creature").to_dict()},
+                                          untap),
+                                  })
+        assert len(list(infinite_etb_loop({1: engine, 2: partner}))) == 1
+
+    def test_copy_hard_gate_excludes_legendary_and_noncreature(self):
+        from combo_discovery.ontology.edges import infinite_etb_loop
+
+        engine = _engine_view()
+        legendary = _untapper_view(2, "Legendary Partner", "Legendary Creature Human")
+        aura = _untapper_view(3, "Aura Partner", "Enchantment Aura")
+        assert list(infinite_etb_loop({1: engine, 2: legendary})) == []
+        assert list(infinite_etb_loop({1: engine, 3: aura})) == []
+
+    def test_engine_without_copy_predicate_is_excluded(self):
+        """A tap-cost impact engine that cannot copy the partner is out of scope."""
+        from combo_discovery.ontology.edges import infinite_etb_loop
+
+        ability = _ability_detail("line:0:6:A:Mill", "line:0:6:A:Mill",
+                                  is_root=True, root_kind="ability", root_cost="T")
+        engine = _synthetic_view(1, "Mill Engine", "Artifact",
+                                 [vocab.TAPS_COST, vocab.MILLS],
+                                 {vocab.TAPS_COST: _attach({}, ability),
+                                  vocab.MILLS: _attach({}, ability)})
+        partner = _untapper_view(2, "Partner", "Creature")
+        assert list(infinite_etb_loop({1: engine, 2: partner})) == []
 
     def test_tap_or_untap_carries_a_penalty(self):
         from combo_discovery.ontology.edges import infinite_etb_loop
 
-        engine = self._view(1, "Engine", "Creature",
-                            [vocab.TAPS_COST, vocab.COPIES_CREATURE],
-                            {vocab.COPIES_CREATURE: {"copy": parse_restriction(
-                                "Creature.nonLegendary+YouCtrl").to_dict()}})
-        plain = self._view(2, "Plain", "Creature", [vocab.UNTAPS, vocab.ETB_TRIGGER],
-                           self._untap_params("Untap", "Permanent.YouCtrl"))
-        flexible = self._view(3, "Flexible", "Creature", [vocab.UNTAPS, vocab.ETB_TRIGGER],
-                              self._untap_params("TapOrUntap", "Permanent.YouCtrl"))
+        engine = _engine_view()
+        plain = _untapper_view(2, "Plain", "Creature", verb="Untap")
+        flexible = _untapper_view(3, "Flexible", "Creature", verb="TapOrUntap")
         scores = {
             edge.target.name: edge.score
             for edge in infinite_etb_loop({1: engine, 2: plain, 3: flexible})
         }
         assert scores["Plain"] > scores["Flexible"]
 
-    def test_compatibility_evidence_marks_type_verified(self):
+    def test_compatibility_evidence_marks_verified_links(self):
         from combo_discovery.ontology.edges import infinite_etb_loop
 
-        engine = self._view(1, "Engine", "Creature",
-                            [vocab.TAPS_COST, vocab.COPIES_CREATURE],
-                            {vocab.COPIES_CREATURE: {"copy": parse_restriction(
-                                "Creature.nonLegendary+YouCtrl").to_dict()}})
-        partner = self._view(2, "Partner", "Creature", [vocab.UNTAPS, vocab.ETB_TRIGGER],
-                             self._untap_params("Untap", "Permanent.YouCtrl"))
+        engine = _engine_view()
+        partner = _untapper_view(2, "Partner", "Creature")
         edges = list(infinite_etb_loop({1: engine, 2: partner}))
         marker = next(e for e in edges[0].evidence if e.get("kind") == "compatibility")
         assert marker["type_verified"] is True
+        assert marker["copy_verified"] is True
+        assert marker["ability_linked"] is True
+        assert marker["link_kind"] == "etb_chain"
         assert marker["target_restriction"] == "Permanent.YouCtrl"
 
     def test_per_source_cap_keeps_best_partners(self):
         from combo_discovery.ontology.edges import Edge, _cap_per_source_iter
 
-        source = self._view(1, "Source", "Creature", [vocab.TAPS_COST])
-        targets = [self._view(10 + i, f"T{i}", "Creature", [vocab.UNTAPS]) for i in range(5)]
+        source = _synthetic_view(1, "Source", "Creature", [vocab.TAPS_COST])
+        targets = [_synthetic_view(10 + i, f"T{i}", "Creature", [vocab.UNTAPS]) for i in range(5)]
         edges = [
             Edge("p", source, target, mechanism="m", score=float(i))
             for i, target in enumerate(targets)
@@ -486,6 +755,7 @@ class TestInfiniteLoopScoring:
         capped = list(_cap_per_source_iter(edges, 2))
         assert len(capped) == 2
         assert [edge.score for edge in capped] == [4.0, 3.0]
+
 
 
 # ---------------------------------------------------------------------------
@@ -578,32 +848,69 @@ class TestKnownCombos:
         )[0]["n"] == 0
 
     def test_kiki_type_incompatible_partners_are_excluded(self, ontology_db):
-        """Every false positive from the bug report must be gone."""
+        """Every round-1 type/controller false positive must be gone."""
         db, _ = ontology_db
+        absent = [name for name in KIKI_TYPE_FALSE_POSITIVES if not _card_exists(db, name)]
+        assert absent == [], f"fixtures missing from mini corpus: {absent}"
         remaining = [
-            name for name in KIKI_FALSE_POSITIVES
+            name for name in KIKI_TYPE_FALSE_POSITIVES
             if _interaction(db, "Kiki-Jiki, Mirror Breaker", name, "infinite_etb_loop") is not None
         ]
         assert remaining == [], f"type-incompatible Kiki partners still emitted: {remaining}"
 
-    def test_kiki_type_compatible_partners_remain(self, ontology_db):
-        """Every true positive from the bug report must survive the gate."""
+    def test_kiki_round2_engine_gate_excludes(self, ontology_db):
+        """The ability-scope / copy / gate false positives must be gone."""
         db, _ = ontology_db
+        absent = [name for name in KIKI_ENGINE_FALSE_POSITIVES if not _card_exists(db, name)]
+        assert absent == [], f"fixtures missing from mini corpus: {absent}"
+        remaining = [
+            name for name in KIKI_ENGINE_FALSE_POSITIVES
+            if _interaction(db, "Kiki-Jiki, Mirror Breaker", name, "infinite_etb_loop") is not None
+        ]
+        assert remaining == [], f"engine-gate Kiki partners still emitted: {remaining}"
+
+    def test_kiki_type_compatible_partners_remain(self, ontology_db):
+        """Every required positive must survive the gate."""
+        db, _ = ontology_db
+        absent = [name for name in KIKI_TRUE_POSITIVES if not _card_exists(db, name)]
+        assert absent == [], f"fixtures missing from mini corpus: {absent}"
         missing = [
             name for name in KIKI_TRUE_POSITIVES
             if _interaction(db, "Kiki-Jiki, Mirror Breaker", name, "infinite_etb_loop") is None
         ]
         assert missing == [], f"compatible Kiki partners dropped: {missing}"
 
-    def test_kiki_edge_carries_type_verified_marker(self, ontology_db):
+    def test_kiki_edge_carries_all_verification_markers(self, ontology_db):
         db, _ = ontology_db
         row = _interaction(db, "Kiki-Jiki, Mirror Breaker", "Deceiver Exarch", "infinite_etb_loop")
         assert row is not None
         evidence = json.loads(row["evidence_json"])
         marker = next(item for item in evidence if item.get("kind") == "compatibility")
         assert marker["type_verified"] is True
+        assert marker["copy_verified"] is True
+        assert marker["ability_linked"] is True
+        assert marker["link_kind"] == "etb_chain"
         assert marker["target"] == "compatible"
         assert marker["target_restriction"] == "Permanent.YouCtrl"
+
+    def test_every_infinite_hypothesis_is_fully_verified(self, ontology_db):
+        """Invariant: no emitted infinite_etb_loop edge may lack a verified
+        target, a verified copy, or an ability link."""
+        db, _ = ontology_db
+        rows = _query(
+            db,
+            "SELECT i.evidence_json FROM interactions i "
+            "JOIN patterns p ON p.id = i.pattern_id WHERE p.name = 'infinite_etb_loop'",
+        )
+        assert rows
+        for row in rows:
+            marker = next(
+                item for item in json.loads(row["evidence_json"])
+                if item.get("kind") == "compatibility"
+            )
+            assert marker["type_verified"] is True
+            assert marker["copy_verified"] is True
+            assert marker["ability_linked"] is True
 
     def test_hypotheses_carry_scores_and_status(self, ontology_db):
         db, _ = ontology_db

@@ -433,6 +433,149 @@ def _recurs_destination(effect: CardEffect) -> bool:
     return _destination(effect) in ("Hand", "Battlefield", "Library")
 
 
+# ---------------------------------------------------------------------------
+# Ability-scoped effect linking
+#
+# Predicates are card-scoped, but combo patterns care about *which* ability an
+# effect belongs to: an ETB trigger and an untap on two unrelated abilities must
+# not be combined.  Every effect gets a stable reference and, when reachable via
+# Execute$/SubAbility$/Choices$/True|FalseSubAbility$/AddAbility$ from a root
+# line, the root ability it belongs to and the chain that reaches it.
+# ---------------------------------------------------------------------------
+
+_KIND_LETTER = {"ability": "A", "trigger": "T", "static": "S", "replacement": "R"}
+
+#: Effect-level params that make a trigger/ability conditional or one-shot.
+_GATE_KEYS: dict[str, str] = {
+    "FirstAttack": "first_attack",
+    "Delirium": "delirium",
+    "ValidResult": "valid_result",
+    "ActivationLimit": "activation_limit",
+    "GameActivationLimit": "activation_limit",
+    "NumLimitEachTurn": "activation_limit",
+    "ResolvedLimit": "activation_limit",
+    "MayPlayLimit": "activation_limit",
+    "MyTurn": "turn_restriction",
+    "YourTurn": "turn_restriction",
+    "PlayerTurn": "turn_restriction",
+    "OpponentTurn": "turn_restriction",
+    "ConditionPlayerTurn": "turn_restriction",
+    "ConditionOpponentTurn": "turn_restriction",
+    "PhaseInOrOut": "phase_out",
+    "WontPhaseInNormal": "phase_out",
+    "ForgetOnPhasedIn": "phase_out",
+    "PhaseOut": "phase_out",
+    "FirstTime": "first_time",
+    "OnlyFirst": "only_first",
+    "OnlyFirstSpell": "only_first",
+}
+
+#: Keys whose value names a chained SVar/ability.
+_CHAIN_KEYS = (
+    "Execute", "SubAbility", "TrueSubAbility", "FalseSubAbility", "Choices",
+    "AddAbility",
+)
+_CHAIN_SPLIT = re.compile(r"[,&]")
+
+
+def effect_gates(effect: CardEffect) -> dict[str, str]:
+    """Conditional / non-repeatable riders attached to one effect."""
+    gates: dict[str, str] = {}
+    if effect.verb == "RolledDie":
+        gates["rolled_die"] = str(effect.params.get("ValidResult") or True)
+    for key, label in _GATE_KEYS.items():
+        value = effect.params.get(key)
+        if value not in (None, ""):
+            gates.setdefault(label, value)
+    return gates
+
+
+def effect_ref(effect: CardEffect) -> str:
+    """Stable ability reference, e.g. ``line:0:6:T:ChangesZone`` or
+    ``svar:0:DBUntap:Untap``."""
+    kind = _KIND_LETTER.get(effect.effect_kind, "?")
+    verb = effect.verb or "?"
+    if effect.is_svar and effect.svar_name:
+        return f"svar:{effect.face_index}:{effect.svar_name}:{verb}"
+    return f"line:{effect.face_index}:{effect.line_no}:{kind}:{verb}"
+
+
+def _chain_targets(effect: CardEffect) -> list[str]:
+    names: list[str] = []
+    for key in _CHAIN_KEYS:
+        value = effect.params.get(key)
+        if not value:
+            continue
+        for part in _CHAIN_SPLIT.split(str(value)):
+            part = part.strip()
+            if part:
+                names.append(part)
+    return names
+
+
+def build_ability_links(effects: list[CardEffect]) -> dict[int, dict[str, Any]]:
+    """Map ``effect.id`` -> ability metadata (ref, root, chain, gates).
+
+    Roots are the non-SVar lines (``A:``/``T:``/``S:``/``R:``); SVars are linked
+    to the root that reaches them first through the chain keys.  Deterministic:
+    effects are processed in id order.  Orphan SVars become their own root.
+    """
+    by_svar: dict[tuple[int, str], CardEffect] = {}
+    for effect in effects:
+        if effect.is_svar and effect.svar_name:
+            by_svar.setdefault((effect.face_index, effect.svar_name), effect)
+
+    links: dict[int, dict[str, Any]] = {}
+
+    def walk(root: CardEffect, current: CardEffect, via: list[str],
+             chain_gates: dict[str, str]) -> None:
+        gates = effect_gates(current)
+        merged = dict(chain_gates)
+        for key, value in gates.items():
+            merged.setdefault(key, value)
+        links[current.id] = {
+            "ability_ref": effect_ref(current),
+            "root_ability_ref": effect_ref(root),
+            "via": list(via),
+            "is_root": current.id == root.id,
+            "root_kind": root.effect_kind,
+            "root_verb": root.verb,
+            "root_cost": root.params.get("Cost", "") or "",
+            "gates": gates,
+            "chain_gates": merged,
+        }
+        for name in _chain_targets(current):
+            child = by_svar.get((current.face_index, name))
+            if child is not None and child.id not in links:
+                walk(root, child, via + [name], merged)
+
+    for effect in effects:
+        if not effect.is_svar and effect.id not in links:
+            walk(effect, effect, [], {})
+
+    for effect in effects:
+        if effect.id not in links:
+            gates = effect_gates(effect)
+            links[effect.id] = {
+                "ability_ref": effect_ref(effect),
+                "root_ability_ref": effect_ref(effect),
+                "via": [],
+                "is_root": False,
+                "root_kind": effect.effect_kind,
+                "root_verb": effect.verb,
+                "root_cost": effect.params.get("Cost", "") or "",
+                "gates": gates,
+                "chain_gates": gates,
+            }
+    return links
+
+
+_ABILITY_PARAM_KEYS = (
+    "ability_ref", "root_ability_ref", "via", "is_root", "root_kind",
+    "root_verb", "root_cost", "gates", "chain_gates",
+)
+
+
 def classify_effect(effect: CardEffect) -> list[tuple[str, dict[str, Any]]]:
     """Map one effect to zero or more ``(predicate, params)`` pairs.
 
@@ -652,6 +795,7 @@ def extract_card_predicates(
     """
     grouped: dict[tuple[int, str], CardPredicate] = {}
     order: list[tuple[int, str]] = []
+    links = build_ability_links(effects)
 
     def record(match: tuple[str, dict[str, Any]], effect: CardEffect) -> None:
         predicate, matched_params = match
@@ -679,17 +823,43 @@ def extract_card_predicates(
         order.append(storm_key)
 
     for effect in effects:
+        ability = links.get(effect.id) or {}
         for match in classify_effect(effect):
-            record(match, effect)
-            predicate = match[0]
+            predicate, matched_params = match
+            merged = dict(matched_params)
+            merged.update(ability)
+            record((predicate, merged), effect)
             grouped[(effect.face_index, predicate)].evidence.append({
                 "effect_id": effect.id,
                 "line": effect.line_no,
                 "kind": effect.effect_kind,
                 "verb": effect.verb,
                 "svar": effect.svar_name,
-                "params": match[1],
+                "params": merged,
             })
+
+    # Aggregate the per-match ability info onto the card-level predicate so the
+    # pattern gate can see every ability a predicate came from.
+    for predicate in grouped.values():
+        if predicate.predicate == vocab.STORM:
+            continue
+        details: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for entry in predicate.evidence:
+            params = entry.get("params") or {}
+            ref = params.get("ability_ref")
+            if not ref or ref in seen:
+                continue
+            seen.add(ref)
+            details.append({key: params.get(key) for key in _ABILITY_PARAM_KEYS})
+        if details:
+            predicate.params["ability_details"] = details
+            predicate.params["ability_refs"] = sorted(
+                {str(d.get("ability_ref") or "") for d in details} - {""}
+            )
+            predicate.params["root_ability_refs"] = sorted(
+                {str(d.get("root_ability_ref") or "") for d in details} - {""}
+            )
 
     # Deterministic output: face order, then vocabulary order.
     rank = {name: i for i, name in enumerate(vocab.ALL_PREDICATES)}
@@ -789,10 +959,13 @@ __all__ = [
     "CardEffect",
     "CardPredicate",
     "Restriction",
+    "build_ability_links",
     "card_subtypes",
     "card_type_tokens",
     "classify_effect",
     "colors_from_mana_cost",
+    "effect_gates",
+    "effect_ref",
     "extract_card_predicates",
     "extract_import",
     "load_contexts",
