@@ -61,6 +61,235 @@ def colors_from_mana_cost(mana_cost: str) -> frozenset[str]:
     return frozenset(found)
 
 
+# ---------------------------------------------------------------------------
+# Target restriction parsing (the "subject/object" half of a predicate)
+# ---------------------------------------------------------------------------
+
+# Card types / supertypes Forge can put in a restriction.  Everything else that
+# is a word becomes a subtype token (Goat, Merfolk, Samurai, Forest, ...).
+_RESTRICTION_TYPES = frozenset({
+    "creature", "land", "artifact", "enchantment", "planeswalker", "instant",
+    "sorcery", "battle", "tribal", "kindred", "permanent", "card", "aura",
+    "equipment", "vehicle", "saga", "class", "background", "conspiracy",
+    "phenomenon", "plane", "scheme", "vanguard", "dungeon",
+})
+_SUPERTYPES = frozenset({"legendary", "basic", "snow", "world", "ongoing", "host", "elite"})
+
+# Restriction qualifiers -> structured meaning.
+_CONTROLLER_QUALIFIERS = {
+    "youctrl": "you",
+    "oppctrl": "opponent",
+    "opponentctrl": "opponent",
+    "targetedplayerctrl": "targeted_player",
+    "targetedcontroller": "targeted_player",
+    "targetedplayectrl": "targeted_player",
+}
+_SELF_QUALIFIERS = frozenset({"self", "cardname", "this"})
+_OTHER_QUALIFIERS = frozenset({"other", "another"})
+_RIDER_QUALIFIERS = {
+    "hascounters": "hascounters",
+    "attacking": "attacking",
+    "attackingalone": "attacking",
+    "blocking": "blocking",
+    "blockingalone": "blocking",
+    "tapped": "tapped",
+    "untapped": "untapped",
+    "token": "token",
+    "nontoken": "nontoken",
+    "wascastbyyou": "wascastbyyou",
+    "isremembered": "isremembered",
+    "remembered": "remembered",
+    "enchantedby": "enchantedby",
+    "equippedby": "equippedby",
+    "basic": "basic",
+    "nonbasic": "nonbasic",
+    "snow": "snow",
+}
+_COLOR_QUALIFIERS = frozenset({"white", "blue", "black", "red", "green", "colorless"})
+
+
+@dataclass(frozen=True)
+class Alternative:
+    """One comma-separated alternative in a Forge restriction string."""
+
+    types: frozenset[str] = frozenset()
+    subtypes: frozenset[str] = frozenset()
+    controller: str = "any"  # any | you | opponent | targeted_player
+    other: bool = False
+    self_only: bool = False
+    legendary: bool | None = None  # True=Legendary, False=nonLegendary
+    riders: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "types": sorted(self.types),
+            "subtypes": sorted(self.subtypes),
+            "controller": self.controller,
+            "other": self.other,
+            "self": self.self_only,
+            "legendary": self.legendary,
+            "riders": list(self.riders),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Alternative":
+        legendary = data.get("legendary")
+        return cls(
+            types=frozenset(data.get("types") or ()),
+            subtypes=frozenset(data.get("subtypes") or ()),
+            controller=data.get("controller") or "any",
+            other=bool(data.get("other")),
+            self_only=bool(data.get("self")),
+            legendary=legendary if legendary is None or isinstance(legendary, bool)
+            else bool(legendary),
+            riders=tuple(data.get("riders") or ()),
+        )
+
+
+@dataclass(frozen=True)
+class Restriction:
+    """A parsed Forge target/affected restriction.
+
+    ``unknown`` means the raw string carried no recognisable type/controller
+    signal (e.g. an empty restriction or one only understood by Forge), so
+    callers should treat a match as low-confidence rather than assume it is
+    unrestricted.
+    """
+
+    raw: str = ""
+    alternatives: tuple[Alternative, ...] = ()
+    unknown: bool = True
+    self_only: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "raw": self.raw,
+            "unknown": self.unknown,
+            "self_only": self.self_only,
+            "alternatives": [alt.to_dict() for alt in self.alternatives],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "Restriction | None":
+        if not data:
+            return None
+        return cls(
+            raw=str(data.get("raw") or ""),
+            alternatives=tuple(
+                Alternative.from_dict(item) for item in (data.get("alternatives") or ())
+            ),
+            unknown=bool(data.get("unknown", True)),
+            self_only=bool(data.get("self_only", False)),
+        )
+
+
+def parse_restriction(raw: str | None) -> Restriction:
+    """Parse a Forge restriction string into structured alternatives.
+
+    Handles comma-OR alternatives (``Artifact.YouCtrl,Creature.YouCtrl``),
+    dotted/plus AND qualifiers (``Creature.Other+YouCtrl``), controller
+    qualifiers, ``Self``, ``Other``, legendary constraints and rider conditions.
+    Unrecognised lowercase tokens become riders (so they block a strict match);
+    unrecognised capitalised tokens become subtypes.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return Restriction(raw="", unknown=True)
+
+    alternatives: list[Alternative] = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        types: set[str] = set()
+        subtypes: set[str] = set()
+        controller = "any"
+        other = False
+        self_only = False
+        legendary: bool | None = None
+        riders: set[str] = set()
+        for token in (t for t in re.split(r"[.+]", part) if t):
+            low = token.lower()
+            if low in _CONTROLLER_QUALIFIERS:
+                controller = _CONTROLLER_QUALIFIERS[low]
+            elif low in _SELF_QUALIFIERS:
+                self_only = True
+            elif low in _OTHER_QUALIFIERS:
+                other = True
+            elif low == "nonlegendary":
+                legendary = False
+            elif low == "legendary":
+                legendary = True
+            elif low in _RIDER_QUALIFIERS:
+                riders.add(_RIDER_QUALIFIERS[low])
+            elif low in _COLOR_QUALIFIERS:
+                riders.add(f"color:{low}")
+            elif low.startswith(("cmc", "power", "toughness", "converted", "manavalue", "mv")):
+                riders.add(f"stat:{low}")
+            elif low in _RESTRICTION_TYPES:
+                types.add(low.upper())
+            elif token[:1].isupper():
+                subtypes.add(low)
+            else:
+                riders.add(f"unknown:{low}")
+        alternatives.append(Alternative(
+            types=frozenset(types), subtypes=frozenset(subtypes),
+            controller=controller, other=other, self_only=self_only,
+            legendary=legendary, riders=tuple(sorted(riders)),
+        ))
+
+    if not alternatives:
+        return Restriction(raw=text, unknown=True)
+    recognised = any(
+        alt.types or alt.subtypes or alt.self_only or alt.controller != "any"
+        for alt in alternatives
+    )
+    return Restriction(
+        raw=text,
+        alternatives=tuple(alternatives),
+        unknown=not recognised,
+        self_only=all(alt.self_only for alt in alternatives),
+    )
+
+
+def _target_restriction(valid: str | None, defined: str | None) -> Restriction:
+    """Resolve the restriction for a target/affected effect.
+
+    ``valid`` wins when present; an explicit ``Defined$ Self`` becomes a
+    self-only restriction (a self-untap, not an interaction); otherwise the
+    target is unknown.
+    """
+    text = (valid or "").strip()
+    if text:
+        return parse_restriction(text)
+    if (defined or "").strip().lower() in _SELF_QUALIFIERS:
+        return parse_restriction("Card.Self")
+    return parse_restriction("")
+
+
+def _type_line_tokens(type_line: str) -> list[str]:
+    return [
+        token for token in re.split(r"[\s\u2014\u2013-]+", (type_line or "").lower())
+        if token and token.isalpha()
+    ]
+
+
+def card_type_tokens(type_line: str) -> frozenset[str]:
+    """Card types present on a type line, uppercased (CREATURE, LAND, ...)."""
+    return frozenset(
+        token.upper() for token in _type_line_tokens(type_line)
+        if token in _RESTRICTION_TYPES
+    )
+
+
+def card_subtypes(type_line: str) -> frozenset[str]:
+    """Subtype tokens on a type line (goat, merfolk, samurai, forest, ...)."""
+    return frozenset(
+        token for token in _type_line_tokens(type_line)
+        if token not in _RESTRICTION_TYPES and token not in _SUPERTYPES
+    )
+
+
 @dataclass(frozen=True)
 class CardContext:
     """Card metadata the extractor is allowed to look at (no effects)."""
@@ -92,6 +321,18 @@ class CardContext:
     @property
     def is_creature(self) -> bool:
         return "creature" in (self.type_line or "").lower()
+
+    @property
+    def is_legendary(self) -> bool:
+        return "legendary" in (self.type_line or "").lower()
+
+    @property
+    def card_types(self) -> frozenset[str]:
+        return card_type_tokens(self.type_line)
+
+    @property
+    def subtypes(self) -> frozenset[str]:
+        return card_subtypes(self.type_line)
 
     @property
     def has_x_cost(self) -> bool:
@@ -222,10 +463,17 @@ def classify_effect(effect: CardEffect) -> list[tuple[str, dict[str, Any]]]:
 
     # -- tapping ------------------------------------------------------------
     if verb in ("Untap", "TapOrUntap", "UntapAll") and kind != "replacement":
+        # Forge names untap targets three ways: ValidTgts / ValidCards, and
+        # UntapType (Cloud-of-Faeries-style "untap up to N lands").
+        untap_type = _p(params, "UntapType")
+        effective = _p(params, "ValidTgts") or _p(params, "ValidCards") or untap_type
+        target = _target_restriction(effective, _p(params, "Defined"))
         matches.append((vocab.UNTAPS, {
             "verb": verb,
             "defined": _p(params, "Defined") or None,
-            "valid": _p(params, "ValidTgts") or _p(params, "ValidCards") or None,
+            "valid": effective or None,
+            "untap_type": untap_type or None,
+            "target": target.to_dict(),
             "amount": _p(params, "Amount") or None,
         }))
     if kind == "ability" and effect.ability_type in ("AB", "ST") and _has_tap_cost(cost):
@@ -235,11 +483,13 @@ def classify_effect(effect: CardEffect) -> list[tuple[str, dict[str, Any]]]:
 
     # -- copying / triggers -------------------------------------------------
     if verb == "CopyPermanent":
+        copy_valid = _p(params, "ValidTgts") or _p(params, "ValidCards")
         matches.append((vocab.COPIES_CREATURE, {
-            "valid": _p(params, "ValidTgts") or None,
+            "valid": copy_valid or None,
             "defined": _p(params, "Defined") or None,
             "add_keywords": _p(params, "AddKeywords") or None,
             "at_eot": _p(params, "AtEOT") or None,
+            "copy": _target_restriction(copy_valid, None).to_dict(),
         }))
     if verb in ("CopySpellAbility", "CopySpell", "CopySpellMay"):
         matches.append((vocab.COPIES_SPELL, {"verb": verb}))
@@ -262,14 +512,18 @@ def classify_effect(effect: CardEffect) -> list[tuple[str, dict[str, Any]]]:
         if _is_self_sacrifice(effect):
             matches.append((vocab.SACRIFICES_SELF, {"verb": verb}))
         else:
+            sac_valid = _p(params, "ValidCards") or _p(params, "ValidCard")
             matches.append((vocab.SACRIFICE_OUTLET, {
                 "verb": verb,
-                "valid": _p(params, "ValidCards") or _p(params, "ValidCard") or _p(params, "Defined") or None,
+                "valid": sac_valid or _p(params, "Defined") or None,
+                "target": _target_restriction(sac_valid, _p(params, "Defined")).to_dict(),
             }))
     if _sacrifices_self_from_cost(cost):
         matches.append((vocab.SACRIFICES_SELF, {"cost": cost}))
     elif _sacrifices_other_from_cost(cost):
-        matches.append((vocab.SACRIFICE_OUTLET, {"cost": cost}))
+        matches.append((vocab.SACRIFICE_OUTLET, {
+            "cost": cost, "target": parse_restriction("").to_dict(),
+        }))
 
     # -- zones --------------------------------------------------------------
     if verb in ("ChangeZone", "ChangeZoneAll"):
@@ -289,9 +543,17 @@ def classify_effect(effect: CardEffect) -> list[tuple[str, dict[str, Any]]]:
         if dest == "Exile":
             matches.append((vocab.EXILES, {
                 "origin": origin or None, "defined": _p(params, "Defined") or None,
+                "target": _target_restriction(
+                    _p(params, "ValidTgts") or _p(params, "ValidCards"), _p(params, "Defined")
+                ).to_dict(),
             }))
     if verb in ("Exile", "ExileAll"):
-        matches.append((vocab.EXILES, {"verb": verb}))
+        matches.append((vocab.EXILES, {
+            "verb": verb,
+            "target": _target_restriction(
+                _p(params, "ValidTgts") or _p(params, "ValidCards"), _p(params, "Defined")
+            ).to_dict(),
+        }))
     if verb == "ChangeZone" and "PayLife" in cost and "TopOfLibrary" in _p(params, "Defined"):
         matches.append((vocab.CARDS_FROM_LIFE, {"cost": cost}))
 
@@ -300,6 +562,9 @@ def classify_effect(effect: CardEffect) -> list[tuple[str, dict[str, Any]]]:
         matches.append((vocab.DEALS_DAMAGE, {
             "amount": _p(params, "NumDmg") or None,
             "defined": _p(params, "Defined") or None,
+            "target": _target_restriction(
+                _p(params, "ValidTgts") or _p(params, "ValidCards"), _p(params, "Defined")
+            ).to_dict(),
         }))
     if verb == "GainLife":
         matches.append((vocab.GAINS_LIFE, {"amount": _p(params, "LifeAmount") or None}))
@@ -310,7 +575,12 @@ def classify_effect(effect: CardEffect) -> list[tuple[str, dict[str, Any]]]:
     if verb in ("Discard", "DiscardAll", "DiscardEach"):
         matches.append((vocab.DISCARDS, {"amount": _p(params, "NumCards") or None}))
     if verb in ("Mill", "MillAll"):
-        matches.append((vocab.MILLS, {"amount": _p(params, "NumCards") or None}))
+        matches.append((vocab.MILLS, {
+            "amount": _p(params, "NumCards") or None,
+            "target": _target_restriction(
+                _p(params, "ValidTgts") or _p(params, "ValidCards"), _p(params, "Defined")
+            ).to_dict(),
+        }))
     if verb == "Token":
         matches.append((vocab.CREATES_TOKEN, {
             "script": _p(params, "TokenScript") or None,
@@ -318,13 +588,26 @@ def classify_effect(effect: CardEffect) -> list[tuple[str, dict[str, Any]]]:
             "treasure": _is_treasure(effect),
         }))
     if verb in ("GainControl", "GainControlVariant"):
-        matches.append((vocab.GAINS_CONTROL, {"verb": verb}))
+        matches.append((vocab.GAINS_CONTROL, {
+            "verb": verb,
+            "target": _target_restriction(
+                _p(params, "ValidTgts") or _p(params, "ValidCards"), _p(params, "Defined")
+            ).to_dict(),
+        }))
     if verb in ("PutCounter", "PutCounterAll", "PutCounterEach", "AddCounter"):
         matches.append((vocab.ADDS_COUNTERS, {
             "counter": _p(params, "CounterType") or None,
+            "target": _target_restriction(
+                _p(params, "ValidTgts") or _p(params, "ValidCards"), _p(params, "Defined")
+            ).to_dict(),
         }))
     if verb in ("Destroy", "DestroyAll", "DestroyAllEffect"):
-        matches.append((vocab.DESTROYS, {"verb": verb}))
+        matches.append((vocab.DESTROYS, {
+            "verb": verb,
+            "target": _target_restriction(
+                _p(params, "ValidTgts") or _p(params, "ValidCards"), _p(params, "Defined")
+            ).to_dict(),
+        }))
 
     # -- cost / casting -----------------------------------------------------
     if kind == "static" and verb in ("ReduceCost", "ReduceCostAll"):
@@ -501,9 +784,13 @@ def extract_import(
 
 
 __all__ = [
+    "Alternative",
     "CardContext",
     "CardEffect",
     "CardPredicate",
+    "Restriction",
+    "card_subtypes",
+    "card_type_tokens",
     "classify_effect",
     "colors_from_mana_cost",
     "extract_card_predicates",
@@ -511,4 +798,5 @@ __all__ = [
     "load_contexts",
     "mana_value",
     "parse_keywords",
+    "parse_restriction",
 ]

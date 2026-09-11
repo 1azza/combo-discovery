@@ -24,7 +24,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import vocabulary as vocab
-from .extractor import CardContext, CardEffect, CardPredicate
+from .extractor import (
+    Alternative,
+    CardContext,
+    CardEffect,
+    CardPredicate,
+    Restriction,
+    parse_restriction,
+)
 
 
 @dataclass(frozen=True)
@@ -41,12 +48,17 @@ class PatternDef:
 PATTERNS: tuple[PatternDef, ...] = (
     PatternDef(
         "infinite_etb_loop",
-        "Tap-cost engine plus an enters-the-battlefield untapper.",
+        "Tap-cost engine plus an enters-the-battlefield untapper whose target "
+        "restriction can legally select the engine.",
         {
             "engine": ["TAPS_COST", "& one of COPIES_CREATURE/COPIES_SPELL/"
                        "DEALS_DAMAGE/LOSES_LIFE/DESTROYS/MILLS/DISCARDS/"
                        "GAINS_CONTROL/ADDS_COUNTERS"],
             "partner": ["UNTAPS", "ETB_TRIGGER"],
+            "compatibility": ["untapper target type/controller must match engine",
+                              "self-only/opponent/targeted-player/conditional excluded",
+                              "unknown restrictions excluded",
+                              "engine copy restriction checked and scored"],
             "direction": "mutual",
         },
     ),
@@ -111,6 +123,153 @@ _IMPACT_PREDICATES: tuple[str, ...] = (
     vocab.GAINS_CONTROL,
     vocab.ADDS_COUNTERS,
 )
+
+
+# ---------------------------------------------------------------------------
+# Type compatibility (can one card legally target/affect the other?)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CompatResult:
+    """Outcome of a single restriction-vs-card check."""
+
+    status: str  # compatible | incompatible | unknown
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class Compatibility:
+    """Both directions of an engine/partner compatibility check."""
+
+    target: CompatResult
+    copy: CompatResult
+    target_raw: str = ""
+    copy_raw: str = ""
+
+    @property
+    def target_ok(self) -> bool:
+        return self.target.status == "compatible"
+
+    @property
+    def type_verified(self) -> bool:
+        return self.target.status == "compatible"
+
+    @property
+    def copy_verified(self) -> bool:
+        return self.copy.status == "compatible"
+
+    def evidence_entry(self) -> dict[str, Any]:
+        """The ``evidence_json`` marker downstream consumers can filter on."""
+        return {
+            "kind": "compatibility",
+            "type_verified": self.type_verified,
+            "copy_verified": self.copy_verified,
+            "target": self.target.status,
+            "copy": self.copy.status,
+            "target_restriction": self.target_raw or None,
+            "copy_restriction": self.copy_raw or None,
+            "detail": f"target={self.target.reason}; copy={self.copy.reason}",
+        }
+
+
+def _spec_from_params(params: dict[str, Any] | None, key: str) -> Restriction | None:
+    if not params:
+        return None
+    return Restriction.from_dict(params.get(key))
+
+
+def _pred_params(view: "CardView", predicate: str) -> dict[str, Any] | None:
+    pred = view.first(predicate)
+    return pred.params if pred is not None else None
+
+
+def _alternative_matches(alt: Alternative, card: CardContext) -> bool:
+    """True when one restriction alternative can affect ``card``.
+
+    Assumes the two paired cards are controlled by the same player, so an
+    ``any``/``you`` controller is satisfiable; ``opponent``/``targeted_player``
+    are not (we cannot guarantee the engine is on that side of the table).
+    ``other`` is always satisfied because a card is never paired with itself.
+    """
+    if alt.controller not in ("any", "you"):
+        return False
+    if alt.self_only or alt.riders:
+        return False
+    if alt.legendary is True and not card.is_legendary:
+        return False
+    if alt.legendary is False and card.is_legendary:
+        return False
+    if alt.types:
+        if alt.types & {"PERMANENT", "CARD"}:
+            return True
+        if alt.types & card.card_types:
+            return True
+        return bool(alt.subtypes & card.subtypes)
+    if alt.subtypes:
+        return bool(alt.subtypes & card.subtypes)
+    return False
+
+
+def restriction_matches_card(
+    spec: Restriction | None, card: CardContext
+) -> CompatResult:
+    """Check whether a target restriction can legally select ``card``."""
+    if spec is None:
+        return CompatResult("unknown", "no restriction recorded")
+    if spec.self_only:
+        return CompatResult("incompatible", "self-only restriction")
+    if spec.unknown or not spec.alternatives:
+        return CompatResult("unknown", f"unparsed restriction {spec.raw!r}")
+    for alt in spec.alternatives:
+        if _alternative_matches(alt, card):
+            return CompatResult("compatible", f"matches {spec.raw!r}")
+    return CompatResult(
+        "incompatible", f"{card.type_line!r} does not match {spec.raw!r}"
+    )
+
+
+def engine_can_copy(engine: "CardView", partner: "CardView") -> CompatResult:
+    """Check the engine's copy restriction against the partner card."""
+    copy_pred = engine.first(vocab.COPIES_CREATURE)
+    if copy_pred is None:
+        return CompatResult("compatible", "not a copy engine")
+    spec = _spec_from_params(copy_pred.params, "copy")
+    defined = str(copy_pred.params.get("defined") or "").lower()
+    if spec is not None and not spec.unknown and not spec.self_only:
+        return restriction_matches_card(spec, partner.context)
+    # Defined Self (Splinter Twin) or an unparameterised copy: the engine copies
+    # itself / the creature it is attached to, so the partner must be a creature.
+    if spec is None or spec.unknown or spec.self_only:
+        if defined in ("", "self"):
+            if partner.context.is_creature:
+                return CompatResult("compatible", "engine copies its host creature")
+            return CompatResult("incompatible", "partner is not a copyable creature")
+    return CompatResult("unknown", "unknown copy restriction")
+
+
+def check_compatibility(
+    engine: "CardView",
+    partner: "CardView",
+    *,
+    target_predicate: str = vocab.UNTAPS,
+) -> Compatibility:
+    """Full engine/partner check: partner can target engine, engine can copy partner."""
+    target_pred = partner.first(target_predicate)
+    spec = _spec_from_params(target_pred.params, "target") if target_pred else None
+    if spec is None and target_pred is not None:
+        # Fall back to the raw ``valid`` string for predicates persisted before
+        # the structured ``target`` param existed.
+        spec = parse_restriction(target_pred.params.get("valid"))
+    copy_pred = engine.first(vocab.COPIES_CREATURE)
+    copy_spec = _spec_from_params(copy_pred.params, "copy") if copy_pred else None
+    return Compatibility(
+        target=restriction_matches_card(spec, engine.context),
+        copy=engine_can_copy(engine, partner),
+        target_raw=spec.raw if spec else "",
+        copy_raw=copy_spec.raw if copy_spec else "",
+    )
+
 
 
 @dataclass
@@ -244,11 +403,18 @@ def infinite_etb_loop(views: dict[int, CardView]) -> Iterator[Edge]:
         for partner in untappers:
             if engine.card_id == partner.card_id or impact is None:
                 continue
+            # Precision gate: the untapper must be able to target the engine.
+            # Unknown restrictions are not trusted for this headline pattern.
+            compat = check_compatibility(engine, partner)
+            if not compat.target_ok:
+                continue
+            untap = partner.first(vocab.UNTAPS)
+            untap_verb = (untap.params.get("verb") if untap is not None else "") or ""
             mechanism = (
                 f"{engine.name} has a tap-cost {tap_verb} engine "
                 f"({impact.replace('_', ' ').lower()}); {partner.name}'s "
-                f"enters-the-battlefield trigger untaps a permanent, untapping "
-                f"{engine.name} to repeat the loop."
+                f"enters-the-battlefield trigger untaps {compat.target_raw or 'a permanent'}, "
+                f"untapping {engine.name} to repeat the loop."
             )
             # Canonical "copy a creature, then untap it" loops rank above the
             # broader tap-cost-engine synergies; a creature untapper (the real
@@ -257,13 +423,32 @@ def infinite_etb_loop(views: dict[int, CardView]) -> Iterator[Edge]:
             bonus = 0.10 if copy_engine else 0.0
             if copy_engine and partner.context.is_creature:
                 bonus += 0.05
+            if compat.copy.status == "incompatible":
+                bonus -= 0.05  # legal untap, but the engine cannot copy the partner
+            if untap_verb == "TapOrUntap":
+                bonus -= 0.03  # may tap instead of untap (weaker signal)
             yield _make_edge(
                 "infinite_etb_loop", engine, partner, mechanism,
                 [_evidence(engine, vocab.TAPS_COST), _evidence(engine, impact),
-                 _evidence(partner, vocab.UNTAPS), _evidence(partner, vocab.ETB_TRIGGER)],
+                 _evidence(partner, vocab.UNTAPS), _evidence(partner, vocab.ETB_TRIGGER),
+                 compat.evidence_entry()],
                 direction="mutual",
                 score_bonus=bonus,
             )
+
+
+def _plain_marker(type_verified: bool, note: str) -> dict[str, Any]:
+    """A compatibility evidence entry for patterns without a target check."""
+    return {
+        "kind": "compatibility",
+        "type_verified": type_verified,
+        "copy_verified": False,
+        "target": "compatible" if type_verified else "unknown",
+        "copy": "not_applicable",
+        "target_restriction": None,
+        "copy_restriction": None,
+        "detail": note,
+    }
 
 
 def _mentions_artifact(view: CardView) -> bool:
@@ -299,11 +484,19 @@ def sacrifice_recursion(views: dict[int, CardView]) -> Iterator[Edge]:
                 f"artifact cards from the graveyard, rebuilding what was sacrificed"
                 + (" (recursion runs both ways)." if mutual else ".")
             )
+            outlet_spec = _spec_from_params(_pred_params(outlet, vocab.SACRIFICE_OUTLET), "target")
+            recur_spec = _spec_from_params(_pred_params(recur, vocab.RECURS_FROM_GRAVEYARD), "target")
+            verified = bool(
+                (outlet_spec is not None and not outlet_spec.unknown)
+                or (recur_spec is not None and not recur_spec.unknown)
+            )
             yield _make_edge(
                 "sacrifice_recursion", outlet, recur, mechanism,
                 [_evidence(outlet, vocab.SACRIFICE_OUTLET),
-                 _evidence(recur, vocab.RECURS_FROM_GRAVEYARD)],
+                 _evidence(recur, vocab.RECURS_FROM_GRAVEYARD),
+                 _plain_marker(verified, "artifact-scoped recursion")],
                 direction="mutual" if mutual else "one_way",
+                score_bonus=0.0 if verified else -0.03,
             )
 
 
@@ -339,6 +532,7 @@ def mana_engine(views: dict[int, CardView]) -> Iterator[Edge]:
             if spender.card_id == producer.card_id:
                 continue
             amount = (produced.params.get("amount") if produced else None) or ""
+            activation = str((produced.params.get("activation") if produced else None) or "")
             mechanism = (
                 f"{producer.name} produces mana"
                 + (f" ({amount})" if amount else "")
@@ -346,7 +540,12 @@ def mana_engine(views: dict[int, CardView]) -> Iterator[Edge]:
             )
             yield _make_edge(
                 "mana_engine", producer, spender, mechanism,
-                [_evidence(producer, vocab.PRODUCES_MANA)],
+                [_evidence(producer, vocab.PRODUCES_MANA),
+                 _plain_marker(
+                     not activation,
+                     f"mana activation={activation}" if activation else "unconditional mana",
+                 )],
+                score_bonus=0.0 if not activation else -0.05,
             )
 
 
@@ -367,7 +566,8 @@ def free_cast_loops(views: dict[int, CardView]) -> Iterator[Edge]:
                 f"enabling repeated casts."
             )
             evidence = [_evidence(caster, vocab.CASTS_FROM_GRAVEYARD),
-                        _evidence(enabler, vocab.PRODUCES_MANA)]
+                        _evidence(enabler, vocab.PRODUCES_MANA),
+                        _plain_marker(True, "cast-from-graveyard enabler")]
             yield _make_edge("free_cast_loops", caster, enabler, mechanism, evidence)
 
 
@@ -412,7 +612,8 @@ def storm_engine(views: dict[int, CardView]) -> Iterator[Edge]:
             )
             yield _make_edge(
                 "storm_engine", payoff, enabler, mechanism,
-                [_evidence(payoff, vocab.STORM), _evidence(enabler, vocab.PRODUCES_MANA)],
+                [_evidence(payoff, vocab.STORM), _evidence(enabler, vocab.PRODUCES_MANA),
+                 _plain_marker(True, "storm payoff enabler")],
             )
 
 
@@ -430,7 +631,8 @@ def color_lock_mill(views: dict[int, CardView]) -> Iterator[Edge]:
             )
             yield _make_edge(
                 "color_lock_mill", lock, mill, mechanism,
-                [_evidence(lock, vocab.SETS_COLOR), _evidence(mill, vocab.MILLS)],
+                [_evidence(lock, vocab.SETS_COLOR), _evidence(mill, vocab.MILLS),
+                 _plain_marker(True, "colour-lock mill")],
                 direction="mutual",
             )
 
@@ -448,7 +650,8 @@ def draw_engine(views: dict[int, CardView]) -> Iterator[Edge]:
             )
             yield _make_edge(
                 "draw_engine", producer, payoff, mechanism,
-                [_evidence(producer, vocab.CARDS_FROM_LIFE), _evidence(payoff, vocab.DRAWS)],
+                [_evidence(producer, vocab.CARDS_FROM_LIFE), _evidence(payoff, vocab.DRAWS),
+                 _plain_marker(True, "life-to-cards engine")],
             )
 
 
@@ -545,16 +748,21 @@ def build_edges(
 
 __all__ = [
     "CardView",
+    "CompatResult",
+    "Compatibility",
     "Edge",
     "PATTERN_BASE",
     "PATTERNS",
     "PatternDef",
     "build_edges",
+    "check_compatibility",
     "color_lock_mill",
     "draw_engine",
+    "engine_can_copy",
     "free_cast_loops",
     "infinite_etb_loop",
     "mana_engine",
+    "restriction_matches_card",
     "sacrifice_recursion",
     "score_edge",
     "storm_engine",

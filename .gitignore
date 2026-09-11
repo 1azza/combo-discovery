@@ -16,3 +16,4 @@ experiments.sqlite-*
 research.db
 research.db-shm
 research.db-wal
+research.db.bak

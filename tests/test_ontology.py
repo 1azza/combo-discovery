@@ -22,15 +22,25 @@ import pytest
 from combo_discovery.corpus.importer import import_corpus, normalize_name
 from combo_discovery.ontology import vocabulary as vocab
 from combo_discovery.ontology.builder import build_ontology
-from combo_discovery.ontology.edges import PATTERNS, CardView, build_edges
+from combo_discovery.ontology.edges import (
+    PATTERNS,
+    CardView,
+    build_edges,
+    check_compatibility,
+    engine_can_copy,
+    restriction_matches_card,
+)
 from combo_discovery.ontology.extractor import (
     CardContext,
     CardEffect,
     CardPredicate,
+    card_subtypes,
+    card_type_tokens,
     classify_effect,
     extract_card_predicates,
     load_contexts,
     mana_value,
+    parse_restriction,
 )
 from combo_discovery.store import ExperimentStore, _migration_3
 
@@ -90,15 +100,40 @@ KNOWN_COMBOS = [
      "reason": "Priest of Gix's ETB ritual pays for an X-cost payoff.", "expected": True},
 ]
 
-# Scripts in the default mini corpus (a subset exercises every pattern).
-MINI_CARDS = [
-    "kiki_jiki_mirror_breaker.txt", "deceiver_exarch.txt", "pestermite.txt",
-    "splinter_twin.txt", "grizzly_bears.txt", "tolarian_academy.txt",
-    "lions_eye_diamond.txt", "yawgmoths_will.txt", "underworld_breach.txt",
-    "goblin_welder.txt", "myr_retriever.txt", "tendrils_of_agony.txt",
-    "rite_of_flame.txt", "time_spiral.txt", "painters_servant.txt",
-    "grindstone.txt", "necropotence.txt", "brainstorm.txt",
-    "priest_of_gix.txt", "dockside_extortionist.txt", "walking_ballista.txt",
+#: False positives from the type-compatibility bug report: these cards' ETB
+#: untaps cannot legally target Kiki-Jiki (wrong type, wrong controller,
+#: self-only, or a conditional rider), so no ``infinite_etb_loop`` edge may pair
+#: them with Kiki.
+KIKI_FALSE_POSITIVES = [
+    "Bumi, Unleashed",            # UntapAll Land.YouCtrl
+    "Zacama, Primal Calamity",    # UntapAll Land.YouCtrl
+    "Cloud of Faeries",           # UntapType$ Land
+    "Palinchron",                 # UntapType$ Land
+    "Peregrine Drake",            # UntapType$ Land
+    "Great Whale",                # UntapType$ Land
+    "Nissa, Vastwood Seer",       # untaps Land
+    "Nissa, Who Shakes the World",  # Defined$ Targeted, no known type
+    "Woodcaller Automaton",       # Land.YouCtrl
+    "Goatnapper",                 # subtype Goat only
+    "Godo, Bandit Warlord",       # Card.Self,Samurai.YouCtrl
+    "Deepway Navigator",          # Merfolk.Other+YouCtrl
+    "Great Oak Guardian",         # Creature.TargetedPlayerCtrl
+    "Howlpack Piper",             # Defined$ Self
+    "Jokulmorder",                # Defined$ Self
+    "Xolatoyac, the Smiling Flood",  # Permanent.YouCtrl+HasCounters
+]
+
+#: True positives: the untapper can legally select Kiki (a creature/permanent
+#: you control), so the edge must survive the compatibility gate.  Some cannot
+#: actually be copied by Kiki (legendary / non-creature) and are therefore
+#: penalised, not dropped.
+KIKI_TRUE_POSITIVES = [
+    "Deceiver Exarch", "Pestermite", "Corridor Monitor", "Village Bell-Ringer",
+    "Sky Hussar", "Hyrax Tower Scout", "Sparring Mummy", "Bounding Krasis",
+    "Breaching Hippocamp", "Little Bear", "White Plume Adventurer",
+    "Derevi, Empyrial Tactician", "Eager Beaver", "Formidable Speaker",
+    "Dee Kay, Finder of the Lost", "Janjeet Sentry", "Glamermite",
+    "Flash Thompson, Spider-Fan", "Grim Reaper's Sprint", "All-Out Assault",
 ]
 
 
@@ -115,10 +150,7 @@ def _seed_cardsfolder(root: Path) -> Path:
     hermetic on machines without Forge.
     """
     folder = root / "forge-gui" / "res" / "cardsfolder"
-    for name in MINI_CARDS:
-        source_fixture = FIXTURES / name
-        if not source_fixture.is_file():
-            continue
+    for source_fixture in sorted(FIXTURES.glob("*.txt")):
         real = FORGE_CARDSFOLDER / source_fixture.name[0] / source_fixture.name
         source = real if real.is_file() else source_fixture
         target = folder / source_fixture.name[0] / source_fixture.name
@@ -163,9 +195,9 @@ def _interaction(db: Path, a: str, b: str, pattern: str) -> sqlite3.Row | None:
     normalized = {normalize_name(a), normalize_name(b)}
     rows = _query(
         db,
-        "SELECT p.name AS pattern, i.direction, i.mechanism, "
-        "s.normalized_name AS src, t.normalized_name AS tgt, s.name AS src_name, "
-        "t.name AS tgt_name FROM interactions i "
+        "SELECT p.name AS pattern, i.direction, i.mechanism, i.score, "
+        "i.evidence_json, s.normalized_name AS src, t.normalized_name AS tgt, "
+        "s.name AS src_name, t.name AS tgt_name FROM interactions i "
         "JOIN patterns p ON p.id = i.pattern_id "
         "JOIN cards s ON s.id = i.source_card_id "
         "JOIN cards t ON t.id = i.target_card_id WHERE p.name = ?",
@@ -244,28 +276,203 @@ class TestExtractorRules:
         assert len(mana[0].evidence) == 2
 
 
+class TestRestrictionParsing:
+    """Forge restriction strings -> structured type/controller/rider data."""
+
+    def test_land_youctrl(self):
+        spec = parse_restriction("Land.YouCtrl")
+        assert spec.unknown is False
+        alt = spec.alternatives[0]
+        assert alt.types == frozenset({"LAND"})
+        assert alt.controller == "you"
+        assert alt.riders == ()
+
+    def test_creature_other_youctrl(self):
+        spec = parse_restriction("Creature.Other+YouCtrl")
+        alt = spec.alternatives[0]
+        assert alt.types == frozenset({"CREATURE"})
+        assert alt.controller == "you"
+        assert alt.other is True
+
+    def test_card_self_is_self_only(self):
+        spec = parse_restriction("Card.Self")
+        assert spec.self_only is True
+        assert spec.alternatives[0].self_only is True
+
+    def test_comma_list_alternatives(self):
+        spec = parse_restriction("Artifact.YouCtrl,Creature.YouCtrl")
+        assert len(spec.alternatives) == 2
+        assert spec.alternatives[0].types == frozenset({"ARTIFACT"})
+        assert spec.alternatives[1].types == frozenset({"CREATURE"})
+
+    def test_counter_rider_is_recorded(self):
+        spec = parse_restriction("Permanent.YouCtrl+HasCounters")
+        assert spec.alternatives[0].types == frozenset({"PERMANENT"})
+        assert "hascounters" in spec.alternatives[0].riders
+
+    def test_unknown_restriction(self):
+        spec = parse_restriction("")
+        assert spec.unknown is True
+        assert spec.alternatives == ()
+
+    def test_subtype_only_restriction(self):
+        spec = parse_restriction("Goat")
+        assert spec.alternatives[0].types == frozenset()
+        assert spec.alternatives[0].subtypes == frozenset({"goat"})
+
+    def test_untap_type_is_captured(self):
+        effect = CardEffect(
+            id=1, card_id=1, face_index=0, effect_kind="ability", verb="Untap",
+            ability_type="DB",
+            params={"Amount": "2", "UntapType": "Land", "UntapUpTo": "True"},
+        )
+        matches = {predicate: params for predicate, params in classify_effect(effect)}
+        target = parse_restriction(matches[vocab.UNTAPS]["valid"])
+        assert matches[vocab.UNTAPS]["valid"] == "Land"
+        assert target.alternatives[0].types == frozenset({"LAND"})
+
+    def test_card_type_and_subtype_tokens(self):
+        assert card_type_tokens("Legendary Creature Human Noble Ally") == frozenset({"CREATURE"})
+        assert card_subtypes("Legendary Creature Human Noble Ally") == frozenset(
+            {"human", "noble", "ally"}
+        )
+        assert "artifact" in {t.lower() for t in card_type_tokens("Artifact Creature Construct")}
+
+
+class TestRestrictionCompatibility:
+    """``restriction_matches_card`` against a Kiki-shaped engine card."""
+
+    KIKI = CardContext(
+        1, "Kiki-Jiki, Mirror Breaker", "kiki", "2 R R R",
+        "Legendary Creature Goblin Shaman", "", "", (),
+    )
+
+    @pytest.mark.parametrize(
+        ("restriction", "expected"),
+        [
+            ("Land.YouCtrl", "incompatible"),
+            ("Goat", "incompatible"),
+            ("Creature.TargetedPlayerCtrl", "incompatible"),
+            ("Permanent.YouCtrl+HasCounters", "incompatible"),
+            ("Card.Self", "incompatible"),
+            ("Card.Self,Samurai.YouCtrl", "incompatible"),
+            ("Permanent", "compatible"),
+            ("Permanent.YouCtrl", "compatible"),
+            ("Creature.Other+YouCtrl", "compatible"),
+            ("Artifact.YouCtrl,Creature.YouCtrl", "compatible"),
+            ("", "unknown"),
+        ],
+    )
+    def test_restriction_against_kiki(self, restriction, expected):
+        result = restriction_matches_card(parse_restriction(restriction), self.KIKI)
+        assert result.status == expected
+
+    def test_engine_copy_restriction(self):
+        engine = _synthetic_view(1, "Engine", "Legendary Creature", ["COPIES_CREATURE"],
+                                 {vocab.COPIES_CREATURE: {"copy": parse_restriction(
+                                     "Creature.nonLegendary+YouCtrl").to_dict()}})
+        legendary = _synthetic_view(2, "Legendary Buddy", "Legendary Creature Human", [])
+        plain = _synthetic_view(3, "Plain Buddy", "Creature Human", [])
+        assert engine_can_copy(engine, plain).status == "compatible"
+        assert engine_can_copy(engine, legendary).status == "incompatible"
+
+
+def _synthetic_view(card_id, name, type_line, predicates, params=None):
+    params = params or {}
+    ctx = CardContext(card_id, name, normalize_name(name), "1", type_line, "", "", ())
+    preds = [
+        CardPredicate(card_id=card_id, face_index=0, predicate=p, params=dict(params.get(p, {})))
+        for p in predicates
+    ]
+    return CardView.build(ctx, preds)
+
+
 class TestInfiniteLoopScoring:
     @staticmethod
-    def _view(card_id, name, type_line, predicates):
-        from combo_discovery.ontology.edges import CardView
+    def _view(card_id, name, type_line, predicates, params=None):
+        return _synthetic_view(card_id, name, type_line, predicates, params)
 
-        ctx = CardContext(card_id, name, normalize_name(name), "1", type_line, "", "", ())
-        preds = [CardPredicate(card_id=card_id, face_index=0, predicate=p) for p in predicates]
-        return CardView.build(ctx, preds)
+    @staticmethod
+    def _untap_params(verb, restriction):
+        return {
+            vocab.UNTAPS: {"verb": verb, "target": parse_restriction(restriction).to_dict()}
+        }
 
-    def test_creature_untapper_outranks_aura_untapper(self):
-        """The canonical Kiki/Exarch shape (copy a creature, untap it) scores
-        above a non-creature ETB untapper that cannot be copied."""
+    def test_creature_untapper_outranks_uncopyable_aura(self):
+        """The canonical Kiki/Exarch shape scores above a non-creature ETB
+        untapper that Kiki cannot copy."""
         from combo_discovery.ontology.edges import infinite_etb_loop
 
-        engine = self._view(1, "Engine", "Creature", [vocab.TAPS_COST, vocab.COPIES_CREATURE])
-        creature = self._view(2, "Creature Untapper", "Creature", [vocab.UNTAPS, vocab.ETB_TRIGGER])
-        aura = self._view(3, "Aura Untapper", "Enchantment Aura", [vocab.UNTAPS, vocab.ETB_TRIGGER])
+        engine = self._view(1, "Engine", "Legendary Creature",
+                            [vocab.TAPS_COST, vocab.COPIES_CREATURE],
+                            {vocab.COPIES_CREATURE: {"copy": parse_restriction(
+                                "Creature.nonLegendary+YouCtrl").to_dict()}})
+        creature = self._view(2, "Creature Untapper", "Creature",
+                              [vocab.UNTAPS, vocab.ETB_TRIGGER],
+                              self._untap_params("Untap", "Permanent.YouCtrl"))
+        aura = self._view(3, "Aura Untapper", "Enchantment Aura",
+                          [vocab.UNTAPS, vocab.ETB_TRIGGER],
+                          self._untap_params("Untap", "Permanent.YouCtrl"))
         scores = {
             edge.target.name: edge.score
             for edge in infinite_etb_loop({1: engine, 2: creature, 3: aura})
         }
         assert scores["Creature Untapper"] > scores["Aura Untapper"]
+
+    def test_incompatible_untapper_is_excluded(self):
+        from combo_discovery.ontology.edges import infinite_etb_loop
+
+        engine = self._view(1, "Engine", "Legendary Creature",
+                            [vocab.TAPS_COST, vocab.COPIES_CREATURE],
+                            {vocab.COPIES_CREATURE: {"copy": parse_restriction(
+                                "Creature.nonLegendary+YouCtrl").to_dict()}})
+        land_untapper = self._view(2, "Land Untapper", "Creature",
+                                   [vocab.UNTAPS, vocab.ETB_TRIGGER],
+                                   self._untap_params("UntapAll", "Land.YouCtrl"))
+        assert list(infinite_etb_loop({1: engine, 2: land_untapper})) == []
+
+    def test_self_only_untapper_is_excluded(self):
+        from combo_discovery.ontology.edges import infinite_etb_loop
+
+        engine = self._view(1, "Engine", "Creature",
+                            [vocab.TAPS_COST, vocab.COPIES_CREATURE],
+                            {vocab.COPIES_CREATURE: {"copy": parse_restriction(
+                                "Creature.nonLegendary+YouCtrl").to_dict()}})
+        self_untapper = self._view(2, "Self Untapper", "Creature",
+                                   [vocab.UNTAPS, vocab.ETB_TRIGGER],
+                                   self._untap_params("Untap", "Card.Self"))
+        assert list(infinite_etb_loop({1: engine, 2: self_untapper})) == []
+
+    def test_tap_or_untap_carries_a_penalty(self):
+        from combo_discovery.ontology.edges import infinite_etb_loop
+
+        engine = self._view(1, "Engine", "Creature",
+                            [vocab.TAPS_COST, vocab.COPIES_CREATURE],
+                            {vocab.COPIES_CREATURE: {"copy": parse_restriction(
+                                "Creature.nonLegendary+YouCtrl").to_dict()}})
+        plain = self._view(2, "Plain", "Creature", [vocab.UNTAPS, vocab.ETB_TRIGGER],
+                           self._untap_params("Untap", "Permanent.YouCtrl"))
+        flexible = self._view(3, "Flexible", "Creature", [vocab.UNTAPS, vocab.ETB_TRIGGER],
+                              self._untap_params("TapOrUntap", "Permanent.YouCtrl"))
+        scores = {
+            edge.target.name: edge.score
+            for edge in infinite_etb_loop({1: engine, 2: plain, 3: flexible})
+        }
+        assert scores["Plain"] > scores["Flexible"]
+
+    def test_compatibility_evidence_marks_type_verified(self):
+        from combo_discovery.ontology.edges import infinite_etb_loop
+
+        engine = self._view(1, "Engine", "Creature",
+                            [vocab.TAPS_COST, vocab.COPIES_CREATURE],
+                            {vocab.COPIES_CREATURE: {"copy": parse_restriction(
+                                "Creature.nonLegendary+YouCtrl").to_dict()}})
+        partner = self._view(2, "Partner", "Creature", [vocab.UNTAPS, vocab.ETB_TRIGGER],
+                             self._untap_params("Untap", "Permanent.YouCtrl"))
+        edges = list(infinite_etb_loop({1: engine, 2: partner}))
+        marker = next(e for e in edges[0].evidence if e.get("kind") == "compatibility")
+        assert marker["type_verified"] is True
+        assert marker["target_restriction"] == "Permanent.YouCtrl"
 
     def test_per_source_cap_keeps_best_partners(self):
         from combo_discovery.ontology.edges import Edge, _cap_per_source_iter
@@ -369,6 +576,34 @@ class TestKnownCombos:
             "WHERE c.normalized_name = ?",
             (normalize_name("Grizzly Bears"),),
         )[0]["n"] == 0
+
+    def test_kiki_type_incompatible_partners_are_excluded(self, ontology_db):
+        """Every false positive from the bug report must be gone."""
+        db, _ = ontology_db
+        remaining = [
+            name for name in KIKI_FALSE_POSITIVES
+            if _interaction(db, "Kiki-Jiki, Mirror Breaker", name, "infinite_etb_loop") is not None
+        ]
+        assert remaining == [], f"type-incompatible Kiki partners still emitted: {remaining}"
+
+    def test_kiki_type_compatible_partners_remain(self, ontology_db):
+        """Every true positive from the bug report must survive the gate."""
+        db, _ = ontology_db
+        missing = [
+            name for name in KIKI_TRUE_POSITIVES
+            if _interaction(db, "Kiki-Jiki, Mirror Breaker", name, "infinite_etb_loop") is None
+        ]
+        assert missing == [], f"compatible Kiki partners dropped: {missing}"
+
+    def test_kiki_edge_carries_type_verified_marker(self, ontology_db):
+        db, _ = ontology_db
+        row = _interaction(db, "Kiki-Jiki, Mirror Breaker", "Deceiver Exarch", "infinite_etb_loop")
+        assert row is not None
+        evidence = json.loads(row["evidence_json"])
+        marker = next(item for item in evidence if item.get("kind") == "compatibility")
+        assert marker["type_verified"] is True
+        assert marker["target"] == "compatible"
+        assert marker["target_restriction"] == "Permanent.YouCtrl"
 
     def test_hypotheses_carry_scores_and_status(self, ontology_db):
         db, _ = ontology_db
