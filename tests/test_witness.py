@@ -102,6 +102,44 @@ def priority_ctx(names, *, player=0, decision_id=1) -> DecisionContext:
     )
 
 
+def mode_ctx(
+    options, *, player=0, decision_id=2, min_choices=1, max_choices=1
+) -> DecisionContext:
+    return DecisionContext(
+        request=pb.DecisionRequest(
+            game_id=1,
+            decision_id=decision_id,
+            player=player,
+            decision_type=pb.DECISION_TYPE_CHOOSE_MODE,
+            mode_options=[
+                pb.ModeOption(id=mode_id, description=description)
+                for mode_id, description in options
+            ],
+            min_choices=min_choices,
+            max_choices=max_choices,
+        )
+    )
+
+
+def target_ctx(
+    candidates, *, player=0, decision_id=2, min_choices=1, max_choices=1
+) -> DecisionContext:
+    return DecisionContext(
+        request=pb.DecisionRequest(
+            game_id=1,
+            decision_id=decision_id,
+            player=player,
+            decision_type=pb.DECISION_TYPE_CHOOSE_TARGETS,
+            candidates=[
+                pb.CardCandidate(card_id=card_id, name=name)
+                for card_id, name in candidates
+            ],
+            min_choices=min_choices,
+            max_choices=max_choices,
+        )
+    )
+
+
 def obs(iteration: int, signature: str, **resources) -> Observation:
     return Observation(iteration=iteration, signature=signature, resources=dict(resources))
 
@@ -273,6 +311,80 @@ class TestWitnessPolicy:
             )
         )
         assert policy(announce_ctx) == ("number_answer", 5)
+
+    # -- choice-aware selections (Fix 1) ------------------------------------
+
+    def _kiki_pest_policy(self):
+        # Synthetic ping-pong line: the first link (engine -> untapper) is the
+        # active link while the untapper's ETB modal/target decision fires.
+        policy = WitnessPolicy(
+            links=[
+                LinkPlan("Kiki-Jiki, Mirror Breaker", "Pestermite"),
+                LinkPlan("Pestermite", "Kiki-Jiki, Mirror Breaker"),
+            ],
+            player=0,
+        )
+        policy.new_game()
+        policy(priority_ctx(["Kiki-Jiki, Mirror Breaker"]))
+        return policy
+
+    def test_modal_tap_untap_prefers_untap(self):
+        policy = self._kiki_pest_policy()
+        ctx = mode_ctx(
+            [(0, "Tap target creature."), (1, "Untap target creature.")]
+        )
+        assert policy(ctx) == ("mode_selection", [1])
+        assert any("untap" in note for note in policy.notes)
+
+    def test_modal_untap_not_chosen_when_link_wants_tap(self):
+        # A tap-only line must not be flipped to untap just because the modal
+        # offers it: the link's effect verb wins.
+        policy = WitnessPolicy(
+            links=[LinkPlan("Tapper", "Victim", kind="tap")], player=0
+        )
+        policy.new_game()
+        policy(priority_ctx(["Tapper"]))
+        ctx = mode_ctx(
+            [(0, "Tap target creature."), (1, "Untap target creature.")]
+        )
+        assert policy(ctx) == ("mode_selection", [0])
+
+    def test_mode_matches_link_effect_verb(self):
+        policy = WitnessPolicy(
+            links=[LinkPlan("Engine", "Bear", kind="pump")], player=0
+        )
+        policy.new_game()
+        policy(priority_ctx(["Engine"]))
+        ctx = mode_ctx(
+            [(0, "Tap target creature."), (1, "Pump target creature.")]
+        )
+        assert policy(ctx) == ("mode_selection", [1])
+
+    def test_target_prefers_engine_card(self):
+        policy = self._kiki_pest_policy()
+        # Engine card listed second: preference (not request order) must win.
+        ctx = target_ctx(
+            [(5, "Pestermite"), (7, "Kiki-Jiki, Mirror Breaker")]
+        )
+        assert policy(ctx) == ("targets", ([7], []))
+
+    def test_target_falls_back_to_first_legal_candidate(self):
+        policy = self._kiki_pest_policy()
+        # Neither combo card is targetable: the first legal candidate is used.
+        ctx = target_ctx([(5, "Grizzly Bears"), (6, "Forest")])
+        assert policy(ctx) == ("targets", ([5], []))
+
+    def test_choice_is_deterministic(self):
+        first = self._kiki_pest_policy()
+        second = self._kiki_pest_policy()
+        modal = [(0, "Tap target creature."), (1, "Untap target creature.")]
+        targets = [(5, "Pestermite"), (7, "Kiki-Jiki, Mirror Breaker")]
+        assert first(mode_ctx(modal, decision_id=2)) == second(
+            mode_ctx(modal, decision_id=2)
+        )
+        assert first(target_ctx(targets, decision_id=3)) == second(
+            target_ctx(targets, decision_id=3)
+        )
 
     def test_stall_is_bounded_and_iterations_advance(self):
         policy = WitnessPolicy(links=[LinkPlan("A", "B")], player=0, max_stall=3)

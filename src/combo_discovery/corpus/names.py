@@ -64,6 +64,25 @@ def is_non_vintage_printing(name: str | None) -> bool:
     return is_alchemy(name) or is_unset(name)
 
 
+def is_only_unset_printing(
+    sets: Iterable[str], unset_set_codes: Iterable[str]
+) -> bool:
+    """True when *every* known printing of a card is an Un-set/novelty set.
+
+    Set codes are the robust signal: Un-set cards such as ``Eager Beaver``
+    (Unstable) or ``Blacker Lotus`` (Unglued) carry no name marker at all, so
+    the name-level :func:`is_unset` cannot see them.  A card with at least one
+    normal printing (``sets`` not a subset of ``unset_set_codes``) is rescued,
+    which is why this takes the *whole* known printing set rather than a single
+    code.  Case/whitespace tolerant.
+    """
+    known = {str(code).strip().upper() for code in sets if str(code).strip()}
+    excluded = {
+        str(code).strip().upper() for code in unset_set_codes if str(code).strip()
+    }
+    return bool(known) and known <= excluded
+
+
 def split_dfc(name: str | None) -> list[str]:
     """Split a multi-face name on the canonical `` // `` separator."""
     if not name:
@@ -158,6 +177,7 @@ __all__ = [
     "front_face_name",
     "is_alchemy",
     "is_non_vintage_printing",
+    "is_only_unset_printing",
     "is_unset",
     "normalize_card_name",
     "pair_hash",

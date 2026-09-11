@@ -21,6 +21,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import re
 import sqlite3
 import time
 import urllib.request
@@ -29,7 +30,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator, Mapping
 
 import ijson
 
@@ -40,6 +41,7 @@ from .names import (
     combo_hash,
     front_face_name,
     is_non_vintage_printing,
+    is_only_unset_printing,
     normalize_card_name,
     pair_hash,
     resolve_spellbook_use,
@@ -51,11 +53,102 @@ DEFAULT_CACHE_DIR = Path.home() / ".cache" / "combo-discovery" / "spellbook"
 DEFAULT_VINTAGE_FORMAT = Path(
     "/home/lza/Work/forge/forge-gui/res/formats/Sanctioned/Vintage.txt"
 )
+#: Forge edition metadata lives next to the formats tree (``forge-gui/res``).
+DEFAULT_FORGE_EDITIONS = DEFAULT_VINTAGE_FORMAT.parent.parent.parent / "editions"
 _KEEP_STATUS = frozenset({"OK", "EXAMPLE"})
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Forge edition metadata (the set-code signal for Un-set exclusion)
+# ---------------------------------------------------------------------------
+
+#: Rarity tokens that can follow a collector number in a Forge edition file.
+_EDITION_RARITIES = frozenset({"S", "C", "U", "R", "M", "L", "T"})
+_EDITION_PARAMS_RE = re.compile(r"\s*\$\{.*\}\s*$")
+_EDITION_COLLECTOR_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z\-]*")
+
+
+def _edition_card_name(line: str) -> str:
+    """Extract the card name from one Forge edition card line.
+
+    Lines look like ``F170 M Lila, Hospitality Hostess @Yangtian Li`` or
+    ``107 C Eager Beaver @Andrea Radeck``: an optional collector number, a
+    single-letter rarity, the name, then ``@artist`` and optional ``${...}``
+    params.  Only the collector+rarity *pair* is stripped, so a name that
+    happens to start with a number (``1996 World Champion``) or a lone ``A`` is
+    never truncated.  Tokens live in a separate section and are not read here.
+    """
+    text = _EDITION_PARAMS_RE.sub("", line.split(" @", 1)[0]).strip()
+    parts = text.split()
+    if (
+        len(parts) >= 2
+        and _EDITION_COLLECTOR_RE.fullmatch(parts[0])
+        and parts[1] in _EDITION_RARITIES
+    ):
+        parts = parts[2:]
+    return " ".join(parts).strip()
+
+
+def load_forge_editions(
+    editions_dir: str | Path, *, vintage_sets: Iterable[str] = ()
+) -> tuple[dict[str, frozenset[str]], frozenset[str]]:
+    """Map normalized card name -> printing set codes from Forge editions.
+
+    Returns ``(card_sets, unset_sets)``.  ``unset_sets`` are the codes of
+    ``Type=Funny`` novelty sets that are **not** in Vintage's ``Sets:`` list:
+    the silver-bordered Un-sets (UGL/UNH/UST/UND/PUST), promo novelties
+    (HasCon, Happy Holidays), and playtest/Unknown-Event sets.  Unfinity
+    (``UNF``) is in Vintage's set list and is therefore *not* flagged here; its
+    acorn cards are enumerated in the format's ``Banned:`` list instead.
+
+    Missing or unreadable files are skipped, never fatal: the caller simply
+    falls back to the banned list.
+    """
+    allowed = {str(code).strip().upper() for code in vintage_sets if str(code).strip()}
+    card_sets: dict[str, set[str]] = {}
+    funny_codes: set[str] = set()
+    directory = Path(editions_dir)
+    if not directory.is_dir():
+        return {}, frozenset()
+    for path in sorted(directory.glob("*.txt")):
+        code: str | None = None
+        set_type: str | None = None
+        in_cards = False
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for raw in lines:
+            line = raw.strip()
+            if line.startswith("["):
+                in_cards = line.lower().startswith("[cards]")
+                continue
+            if not in_cards:
+                if code is None and line.startswith("Code="):
+                    code = line.split("=", 1)[1].strip().upper()
+                elif set_type is None and line.startswith("Type="):
+                    set_type = line.split("=", 1)[1].strip()
+                continue
+            if not line or line.startswith("#"):
+                continue
+            name = _edition_card_name(line)
+            if not name:
+                continue
+            # DB names are the front face only; normalize the same way so the
+            # guard matches the ontology's ``cards.name`` exactly.
+            key = normalize_card_name(front_face_name(name))
+            if key and code:
+                card_sets.setdefault(key, set()).add(code)
+        if code and set_type == "Funny" and code not in allowed:
+            funny_codes.add(code)
+    return (
+        {name: frozenset(codes) for name, codes in card_sets.items()},
+        frozenset(funny_codes),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -68,19 +161,29 @@ class VintageLegality:
     """Per-card Vintage legality.
 
     Built from the Forge Vintage format file's ``Banned:``/``Restricted:`` names
-    (restricted cards are legal).  The format's ``Sets:`` list is parsed but not
-    enforced: local ``cards.set_code`` is blank, and Vintage's set list is
-    comprehensive, so the practical filter is the banned list.  When a Scryfall
-    record's ``legalities`` is supplied it is authoritative.
+    (restricted cards are legal) plus Forge edition metadata.  The ``Sets:``
+    allowlist combined with the Forge edition ``Type=Funny`` marker identifies
+    Un-set/novelty printings whose cards carry no name marker: a card is illegal
+    when *every* known printing is such a novelty set.  When a Scryfall record's
+    ``legalities`` is supplied it is authoritative.
     """
 
     banned: frozenset[str] = frozenset()
     restricted: frozenset[str] = frozenset()
     sets: frozenset[str] = frozenset()
     source: str = "permissive"
+    #: normalized card name -> its known Forge printing set codes.
+    card_sets: Mapping[str, frozenset[str]] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+    #: novelty set codes (``Type=Funny`` and not in ``sets``); a card printed
+    #: only in these is excluded even with no name marker or banned entry.
+    unset_sets: frozenset[str] = frozenset()
 
     @classmethod
-    def from_forge_format(cls, path: str | Path) -> "VintageLegality":
+    def from_forge_format(
+        cls, path: str | Path, *, editions_dir: str | Path | None = None
+    ) -> "VintageLegality":
         text = Path(path).read_text(encoding="utf-8", errors="replace")
         banned: set[str] = set()
         restricted: set[str] = set()
@@ -100,7 +203,23 @@ class VintageLegality:
                 )
             elif key == "sets":
                 sets.update(code.strip() for code in value.split(",") if code.strip())
-        return cls(frozenset(banned), frozenset(restricted), frozenset(sets), "forge_format")
+        directory = (
+            Path(editions_dir)
+            if editions_dir is not None
+            else Path(path).resolve().parents[2] / "editions"
+        )
+        card_sets: dict[str, frozenset[str]] = {}
+        unset_sets: frozenset[str] = frozenset()
+        if directory.is_dir():
+            card_sets, unset_sets = load_forge_editions(directory, vintage_sets=sets)
+        return cls(
+            frozenset(banned),
+            frozenset(restricted),
+            frozenset(sets),
+            "forge_format",
+            card_sets,
+            unset_sets,
+        )
 
     @classmethod
     def permissive(cls) -> "VintageLegality":
@@ -123,6 +242,13 @@ class VintageLegality:
         normalized = normalize_card_name(name)
         if not normalized:
             return True
+        # Set-code signal: a card whose every known printing is a novelty/Un-set
+        # (none in Vintage's allowlist) is illegal even though it has no name
+        # marker and no banned-list entry — e.g. ``Eager Beaver`` (Unstable).
+        if self.card_sets:
+            printings = self.card_sets.get(normalized)
+            if printings and is_only_unset_printing(printings, self.unset_sets):
+                return False
         return normalized not in self.banned
 
 
@@ -587,6 +713,7 @@ _INSERT_ALIAS = (
 
 
 __all__ = [
+    "DEFAULT_FORGE_EDITIONS",
     "DEFAULT_VINTAGE_FORMAT",
     "SPELLBOOK_BULK_URL",
     "SOURCE_NAME",
@@ -594,4 +721,5 @@ __all__ = [
     "VintageLegality",
     "download_variants",
     "import_spellbook",
+    "load_forge_editions",
 ]

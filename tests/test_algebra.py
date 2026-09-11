@@ -15,8 +15,17 @@ from pathlib import Path
 import pytest
 
 from combo_discovery.corpus.importer import import_corpus, normalize_name
-from combo_discovery.corpus.names import is_non_vintage_printing, is_unset
-from combo_discovery.corpus.spellbook import VintageLegality
+from combo_discovery.corpus.names import (
+    is_non_vintage_printing,
+    is_only_unset_printing,
+    is_unset,
+)
+from combo_discovery.corpus.spellbook import (
+    DEFAULT_FORGE_EDITIONS,
+    DEFAULT_VINTAGE_FORMAT,
+    VintageLegality,
+    load_forge_editions,
+)
 from combo_discovery.ontology.budget import (
     BudgetExceeded,
     SearchBudget,
@@ -474,6 +483,62 @@ class TestNonVintagePoolExclusion:
         names = {1: "A-Goldspan Dragon", 2: "Kiki-Jiki, Mirror Breaker"}
         assert tight_pool([alchemy, real], names,
                           VintageLegality.permissive()) == (2,)
+
+    # -- Un-set / novelty set codes (Fix 2) ---------------------------------
+
+    def test_only_unset_printing_guard(self):
+        assert is_only_unset_printing({"UST"}, {"UST", "UGL"}) is True
+        # A legal reprint rescues the card.
+        assert is_only_unset_printing({"UST", "LEA"}, {"UST", "UGL"}) is False
+        # No known printing is never treated as "only unset".
+        assert is_only_unset_printing(set(), {"UST"}) is False
+
+    def test_vintage_legality_excludes_unset_only_cards(self):
+        legality = VintageLegality(
+            card_sets={"eager beaver": frozenset({"UST"})},
+            unset_sets=frozenset({"UST"}),
+        )
+        # Eager Beaver has no name marker and is not in the banned list; the
+        # set-code signal is the only thing that can see it.
+        assert legality.is_legal("Eager Beaver") is False
+        reprinted = VintageLegality(
+            card_sets={"blacker lotus": frozenset({"UGL", "LEA"})},
+            unset_sets=frozenset({"UGL"}),
+        )
+        assert reprinted.is_legal("Blacker Lotus") is True
+
+    def test_vintage_pool_drops_unset_only_ids(self):
+        legality = VintageLegality(
+            card_sets={"eager beaver": frozenset({"UST"})},
+            unset_sets=frozenset({"UST"}),
+        )
+        names = {1: "Eager Beaver", 2: "Grizzly Bears"}
+        assert vintage_pool([1, 2], names, legality) == (2,)
+
+    def test_tight_pool_excludes_unset_loop_machinery(self):
+        eager = _sig(1, "Eager Beaver", "a",
+                     produces=(_untap_port("Permanent"),))
+        real = _sig(2, "Kiki-Jiki, Mirror Breaker", "b",
+                    produces=(_copy_port("Creature"),))
+        names = {1: "Eager Beaver", 2: "Kiki-Jiki, Mirror Breaker"}
+        legality = VintageLegality(
+            card_sets={"eager beaver": frozenset({"UST"})},
+            unset_sets=frozenset({"UST"}),
+        )
+        assert tight_pool([eager, real], names, legality) == (2,)
+
+    @pytest.mark.skipif(
+        not DEFAULT_VINTAGE_FORMAT.is_file() or not DEFAULT_FORGE_EDITIONS.is_dir(),
+        reason="Forge format/editions not present",
+    )
+    def test_real_forge_data_excludes_eager_beaver(self):
+        legality = VintageLegality.from_forge_format(DEFAULT_VINTAGE_FORMAT)
+        assert legality.is_legal("Eager Beaver") is False
+        # A normal Vintage staple is untouched.
+        assert legality.is_legal("Grizzly Bears") is True
+        # The set-code map really was loaded from the editions tree.
+        assert legality.card_sets
+        assert "UST" in legality.unset_sets
 
 
 class TestScoreDiscrimination:

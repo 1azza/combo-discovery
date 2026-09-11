@@ -56,7 +56,14 @@ logger = logging.getLogger(__name__)
 #: not offered is skipped and, if a *previous* link is re-offered, the pass is
 #: considered complete); structural signatures exclude token permanents; the
 #: driver samples a baseline observation plus one per completed iteration.
-WITNESS_POLICY_VERSION = "witness-v2"
+#: v3: non-PRIORITY selections are *choice-aware* relative to the active link:
+#: modal options prefer the untap mode when the loop needs an untap (never "tap"
+#: when "untap" is offered and needed), otherwise the mode matching the link's
+#: effect verb; target/card selections deterministically prefer the engine card
+#: named by the link, then the other combo cards, then the first legal
+#: candidate.  See :meth:`WitnessPolicy._choice_mode` /
+#: :meth:`WitnessPolicy._choice_targets`.
+WITNESS_POLICY_VERSION = "witness-v3"
 
 #: Generous default starting pool: enough to begin most loops.  Callers that
 #: know the line's per-iteration cost should override it.
@@ -109,6 +116,19 @@ GROWTH_KEYS = (
     "spells_resolved",
     "extra_phases",
     "permanents",
+)
+
+#: Word-boundary matchers for the tap/untap modal choice.  The ``\b`` before
+#: ``tap`` is essential: "untap" must never be read as an occurrence of "tap"
+#: (otherwise a modal "Tap or untap target creature" could resolve to tap and
+#: break the loop it was supposed to close).
+_UNTAP_RE = re.compile(r"\buntap", re.IGNORECASE)
+_TAP_WORD_RE = re.compile(r"\btap\b", re.IGNORECASE)
+
+#: Link kinds that carry no effect verb of their own (structural bookkeeping).
+#: A mode is only matched to a link verb when the link names a real effect.
+_GENERIC_LINK_TOKENS = frozenset(
+    {"", "synthetic", "re_trigger", "enables", "satisfies", "hostile"}
 )
 
 
@@ -549,6 +569,215 @@ class WitnessPolicy:
                 return int(candidate.card_id)
         return None
 
+    # -- choice-aware selections --------------------------------------------
+    #
+    # The link's *intent* is the only signal available at a non-PRIORITY
+    # decision (the engine does not tell us which card the ETB belongs to).
+    # The rules are therefore conservative and deterministic:
+    #
+    # * a modal tap/untap choice prefers the untap mode whenever the loop
+    #   needs an untap (a tap would break the cycle it is meant to close);
+    #   otherwise the mode matching the link's effect verb is preferred;
+    # * target/card selections prefer the engine card named by the link
+    #   (``link.src`` — the card that tapped and must be untapped), then the
+    #   link's ``dst``, then every other combo card in line order, then the
+    #   first legal engine candidate.
+    #
+    # Everything is derived from the link list, so it is deterministic and
+    # testable with fakes; explicit ``params`` hints still win.
+
+    @staticmethod
+    def _link_text(link: LinkPlan) -> str:
+        """Lowercase text used to read a link's intent (word boundaries later)."""
+        parts = [link.src, link.dst, link.kind, link.subkind, link.motif]
+        for key in ("action", "verb", "effect"):
+            value = (link.params or {}).get(key)
+            if isinstance(value, str):
+                parts.append(value)
+        return " ".join(part for part in parts if part)
+
+    def _loop_needs_untap(self) -> bool:
+        """True when the line needs an untap to close.
+
+        A link that explicitly names an untap action is decisive.  Otherwise a
+        tap-only line needs no untap.  A synthetic/unknown line defaults to
+        ``True``: at a modal tap/untap choice the untap mode is the
+        loop-closing one, so the safe default is never to self-tap.
+        """
+        saw_tap = False
+        for link in self.links:
+            text = self._link_text(link)
+            if _UNTAP_RE.search(text):
+                return True
+            if _TAP_WORD_RE.search(text):
+                saw_tap = True
+        return not saw_tap
+
+    def _link_verb(self, link: LinkPlan) -> str:
+        """The link's effect verb (``subkind``/``kind``/``motif``), if any."""
+        for value in (link.subkind, link.kind, link.motif):
+            token = (value or "").strip().lower()
+            if token and token not in _GENERIC_LINK_TOKENS:
+                return token
+        return ""
+
+    def _combo_card_order(self) -> list[str]:
+        """Combo card names in line order (first occurrence wins)."""
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for link in self.links:
+            for name in (link.src, link.dst):
+                text = (name or "").strip()
+                low = text.lower()
+                if text and low not in seen:
+                    seen.add(low)
+                    ordered.append(text)
+        return ordered
+
+    def _ordered_preferences(self, link: LinkPlan) -> list[str]:
+        """Engine card first, then the link's other end, then combo order."""
+        preferred: list[str] = []
+        seen: set[str] = set()
+
+        def add(name: str) -> None:
+            text = (name or "").strip()
+            low = text.lower()
+            if text and low not in seen:
+                seen.add(low)
+                preferred.append(text)
+
+        add(link.src)
+        add(link.dst)
+        for name in self._combo_card_order():
+            add(name)
+        return preferred
+
+    def _select_candidates(
+        self, ctx: DecisionContext, preferred: Sequence[str], need: int
+    ) -> list[int]:
+        """Deterministically pick ``need`` candidates, preference order first.
+
+        Exact name matches win; then word-boundary matches (so a short link
+        name such as ``Kiki`` still finds ``Kiki-Jiki, Mirror Breaker``); then
+        the request order fills the remainder.
+        """
+        candidates = list(ctx.candidates)
+        chosen: list[int] = []
+        used_ids: set[int] = set()
+
+        def take(card_id: int) -> None:
+            chosen.append(int(card_id))
+            used_ids.add(int(card_id))
+
+        for want in preferred:
+            low = str(want).strip().lower()
+            if not low:
+                continue
+            match = None
+            for candidate in candidates:
+                if int(candidate.card_id) in used_ids:
+                    continue
+                if (candidate.name or "").strip().lower() == low:
+                    match = candidate
+                    break
+            if match is None:
+                edge = rf"(?<![A-Za-z0-9]){re.escape(low)}(?![A-Za-z0-9])"
+                for candidate in candidates:
+                    if int(candidate.card_id) in used_ids:
+                        continue
+                    if re.search(edge, (candidate.name or "").lower()):
+                        match = candidate
+                        break
+            if match is not None:
+                take(match.card_id)
+            if len(chosen) >= need:
+                break
+        if len(chosen) < need:
+            for candidate in candidates:
+                if int(candidate.card_id) in used_ids:
+                    continue
+                take(candidate.card_id)
+                if len(chosen) >= need:
+                    break
+        return chosen
+
+    @staticmethod
+    def _bounded_need(ctx: DecisionContext) -> int | None:
+        """How many selections the choice wants (``None`` when it must be empty).
+
+        ``min_choices`` is the floor; a loop-closing choice still wants one
+        selection when the decision is optional but allows at least one.
+        """
+        need = int(ctx.min_choices)
+        maximum = int(ctx.max_choices)
+        if need <= 0:
+            if maximum <= 0:
+                return None
+            need = 1
+        if maximum > 0:
+            need = min(need, maximum)
+        return need
+
+    def _choice_targets(self, ctx: DecisionContext, link: LinkPlan) -> Answer | None:
+        need = self._bounded_need(ctx)
+        if need is None:
+            return None
+        card_ids = self._select_candidates(ctx, self._ordered_preferences(link), need)
+        player_slots: list[int] = []
+        if len(card_ids) < need:
+            player_slots = list(ctx.defender_players[: need - len(card_ids)])
+        if not card_ids and not player_slots:
+            return None
+        self.notes.append(
+            f"choice: targets {card_ids} players {player_slots} for "
+            f"{self._link_label(link)}"
+        )
+        return ("targets", (card_ids, player_slots))
+
+    def _choice_cards(self, ctx: DecisionContext, link: LinkPlan) -> Answer | None:
+        need = self._bounded_need(ctx)
+        if need is None:
+            return None
+        ids = self._select_candidates(ctx, self._ordered_preferences(link), need)
+        if not ids:
+            return None
+        self.notes.append(f"choice: cards {ids} for {self._link_label(link)}")
+        return ("card_ids", ids)
+
+    def _choice_mode(self, ctx: DecisionContext, link: LinkPlan) -> Answer | None:
+        options = [(int(mid), str(desc or "")) for mid, desc in ctx.mode_options]
+        if not options:
+            return None
+        need = self._bounded_need(ctx)
+        if need is None:
+            return None
+        # 1. Modal tap/untap: the untap mode is loop-closing.  Never self-tap
+        #    while the loop needs an untap.
+        untap_ids = [mid for mid, desc in options if _UNTAP_RE.search(desc)]
+        if untap_ids and self._loop_needs_untap():
+            chosen = untap_ids[:need]
+            self.notes.append(
+                f"choice: untap mode {chosen} for {self._link_label(link)}"
+            )
+            return ("mode_selection", chosen)
+        # 2. Otherwise prefer the mode whose text matches the link's verb.
+        verb = self._link_verb(link)
+        if verb:
+            edge = re.compile(
+                rf"(?<![A-Za-z0-9]){re.escape(verb)}(?![A-Za-z0-9])",
+                re.IGNORECASE,
+            )
+            hits = [mid for mid, desc in options if edge.search(desc)]
+            if hits:
+                chosen = hits[:need]
+                self.notes.append(
+                    f"choice: {verb} mode {chosen} for {self._link_label(link)}"
+                )
+                return ("mode_selection", chosen)
+        # 3. Deterministic first-N fallback (matches the engine order).
+        chosen = [mid for mid, _ in options[:need]]
+        return ("mode_selection", chosen) if chosen else None
+
     # -- answers ------------------------------------------------------------
 
     def _priority(self, ctx: DecisionContext) -> Answer:
@@ -610,9 +839,15 @@ class WitnessPolicy:
             return None
         params = self.active.params or {}
         t = ctx.decision_type
+        # Choice-aware fallbacks are only applied to the combo player's own
+        # selections: an opponent's decision must never be answered with our
+        # engine card (the engine ids are not player-scoped).
+        own_choice = ctx.player == self.player
         if t == pb.DECISION_TYPE_CHOOSE_TARGETS:
             raw = params.get("targets")
             if raw is None:
+                if own_choice:
+                    return self._choice_targets(ctx, self.active)
                 return None
             card_ids: list[int] = []
             player_slots: list[int] = []
@@ -632,10 +867,21 @@ class WitnessPolicy:
         if t == pb.DECISION_TYPE_CHOOSE_CARDS:
             raw = params.get("cards")
             if raw is None:
+                if own_choice:
+                    return self._choice_cards(ctx, self.active)
                 return None
             ids = [self._candidate_id(ctx, str(n)) for n in raw]
             return ("card_ids", [i for i in ids if i is not None])
-        if t in (pb.DECISION_TYPE_CHOOSE_MODE, pb.DECISION_TYPE_OPTIONAL_COSTS):
+        if t == pb.DECISION_TYPE_CHOOSE_MODE:
+            raw = params.get("modes")
+            if raw is None:
+                if own_choice:
+                    return self._choice_mode(ctx, self.active)
+                return None
+            return ("mode_selection", [int(x) for x in raw])
+        if t == pb.DECISION_TYPE_OPTIONAL_COSTS:
+            # Kicker-style optional costs keep the conservative "pay nothing"
+            # default; only an explicit params hint overrides it.
             raw = params.get("modes")
             if raw is None:
                 return None
