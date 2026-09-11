@@ -1,0 +1,765 @@
+{
+ "timestamp": "2026-09-11T11:09:13.174267+00:00",
+ "version": "6.4.0-fixture",
+ "variants": [
+  {
+   "id": "v-kiki-exarch",
+   "status": "OK",
+   "uses": [
+    {
+     "card": {
+      "id": 101,
+      "name": "Kiki-Jiki, Mirror Breaker",
+      "oracleId": "oracle-kiki",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    },
+    {
+     "card": {
+      "id": 102,
+      "name": "Deceiver Exarch",
+      "oracleId": "oracle-exarch",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    }
+   ],
+   "requires": [],
+   "produces": [
+    {
+     "feature": {
+      "id": 1,
+      "name": "Infinite creature tokens"
+     },
+     "quantity": 1
+    }
+   ],
+   "identity": "U",
+   "manaNeeded": "",
+   "manaValueNeeded": 0,
+   "easyPrerequisites": "",
+   "notablePrerequisites": "",
+   "description": "desc v-kiki-exarch",
+   "notes": "",
+   "popularity": 5,
+   "spoiler": false,
+   "bracketTag": "E",
+   "legalities": {
+    "vintage": true,
+    "commander": true
+   },
+   "variantCount": 1,
+   "of": [],
+   "includes": [],
+   "variantAlias": null
+  },
+  {
+   "id": "v-kiki-exarch-celebrant",
+   "status": "OK",
+   "uses": [
+    {
+     "card": {
+      "id": 101,
+      "name": "Kiki-Jiki, Mirror Breaker",
+      "oracleId": "oracle-kiki",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    },
+    {
+     "card": {
+      "id": 102,
+      "name": "Deceiver Exarch",
+      "oracleId": "oracle-exarch",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    },
+    {
+     "card": {
+      "id": 103,
+      "name": "Combat Celebrant",
+      "oracleId": "oracle-celebrant",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    }
+   ],
+   "requires": [],
+   "produces": [
+    {
+     "feature": {
+      "id": 1,
+      "name": "Infinite creature tokens"
+     },
+     "quantity": 1
+    },
+    {
+     "feature": {
+      "id": 2,
+      "name": "Infinite combat phases"
+     },
+     "quantity": 1
+    }
+   ],
+   "identity": "U",
+   "manaNeeded": "",
+   "manaValueNeeded": 0,
+   "easyPrerequisites": "",
+   "notablePrerequisites": "",
+   "description": "desc v-kiki-exarch-celebrant",
+   "notes": "",
+   "popularity": 5,
+   "spoiler": false,
+   "bracketTag": "E",
+   "legalities": {
+    "vintage": true,
+    "commander": true
+   },
+   "variantCount": 1,
+   "of": [],
+   "includes": [],
+   "variantAlias": null
+  },
+  {
+   "id": "v-kiki-pestermite",
+   "status": "EXAMPLE",
+   "uses": [
+    {
+     "card": {
+      "id": 101,
+      "name": "Kiki-Jiki, Mirror Breaker",
+      "oracleId": "oracle-kiki",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    },
+    {
+     "card": {
+      "id": 104,
+      "name": "Pestermite",
+      "oracleId": "oracle-pestermite",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    }
+   ],
+   "requires": [],
+   "produces": [
+    {
+     "feature": {
+      "id": 1,
+      "name": "Infinite creature tokens"
+     },
+     "quantity": 1
+    }
+   ],
+   "identity": "U",
+   "manaNeeded": "",
+   "manaValueNeeded": 0,
+   "easyPrerequisites": "",
+   "notablePrerequisites": "",
+   "description": "desc v-kiki-pestermite",
+   "notes": "",
+   "popularity": 5,
+   "spoiler": false,
+   "bracketTag": "E",
+   "legalities": {
+    "vintage": true,
+    "commander": true
+   },
+   "variantCount": 1,
+   "of": [],
+   "includes": [],
+   "variantAlias": null
+  },
+  {
+   "id": "v-kiki-pestermite-templated",
+   "status": "OK",
+   "uses": [
+    {
+     "card": {
+      "id": 101,
+      "name": "Kiki-Jiki, Mirror Breaker",
+      "oracleId": "oracle-kiki",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    },
+    {
+     "card": {
+      "id": 104,
+      "name": "Pestermite",
+      "oracleId": "oracle-pestermite",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    }
+   ],
+   "requires": [
+    {
+     "template": {
+      "id": 50,
+      "name": "Haste enabler",
+      "scryfallQuery": "",
+      "scryfallApi": ""
+     },
+     "zoneLocations": [
+      "H",
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1
+    }
+   ],
+   "produces": [],
+   "identity": "U",
+   "manaNeeded": "",
+   "manaValueNeeded": 0,
+   "easyPrerequisites": "",
+   "notablePrerequisites": "",
+   "description": "desc v-kiki-pestermite-templated",
+   "notes": "",
+   "popularity": 5,
+   "spoiler": false,
+   "bracketTag": "E",
+   "legalities": {
+    "vintage": true,
+    "commander": true
+   },
+   "variantCount": 1,
+   "of": [],
+   "includes": [],
+   "variantAlias": null
+  },
+  {
+   "id": "v-fable",
+   "status": "OK",
+   "uses": [
+    {
+     "card": {
+      "id": 105,
+      "name": "Fable of the Mirror-Breaker // Reflection of Kiki-Jiki",
+      "oracleId": "oracle-fable",
+      "faces": 2,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": 2
+    },
+    {
+     "card": {
+      "id": 103,
+      "name": "Combat Celebrant",
+      "oracleId": "oracle-celebrant",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    }
+   ],
+   "requires": [
+    {
+     "template": {
+      "id": 51,
+      "name": "Any creature",
+      "scryfallQuery": "",
+      "scryfallApi": ""
+     },
+     "zoneLocations": [
+      "H",
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1
+    }
+   ],
+   "produces": [],
+   "identity": "U",
+   "manaNeeded": "",
+   "manaValueNeeded": 0,
+   "easyPrerequisites": "",
+   "notablePrerequisites": "",
+   "description": "desc v-fable",
+   "notes": "",
+   "popularity": 5,
+   "spoiler": false,
+   "bracketTag": "E",
+   "legalities": {
+    "vintage": true,
+    "commander": true
+   },
+   "variantCount": 1,
+   "of": [],
+   "includes": [],
+   "variantAlias": null
+  },
+  {
+   "id": "v-alchemy",
+   "status": "OK",
+   "uses": [
+    {
+     "card": {
+      "id": 106,
+      "name": "A-Something Rebalanced",
+      "oracleId": "oracle-alchemy",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    },
+    {
+     "card": {
+      "id": 103,
+      "name": "Combat Celebrant",
+      "oracleId": "oracle-celebrant",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    }
+   ],
+   "requires": [],
+   "produces": [],
+   "identity": "U",
+   "manaNeeded": "",
+   "manaValueNeeded": 0,
+   "easyPrerequisites": "",
+   "notablePrerequisites": "",
+   "description": "desc v-alchemy",
+   "notes": "",
+   "popularity": 5,
+   "spoiler": false,
+   "bracketTag": "E",
+   "legalities": {
+    "vintage": true,
+    "commander": true
+   },
+   "variantCount": 1,
+   "of": [],
+   "includes": [],
+   "variantAlias": null
+  },
+  {
+   "id": "v-nonvintage",
+   "status": "OK",
+   "uses": [
+    {
+     "card": {
+      "id": 101,
+      "name": "Kiki-Jiki, Mirror Breaker",
+      "oracleId": "oracle-kiki",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    },
+    {
+     "card": {
+      "id": 107,
+      "name": "Tifa Lockhart",
+      "oracleId": "oracle-tifa",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    }
+   ],
+   "requires": [],
+   "produces": [],
+   "identity": "U",
+   "manaNeeded": "",
+   "manaValueNeeded": 0,
+   "easyPrerequisites": "",
+   "notablePrerequisites": "",
+   "description": "desc v-nonvintage",
+   "notes": "",
+   "popularity": 5,
+   "spoiler": false,
+   "bracketTag": "E",
+   "legalities": {
+    "vintage": false,
+    "commander": true
+   },
+   "variantCount": 1,
+   "of": [],
+   "includes": [],
+   "variantAlias": null
+  },
+  {
+   "id": "v-banned-card",
+   "status": "OK",
+   "uses": [
+    {
+     "card": {
+      "id": 101,
+      "name": "Kiki-Jiki, Mirror Breaker",
+      "oracleId": "oracle-kiki",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    },
+    {
+     "card": {
+      "id": 108,
+      "name": "Dee Kay, Finder of the Lost",
+      "oracleId": "oracle-deekay",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    }
+   ],
+   "requires": [],
+   "produces": [],
+   "identity": "U",
+   "manaNeeded": "",
+   "manaValueNeeded": 0,
+   "easyPrerequisites": "",
+   "notablePrerequisites": "",
+   "description": "desc v-banned-card",
+   "notes": "",
+   "popularity": 5,
+   "spoiler": false,
+   "bracketTag": "E",
+   "legalities": {
+    "vintage": true,
+    "commander": true
+   },
+   "variantCount": 1,
+   "of": [],
+   "includes": [],
+   "variantAlias": null
+  },
+  {
+   "id": "v-commander",
+   "status": "OK",
+   "uses": [
+    {
+     "card": {
+      "id": 101,
+      "name": "Kiki-Jiki, Mirror Breaker",
+      "oracleId": "oracle-kiki",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": true,
+     "quantity": 1,
+     "usedFace": null
+    },
+    {
+     "card": {
+      "id": 102,
+      "name": "Deceiver Exarch",
+      "oracleId": "oracle-exarch",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    }
+   ],
+   "requires": [],
+   "produces": [],
+   "identity": "U",
+   "manaNeeded": "",
+   "manaValueNeeded": 0,
+   "easyPrerequisites": "",
+   "notablePrerequisites": "",
+   "description": "desc v-commander",
+   "notes": "",
+   "popularity": 5,
+   "spoiler": false,
+   "bracketTag": "E",
+   "legalities": {
+    "vintage": true,
+    "commander": true
+   },
+   "variantCount": 1,
+   "of": [],
+   "includes": [],
+   "variantAlias": null
+  },
+  {
+   "id": "v-bad-status",
+   "status": "NOT_OK",
+   "uses": [
+    {
+     "card": {
+      "id": 101,
+      "name": "Kiki-Jiki, Mirror Breaker",
+      "oracleId": "oracle-kiki",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    },
+    {
+     "card": {
+      "id": 102,
+      "name": "Deceiver Exarch",
+      "oracleId": "oracle-exarch",
+      "faces": 1,
+      "typeLine": "",
+      "spoiler": false
+     },
+     "zoneLocations": [
+      "B"
+     ],
+     "battlefieldCardState": "",
+     "exileCardState": "",
+     "libraryCardState": "",
+     "graveyardCardState": "",
+     "mustBeCommander": false,
+     "quantity": 1,
+     "usedFace": null
+    }
+   ],
+   "requires": [],
+   "produces": [],
+   "identity": "U",
+   "manaNeeded": "",
+   "manaValueNeeded": 0,
+   "easyPrerequisites": "",
+   "notablePrerequisites": "",
+   "description": "desc v-bad-status",
+   "notes": "",
+   "popularity": 5,
+   "spoiler": false,
+   "bracketTag": "E",
+   "legalities": {
+    "vintage": true,
+    "commander": true
+   },
+   "variantCount": 1,
+   "of": [],
+   "includes": [],
+   "variantAlias": null
+  }
+ ],
+ "aliases": [
+  {
+   "id": "v-kiki-exarch--alias",
+   "variant": "v-kiki-exarch"
+  },
+  {
+   "id": "orphan-alias",
+   "variant": null
+  }
+ ]
+}

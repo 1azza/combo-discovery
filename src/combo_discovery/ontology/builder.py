@@ -87,9 +87,15 @@ def _utc_now() -> str:
 
 
 def latest_import_id(conn: sqlite3.Connection) -> str | None:
-    """The most recently inserted corpus import."""
+    """The most recent *corpus* import (i.e. one that actually has cards).
+
+    The database also carries non-corpus imports (Scryfall oracle-id backfill,
+    Commander Spellbook), so "latest import_runs row" is not the corpus import.
+    """
     row = conn.execute(
-        "SELECT import_id FROM import_runs ORDER BY rowid DESC LIMIT 1"
+        "SELECT r.import_id AS import_id FROM import_runs r "
+        "WHERE EXISTS (SELECT 1 FROM cards c WHERE c.import_id = r.import_id) "
+        "ORDER BY r.rowid DESC LIMIT 1"
     ).fetchone()
     return row["import_id"] if row is not None else None
 

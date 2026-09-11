@@ -165,7 +165,7 @@ Legend:
 - `[ ]` Import Scryfall bulk card data
 - `[ ]` Normalize card names, faces, sets, and aliases
 - `[ ]` Filter and version the Vintage/Legacy-like card pool
-- `[ ]` Add Commander Spellbook data as a held-out/validation reference
+- `[x]` Add Commander Spellbook data as a held-out/validation reference (Tier-A: bulk `variants.json.gz`, 107,325 Vintage-legal variants ingested; Tier-B independent sources documented, not yet populated)
 - `[ ]` Include both script-defined and Java-implemented cards in the initial benchmark subset
 
 ### 4.2 Forge script extraction
@@ -184,7 +184,7 @@ Legend:
 - `[ ]` Store predicates in a queryable SQLite/Parquet representation
 - `[ ]` Build producer/consumer interaction edges
 - `[ ]` Build trigger/activation loop edges
-- `[ ]` Validate ontology recall against known combos
+- `[x]` Validate ontology recall against known combos (evaluation harness: pair/subset classification, per-pattern + per-card metrics, FP/miss diagnostics)
 - `[ ]` Version ontology changes
 - `[ ]` Add explanations showing why two cards were linked
 
@@ -239,7 +239,7 @@ Legend:
 - `[ ]` Build pure LLM baseline
 - `[ ]` Build ontology-grounded LLM baseline
 - `[ ]` Split known combos into tuning and held-out evaluation sets
-- `[ ]` Measure known-combo recall
+- `[x]` Measure known-combo recall (Kiki-Jiki baseline: P=0.857, P@10=0.900, R=0.154; aggregate is near-zero pre-tuning — the tuning signal)
 - `[ ]` Measure precision@k and discovery efficiency
 - `[ ]` Compare scripted, greedy, MCTS, and learned search at fixed budgets
 - `[ ]` Validate candidates against Forge AI opponents

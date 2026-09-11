@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.14"
 dependencies = [
     "grpcio>=1.83.1",
+    "ijson>=3.5.1",
     "protobuf>=7.36.1",
     "textual>=8.2.8",
 ]
@@ -17,6 +18,8 @@ dependencies = [
 combo-tui = "combo_discovery.tui.app:main"
 combo-import-cards = "combo_discovery.corpus.__main__:main"
 combo-build-ontology = "combo_discovery.ontology.__main__:main"
+combo-import-spellbook = "combo_discovery.corpus.spellbook_main:main"
+combo-evaluate = "combo_discovery.evaluation:main"
 
 [build-system]
 requires = ["uv_build>=0.12.11,<0.13.0"]

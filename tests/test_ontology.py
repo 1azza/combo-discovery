@@ -968,10 +968,10 @@ class TestSchemaAndPersistence:
         assert all(row["version"] == 1 for row in rows)
         assert all(json.loads(row["pattern_json"]) for row in rows)
 
-    def test_schema_version_is_three(self, ontology_db):
+    def test_schema_version_is_four(self, ontology_db):
         db, _ = ontology_db
         versions = [row[0] for row in _query(db, "SELECT version FROM schema_version")]
-        assert versions == [1, 2, 3]
+        assert versions == [1, 2, 3, 4]
 
     def test_migration_3_creates_tables(self, tmp_path):
         conn = sqlite3.connect(tmp_path / "raw.db")
@@ -1010,8 +1010,12 @@ def test_full_corpus_extraction_and_edges_performance(capsys):
     conn = sqlite3.connect(f"file:{RESEARCH_DB}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
+        # The latest import_runs row may be a non-corpus import (Scryfall oracle-id
+        # backfill / Commander Spellbook); pick the most recent one with cards.
         import_id = conn.execute(
-            "SELECT import_id FROM import_runs ORDER BY rowid DESC LIMIT 1"
+            "SELECT r.import_id AS import_id FROM import_runs r "
+            "WHERE EXISTS (SELECT 1 FROM cards c WHERE c.import_id = r.import_id) "
+            "ORDER BY r.rowid DESC LIMIT 1"
         ).fetchone()["import_id"]
         started = time.monotonic()
         contexts, effects = load_contexts(conn, import_id)

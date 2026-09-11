@@ -22,6 +22,7 @@ Design constraints:
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
 import re
 import sqlite3
@@ -101,14 +102,27 @@ class ScryfallSource:
 
     # -- cache paths --------------------------------------------------------
 
-    def cache_path(self) -> Path:
+    def legacy_cache_path(self) -> Path:
         return self.cache_dir / "oracle_cards.json"
+
+    def jsonl_cache_path(self) -> Path:
+        return self.cache_dir / "oracle_cards.jsonl.gz"
+
+    def cache_path(self) -> Path:
+        """The cache file in use (legacy JSON array, else the JSONL gz)."""
+        legacy = self.legacy_cache_path()
+        if legacy.is_file():
+            return legacy
+        jsonl = self.jsonl_cache_path()
+        if jsonl.is_file():
+            return jsonl
+        return legacy
 
     def sha_path(self) -> Path:
         return self.cache_dir / "oracle_cards.sha256"
 
     def has_cache(self) -> bool:
-        return self.cache_path().is_file()
+        return self.legacy_cache_path().is_file() or self.jsonl_cache_path().is_file()
 
     @property
     def sha256(self) -> str | None:
@@ -128,10 +142,14 @@ class ScryfallSource:
     # -- network ------------------------------------------------------------
 
     def download(self, *, force: bool = False) -> Path:
-        """Download ``oracle_cards`` into the cache and return its path."""
-        target = self.cache_path()
-        if target.is_file() and not force:
-            return target
+        """Download ``oracle_cards`` into the cache and return its path.
+
+        Scryfall exposes the bulk as either a legacy uncompressed JSON array
+        (``download_uri``) or a gzipped JSONL stream (``jsonl_download_uri``);
+        both are cached and :meth:`load` handles either.
+        """
+        if self.has_cache() and not force:
+            return self.cache_path()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         meta = self._get_json(self.BULK_API)
@@ -139,9 +157,14 @@ class ScryfallSource:
             (e for e in meta.get("data", []) if e.get("type") == "oracle_cards"),
             None,
         )
-        if entry is None or not entry.get("download_uri"):
-            raise RuntimeError("Scryfall bulk-data has no oracle_cards download_uri")
-        self.download_uri = str(entry["download_uri"])
+        if entry is None:
+            raise RuntimeError("Scryfall bulk-data has no oracle_cards entry")
+        uri = entry.get("download_uri") or entry.get("jsonl_download_uri")
+        if not uri:
+            raise RuntimeError("Scryfall bulk-data has no oracle_cards download URI")
+        self.download_uri = str(uri)
+        is_jsonl = uri.endswith(".jsonl.gz") or uri.endswith(".jsonl")
+        target = self.jsonl_cache_path() if is_jsonl else self.legacy_cache_path()
 
         tmp = target.with_name(target.name + ".tmp")
         digest = hashlib.sha256()
@@ -189,17 +212,15 @@ class ScryfallSource:
                 if not self.auto_download:
                     return False
                 path = self.download()
-            with open(path, encoding="utf-8") as fh:
-                records = json.load(fh)
+            index: dict[str, dict[str, Any]] = {}
+            for record in _iter_scryfall_records(path):
+                kept = _keep_record(record)
+                for name in _record_names(record):
+                    index.setdefault(normalize_name(name), kept)
         except Exception as exc:  # noqa: BLE001 - offline/no-cache must not fail an import
             self.error = f"{type(exc).__name__}: {exc}"
             return False
 
-        index: dict[str, dict[str, Any]] = {}
-        for record in records:
-            kept = _keep_record(record)
-            for name in _record_names(record):
-                index.setdefault(normalize_name(name), kept)
         self._index = index
         self.available = True
         return True
@@ -211,6 +232,31 @@ class ScryfallSource:
 
     def __len__(self) -> int:
         return len(self._index or {})
+
+
+def _iter_scryfall_records(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield Scryfall records from either cache format.
+
+    Scryfall serves the bulk as a legacy JSON array (``oracle_cards.json``) or a
+    gzipped JSONL stream (``oracle_cards.jsonl.gz``); stream both so a JSONL
+    cache never needs a full ``json.load``.
+    """
+    if path.name.endswith(".jsonl.gz") or path.name.endswith(".jsonl"):
+        if path.name.endswith(".gz"):
+            with gzip.open(path, "rt", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        yield json.loads(line)
+            return
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
+        return
+    with open(path, encoding="utf-8") as fh:
+        yield from json.load(fh)
 
 
 def _keep_record(record: dict[str, Any]) -> dict[str, Any]:

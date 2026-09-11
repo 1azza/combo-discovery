@@ -1,11 +1,32 @@
 # Project Status
 
-Last verified during the proto v6 round (normalized event taxonomy +
-FullState v2). Gate items 1–5 remain complete; events are now
-research-grade structured data.
+Last verified during the ground-truth / evaluation round (Layer 2 science).
+Gate items 1–5 are complete; the card corpus, predicate ontology, and the
+known-combo evaluation layer are in place. Current focus: tuning hypothesis
+precision against Commander Spellbook, driven from the TUI Card Lab.
 
 ## Verified
 
+- [x] Science layer (Layer 2):
+      - Card corpus: 33,688 Forge scripts parsed (0 errors) into schema v2
+        (`cards`, `card_faces`, `card_scripts`, `card_effects`, 84,190 effects).
+      - Predicate ontology (schema v3): 29-predicate vocabulary, restriction
+        parsing, ability-scoped effects, 7 patterns in a per-pattern registry.
+      - Ground truth (schema v4): Commander Spellbook bulk ingested —
+        107,325 Vintage-legal variants, 504,709 known pairs (3,937 exact
+        2-card), 5,614 aliases; Scryfall oracle-id bridge (33,636 cards).
+      - Evaluation harness: pair/subset classification (`known_pair`,
+        `contained_in_known`, `unmatched`, `missed`), precision@k / recall /
+        F1 per card + per pattern + aggregate, FP/miss diagnostics, Tier-A/B
+        novelty policy (never claims "novel" without a second source).
+      - Baseline (Kiki-Jiki): 791 known combos, 78 exact 2-card variants;
+        our 14 proposals → 12 `known_pair`, 2 `unmatched`
+        (Eager Beaver, White Plume Adventurer); P=0.857, P@10=0.900,
+        R=0.154; 66 missed (incl. Fear of Missing Out — a real known combo
+        our current gates exclude; the tuning signal).
+      - Aggregate pre-tuning: 437,463 proposals → 22 `known_pair`,
+        1,015 `contained_in_known`, 436,426 `unmatched`; per-pattern precision
+        is near zero outside `infinite_etb_loop` — the measurable tuning target.
 - [x] Protocol v6 (event taxonomy): the GameLog substring matcher is gone —
       engine events are built from Forge's structured GameEvent records via
       a single EventBus-registered collector (synchronous game-thread

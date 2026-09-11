@@ -29,7 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only (avoids an import cycle)
     from .runner import DecisionContext, GameResult
 
 # Current schema version. Bump this and register a migration in _MIGRATIONS.
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 # Serializes all DB access; see the module docstring for why.
 _DB_LOCK = threading.Lock()
@@ -53,6 +53,16 @@ _TABLES = (
     "card_predicates",
     "interactions",
     "combo_hypotheses",
+    "card_oracle_ids",
+    "known_combos",
+    "known_combo_cards",
+    "known_combo_pairs",
+    "known_aliases",
+    "observed_decks",
+    "observed_deck_cards",
+    "observed_pairs",
+    "evaluation_runs",
+    "evaluation_results",
 )
 
 _SCHEMA_SQL = """
@@ -261,10 +271,158 @@ def _migration_3(conn: sqlite3.Connection) -> None:
     conn.executescript(_ONTOLOGY_SCHEMA_SQL)
 
 
+# Schema v4 (known-combo ground truth + evaluation harness).
+#
+# Tier A is Commander Spellbook (curated, ``known_*``); Tier B is independent
+# deck co-occurrence (``observed_*``; placeholders this round).  ``card_oracle_ids``
+# is a name-independent bridge from Forge cards to Spellbook/Scryfall oracle ids.
+# All rows are appended; nothing here mutates the corpus.
+_GROUND_TRUTH_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS card_oracle_ids (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id),
+  card_id INTEGER NOT NULL REFERENCES cards(id),
+  oracle_id TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'scryfall',
+  imported_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_oracle_ids_oracle ON card_oracle_ids(oracle_id);
+CREATE INDEX IF NOT EXISTS idx_oracle_ids_card ON card_oracle_ids(card_id);
+
+CREATE TABLE IF NOT EXISTS known_combos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT NOT NULL,
+  source_id TEXT NOT NULL UNIQUE,
+  source_version TEXT,
+  source_timestamp TEXT,
+  fetched_at TEXT NOT NULL,
+  status TEXT,
+  bracket_tag TEXT,
+  identity TEXT,
+  popularity INTEGER,
+  variant_count INTEGER,
+  mana_needed TEXT,
+  mana_value_needed REAL,
+  easy_prereqs TEXT,
+  notable_prereqs TEXT,
+  description TEXT,
+  notes TEXT,
+  spoiler INTEGER,
+  legalities_json TEXT,
+  produces_json TEXT,
+  requires_json TEXT,
+  n_uses INTEGER,
+  n_requires INTEGER,
+  n_produces INTEGER,
+  canonical_hash TEXT,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id));
+CREATE INDEX IF NOT EXISTS idx_known_combos_source ON known_combos(source, source_id);
+CREATE INDEX IF NOT EXISTS idx_known_combos_hash ON known_combos(canonical_hash);
+CREATE INDEX IF NOT EXISTS idx_known_combos_import ON known_combos(import_id);
+
+CREATE TABLE IF NOT EXISTS known_combo_cards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  combo_id INTEGER NOT NULL REFERENCES known_combos(id),
+  role TEXT NOT NULL CHECK (role IN ('use','require')),
+  raw_name TEXT,
+  normalized_name TEXT,
+  oracle_id TEXT,
+  spellbook_card_id INTEGER,
+  template_id INTEGER,
+  quantity INTEGER,
+  used_face INTEGER,
+  zone_locations TEXT,
+  must_be_commander INTEGER,
+  card_state TEXT,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id));
+CREATE INDEX IF NOT EXISTS idx_known_cards_combo ON known_combo_cards(combo_id);
+CREATE INDEX IF NOT EXISTS idx_known_cards_norm ON known_combo_cards(normalized_name);
+CREATE INDEX IF NOT EXISTS idx_known_cards_oracle ON known_combo_cards(oracle_id);
+
+CREATE TABLE IF NOT EXISTS known_combo_pairs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  combo_id INTEGER NOT NULL REFERENCES known_combos(id),
+  pair_hash TEXT NOT NULL,
+  is_full_variant INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id));
+CREATE INDEX IF NOT EXISTS idx_known_pairs_hash ON known_combo_pairs(pair_hash);
+CREATE INDEX IF NOT EXISTS idx_known_pairs_combo ON known_combo_pairs(combo_id);
+CREATE INDEX IF NOT EXISTS idx_known_pairs_import ON known_combo_pairs(import_id);
+
+CREATE TABLE IF NOT EXISTS known_aliases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alias_id TEXT NOT NULL,
+  canonical_id TEXT,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id));
+CREATE INDEX IF NOT EXISTS idx_known_aliases_alias ON known_aliases(alias_id);
+
+-- Tier B (independent deck co-occurrence).  Intentionally empty this round.
+CREATE TABLE IF NOT EXISTS observed_decks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT NOT NULL,
+  source_id TEXT,
+  url TEXT,
+  commander TEXT,
+  format TEXT,
+  fetched_at TEXT NOT NULL,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id));
+CREATE INDEX IF NOT EXISTS idx_observed_decks_source ON observed_decks(source, source_id);
+
+CREATE TABLE IF NOT EXISTS observed_deck_cards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  deck_id INTEGER NOT NULL REFERENCES observed_decks(id),
+  card_name TEXT,
+  normalized_name TEXT,
+  oracle_id TEXT,
+  quantity INTEGER);
+CREATE INDEX IF NOT EXISTS idx_observed_deck_cards_deck ON observed_deck_cards(deck_id);
+
+CREATE TABLE IF NOT EXISTS observed_pairs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  deck_id INTEGER NOT NULL REFERENCES observed_decks(id),
+  pair_hash TEXT NOT NULL,
+  source TEXT NOT NULL,
+  import_id TEXT NOT NULL REFERENCES import_runs(import_id));
+CREATE INDEX IF NOT EXISTS idx_observed_pairs_hash ON observed_pairs(pair_hash);
+
+CREATE TABLE IF NOT EXISTS evaluation_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  started_at TEXT NOT NULL,
+  card_filter TEXT,
+  known_import_id TEXT,
+  ontology_import_id TEXT,
+  params_json TEXT,
+  notes TEXT);
+
+CREATE TABLE IF NOT EXISTS evaluation_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL REFERENCES evaluation_runs(id),
+  scope TEXT NOT NULL CHECK (scope IN ('aggregate','card','pattern')),
+  key TEXT,
+  pattern TEXT,
+  true_positives INTEGER,
+  partials INTEGER,
+  false_positives INTEGER,
+  missed INTEGER,
+  precision REAL,
+  recall REAL,
+  f1 REAL,
+  details_json TEXT);
+CREATE INDEX IF NOT EXISTS idx_eval_results_run ON evaluation_results(run_id);
+CREATE INDEX IF NOT EXISTS idx_eval_results_scope ON evaluation_results(scope, key);
+"""
+
+
+def _migration_4(conn: sqlite3.Connection) -> None:
+    """Schema v4: known-combo ground truth (Tier A/B) + evaluation harness."""
+    conn.executescript(_GROUND_TRUTH_SCHEMA_SQL)
+
+
 # version -> callable applying the change for that version.
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migration_2,
     3: _migration_3,
+    4: _migration_4,
 }
 
 
