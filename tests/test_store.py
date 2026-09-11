@@ -107,6 +107,7 @@ class TestSchema:
             "known_combo_pairs", "known_aliases", "observed_decks",
             "observed_deck_cards", "observed_pairs",
             "evaluation_runs", "evaluation_results",
+            "motif_runs", "motif_enrichment",
         ):
             assert t in tables
         indexes = sqlite3.connect(path).execute(
@@ -117,8 +118,9 @@ class TestSchema:
             "idx_events_game", "idx_decisions_game", "idx_cards_name",
             "idx_predicates_pred", "idx_hypotheses_status_score",
             "idx_oracle_ids_oracle", "idx_known_pairs_hash", "idx_eval_results_scope",
+            "idx_motif_enrichment_motif",
         } <= idx_names
-        assert [tuple(r) for r in versions] == [(1,), (2,), (3,), (4,)]
+        assert [tuple(r) for r in versions] == [(1,), (2,), (3,), (4,), (5,)]
 
     def test_foreign_keys_enforced(self, tmp_path):
         store = ExperimentStore(tmp_path / "exp.sqlite")

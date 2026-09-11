@@ -29,7 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only (avoids an import cycle)
     from .runner import DecisionContext, GameResult
 
 # Current schema version. Bump this and register a migration in _MIGRATIONS.
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 # Serializes all DB access; see the module docstring for why.
 _DB_LOCK = threading.Lock()
@@ -63,6 +63,8 @@ _TABLES = (
     "observed_pairs",
     "evaluation_runs",
     "evaluation_results",
+    "motif_runs",
+    "motif_enrichment",
 )
 
 _SCHEMA_SQL = """
@@ -418,11 +420,47 @@ def _migration_4(conn: sqlite3.Connection) -> None:
     conn.executescript(_GROUND_TRUTH_SCHEMA_SQL)
 
 
+# Schema v5 (motif-enrichment analysis).  A run records the candidate token
+# vocabulary and parameters; every motif statistic is appended per run.
+_MOTIF_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS motif_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  started_at TEXT NOT NULL,
+  corpus_import_id TEXT,
+  known_import_id TEXT,
+  tokens_json TEXT,
+  params_json TEXT,
+  notes TEXT);
+CREATE TABLE IF NOT EXISTS motif_enrichment (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL REFERENCES motif_runs(id),
+  motif TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('single','pair','card_pair')),
+  n_known INTEGER NOT NULL DEFAULT 0,
+  n_known_total INTEGER NOT NULL DEFAULT 0,
+  n_background INTEGER NOT NULL DEFAULT 0,
+  n_background_total INTEGER NOT NULL DEFAULT 0,
+  lift REAL,
+  significance REAL,
+  p_value REAL,
+  tokens_json TEXT);
+CREATE INDEX IF NOT EXISTS idx_motif_enrichment_run ON motif_enrichment(run_id);
+CREATE INDEX IF NOT EXISTS idx_motif_enrichment_motif ON motif_enrichment(motif);
+CREATE INDEX IF NOT EXISTS idx_motif_enrichment_kind ON motif_enrichment(kind);
+"""
+
+
+def _migration_5(conn: sqlite3.Connection) -> None:
+    """Schema v5: motif-enrichment runs and per-motif statistics."""
+    conn.executescript(_MOTIF_SCHEMA_SQL)
+
+
 # version -> callable applying the change for that version.
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migration_2,
     3: _migration_3,
     4: _migration_4,
+    5: _migration_5,
 }
 
 
