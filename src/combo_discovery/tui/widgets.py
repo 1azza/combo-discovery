@@ -16,7 +16,7 @@ from textual.widgets import OptionList, Rule, Static
 from textual.widgets.option_list import Option
 
 from . import theme as pal
-from .data import effective_status, status_color
+from .data import badge_color, effective_status, status_color
 
 CARD_ACTION_HINT = "i interactions   ·   d add to research deck   ·   D view deck"
 
@@ -229,6 +229,9 @@ class CandidateDetail(Vertical):
         self,
         hypothesis: dict[str, Any] | None,
         verdicts: list[dict[str, Any]] | None = None,
+        *,
+        badge: str = "candidate",
+        novelty: str | None = None,
     ) -> None:
         self.clear()
         if hypothesis is None:
@@ -247,6 +250,8 @@ class CandidateDetail(Vertical):
         meta.append("  ·  ", style=pal.FAINT)
         meta.append("● ", style=status_style)
         meta.append(status, style=f"bold {status_style}")
+        meta.append("  ·  ", style=pal.FAINT)
+        meta.append(f"ground truth: {badge}", style=f"bold {badge_color(badge)}")
         meta.append("  ·  score ", style=pal.FAINT)
         meta.append(f"{float(score):.3f}" if isinstance(score, (int, float)) else "—",
                     style=pal.ACCENT)
@@ -297,12 +302,10 @@ class CandidateDetail(Vertical):
                 Text("No adjudications yet.", style=pal.FAINT)
             )
 
-        self.query_one("#cand-actions", Static).update(
-            Text(
-                "v cycle status   ·   tab to a card link, enter jumps to Corpus",
-                style=pal.FAINT,
-            )
-        )
+        hint = "v cycle status   ·   tab to a card link, enter jumps to Corpus"
+        if novelty:
+            hint = f"{novelty}\n{hint}"
+        self.query_one("#cand-actions", Static).update(Text(hint, style=pal.FAINT))
 
 
 __all__ = [

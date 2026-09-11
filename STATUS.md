@@ -27,6 +27,13 @@ precision against Commander Spellbook, driven from the TUI Card Lab.
       - Aggregate pre-tuning: 437,463 proposals → 22 `known_pair`,
         1,015 `contained_in_known`, 436,426 `unmatched`; per-pattern precision
         is near zero outside `infinite_etb_loop` — the measurable tuning target.
+      - TUI **Card Lab** (tab 4): pick a card → Known (Spellbook combos with
+        step descriptions, prerequisites, results, popularity) vs Proposed
+        (our hypotheses with mechanism/evidence), verdict badges
+        (known/contained/candidate), a Missed section, card + per-pattern +
+        aggregate metrics, and FP/miss diagnostics; `r` re-runs and persists
+        an evaluation. Candidates rows now carry known/contained/candidate
+        badges (never "novel" — two-source policy).
 - [x] Protocol v6 (event taxonomy): the GameLog substring matcher is gone —
       engine events are built from Forge's structured GameEvent records via
       a single EventBus-registered collector (synchronous game-thread

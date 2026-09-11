@@ -31,7 +31,7 @@ from .data import ActiveRun, StoreBinding, fmt_duration, pool_snapshot, short_id
 from ..research_config import DEFAULT_CONFIG_PATH, load_config
 from .screens import HelpScreen
 from ..store import ExperimentStore
-from .views import ActivityView, CandidatesView, CorpusView, ExperimentsView
+from .views import ActivityView, CandidatesView, CardLabView, CorpusView, ExperimentsView
 from .widgets import HeaderBar, StatusLine
 
 # (view id, number key, tab label)
@@ -39,7 +39,8 @@ VIEWS: tuple[tuple[str, str, str], ...] = (
     ("view-corpus", "1", "Corpus"),
     ("view-experiments", "2", "Experiments"),
     ("view-candidates", "3", "Candidates"),
-    ("view-activity", "4", "Activity"),
+    ("view-cardlab", "4", "Card Lab"),
+    ("view-activity", "5", "Activity"),
 )
 
 # Textual's default system command palette binding; shown in the statusline.
@@ -100,7 +101,8 @@ class ComboDiscoveryApp(App[None]):
         Binding("1", "goto('view-corpus')", "corpus", show=False),
         Binding("2", "goto('view-experiments')", "experiments", show=False),
         Binding("3", "goto('view-candidates')", "candidates", show=False),
-        Binding("4", "goto('view-activity')", "activity", show=False),
+        Binding("4", "goto('view-cardlab')", "card lab", show=False),
+        Binding("5", "goto('view-activity')", "activity", show=False),
         Binding("left_square_bracket", "prev_view", "prev", show=False),
         Binding("right_square_bracket", "next_view", "next", show=False),
         Binding("r", "reload_view", "reload", show=False),
@@ -158,6 +160,9 @@ class ComboDiscoveryApp(App[None]):
                 id="view-experiments",
             )
             yield CandidatesView(self.data, self.store, id="view-candidates")
+            yield CardLabView(
+                self.data, self.store, self.decks_dir, id="view-cardlab"
+            )
             yield ActivityView(self.data, id="view-activity")
         yield StatusLine(id="status-line")
 
@@ -249,6 +254,9 @@ class ComboDiscoveryApp(App[None]):
         def _focus() -> None:
             with suppress(NoMatches, AttributeError):
                 view = self.query_one(f"#{view_id}")
+                activate = getattr(view, "activate", None)
+                if callable(activate):
+                    activate()
                 focus_primary = getattr(view, "focus_primary", None)
                 if callable(focus_primary):
                     focus_primary()
@@ -312,7 +320,7 @@ class ComboDiscoveryApp(App[None]):
         if not self.is_running:
             return
         for view in self.query(
-            "CorpusView, ExperimentsView, CandidatesView, ActivityView"
+            "CorpusView, ExperimentsView, CandidatesView, CardLabView, ActivityView"
         ):
             tick = getattr(view, "on_tick", None)
             if callable(tick):

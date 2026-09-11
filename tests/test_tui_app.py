@@ -85,6 +85,11 @@ async def test_mounts_and_renders(tmp_path, monkeypatch):
         # Empty store renders the corpus/candidates empty states, not an error.
         assert app.query_one("#corpus-empty", EmptyState).display is True
         assert app.query_one("#cand-empty", EmptyState).display is True
+        for view_id in (
+            "view-corpus", "view-experiments", "view-candidates",
+            "view-cardlab", "view-activity",
+        ):
+            assert app.query_one(f"#{view_id}") is not None
 
         # Render check: the SVG export contains the app chrome.
         svg = app.export_screenshot()
@@ -108,6 +113,10 @@ async def test_keyboard_navigation_and_help(tmp_path, monkeypatch):
         assert app.query_one(ContentSwitcher).current == "view-candidates"
 
         await pilot.press("4")
+        await pilot.pause()
+        assert app.query_one(ContentSwitcher).current == "view-cardlab"
+
+        await pilot.press("5")
         await pilot.pause()
         assert app.query_one(ContentSwitcher).current == "view-activity"
 
@@ -461,3 +470,186 @@ async def test_interactions_row_jumps_to_partner(ontology_db, tmp_path, monkeypa
         corpus_list = app.query_one("#corpus-list", OptionList)
         assert corpus_list.highlighted is not None
         assert int(corpus_list.get_option_at_index(corpus_list.highlighted).id) == 2
+
+
+# ---------------------------------------------------------------------------
+# Card Lab: ground truth, proposals, missed, metrics, diagnostics, persistence
+# ---------------------------------------------------------------------------
+
+
+async def _wait_text(pilot, static: Static, needle: str, timeout: float = 25.0) -> bool:
+    waited = 0.0
+    while waited < timeout:
+        if needle in str(static.render()):
+            return True
+        await pilot.pause(0.1)
+        waited += 0.1
+    return needle in str(static.render())
+
+
+def _labels(listing: OptionList) -> list[str]:
+    return [str(listing.get_option_at_index(i).prompt) for i in range(listing.option_count)]
+
+
+async def test_card_lab_populates_from_ground_truth(lab_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(exp, "probe_workers", _fake_probe)
+    app, _decks = _app_for_db(tmp_path, lab_db)
+    async with app.run_test(size=(160, 48)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("4")
+        await pilot.pause()
+
+        view = app.query_one("#view-cardlab")
+        known = view.query_one("#lab-known-list", OptionList)
+        await _wait_option(pilot, known)
+        assert known.option_count == 3
+        assert "showing 3 of 3" in str(view.query_one("#lab-known-count", Static).render())
+
+        proposals = view.query_one("#lab-proposed-list", OptionList)
+        labels = " | ".join(_labels(proposals)).lower()
+        assert proposals.option_count == 3
+        assert "known" in labels and "candidate" in labels and "contained" in labels
+        assert "novel" not in labels
+
+        metrics = view.query_one("#lab-metrics-text", Static)
+        assert await _wait_text(pilot, metrics, "by pattern")
+        metrics_text = str(metrics.render())
+        assert "this card" in metrics_text and "by pattern" in metrics_text
+        # Kiki-scoped: 1 known / 1 contained / 1 candidate / 1 missed -> P 0.333
+        assert "known 1" in metrics_text and "candidate 1" in metrics_text
+
+        diagnostics = view.query_one("#lab-diagnostics-text", Static)
+        diag_text = str(diagnostics.render())
+        assert "false positives" in diag_text and "misses" in diag_text
+        assert "TAPS_COST" in diag_text  # FP cluster from proposal #2 evidence
+
+        missed = view.query_one("#lab-missed-list", OptionList)
+        await _wait_option(pilot, missed)
+        assert missed.option_count == 1
+        assert "Fear of Missing Out" in _labels(missed)[0]
+
+
+async def test_card_lab_filter_toggle(lab_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(exp, "probe_workers", _fake_probe)
+    app, _decks = _app_for_db(tmp_path, lab_db)
+    async with app.run_test(size=(160, 48)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("4")
+        await pilot.pause()
+        view = app.query_one("#view-cardlab")
+        known = view.query_one("#lab-known-list", OptionList)
+        await _wait_option(pilot, known)
+        assert "showing 3 of 3" in str(view.query_one("#lab-known-count", Static).render())
+
+        await pilot.press("f")
+        await pilot.pause()
+        assert known.option_count == 2
+        assert "showing 2 of 2" in str(view.query_one("#lab-known-count", Static).render())
+        assert "exact 2-card only" in str(view.query_one("#lab-known-filter", Static).render())
+
+
+async def test_card_lab_evaluate_persists(lab_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(exp, "probe_workers", _fake_probe)
+    app, _decks = _app_for_db(tmp_path, lab_db)
+    async with app.run_test(size=(160, 48)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("4")
+        await pilot.pause()
+        view = app.query_one("#view-cardlab")
+        await _wait_option(pilot, view.query_one("#lab-known-list", OptionList))
+        metrics = view.query_one("#lab-metrics-text", Static)
+        await _wait_text(pilot, metrics, "by pattern")
+
+        def count(table: str) -> int:
+            with sqlite3.connect(lab_db) as conn:
+                return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+        before = {t: count(t) for t in ("interactions", "combo_hypotheses", "known_combos")}
+        assert count("evaluation_runs") == 0
+
+        await pilot.press("r")
+        for _ in range(100):
+            if count("evaluation_runs") >= 1:
+                break
+            await pilot.pause(0.1)
+
+        assert count("evaluation_runs") == 1
+        assert count("evaluation_results") > 0
+        with sqlite3.connect(lab_db) as conn:
+            row = conn.execute(
+                "SELECT card_filter, known_import_id, ontology_import_id"
+                " FROM evaluation_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert row[0] == "Kiki-Jiki, Mirror Breaker"
+        assert row[1] == "sb1" and row[2] == "imp1"
+        # Reads never mutate the source tables.
+        for table, value in before.items():
+            assert count(table) == value
+
+
+async def test_candidates_show_ground_truth_badges(lab_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(exp, "probe_workers", _fake_probe)
+    app, _decks = _app_for_db(tmp_path, lab_db)
+    async with app.run_test(size=(150, 44)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("3")
+        await pilot.pause()
+        view = app.query_one("#view-candidates")
+        listing = view.query_one("#cand-list", OptionList)
+        await _wait_option(pilot, listing)
+        labels = " | ".join(_labels(listing)).lower()
+        assert "known" in labels
+        assert "candidate" in labels
+        assert "contained" in labels
+        assert "novel" not in labels
+
+
+REAL_DB_CARD_LAB = REPO_ROOT / "research.db"
+REAL_DECKS_CARD_LAB = REPO_ROOT / "decks"
+
+
+@pytest.mark.skipif(not REAL_DB_CARD_LAB.exists(), reason="live research.db not present")
+async def test_live_card_lab_read_only(monkeypatch):
+    monkeypatch.setattr(exp, "probe_workers", _fake_probe)
+    app = ComboDiscoveryApp(
+        db_path=REAL_DB_CARD_LAB, decks_dir=REAL_DECKS_CARD_LAB,
+        config_path=REPO_ROOT / "research.toml",
+    )
+    with sqlite3.connect(REAL_DB_CARD_LAB) as conn:
+        runs_before = conn.execute("SELECT COUNT(*) FROM evaluation_runs").fetchone()[0]
+
+    async with app.run_test(size=(160, 48)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("4")
+        await pilot.pause()
+
+        view = app.query_one("#view-cardlab")
+        known = view.query_one("#lab-known-list", OptionList)
+        await _wait_option(pilot, known, timeout=25.0)
+        assert "showing 200 of 791" in str(view.query_one("#lab-known-count", Static).render())
+
+        proposals = view.query_one("#lab-proposed-list", OptionList)
+        assert proposals.option_count == 14
+        labels = " | ".join(_labels(proposals)).lower()
+        assert "known" in labels and "candidate" in labels and "novel" not in labels
+
+        missed = view.query_one("#lab-missed-list", OptionList)
+        await _wait_option(pilot, missed, timeout=30.0)
+        assert missed.option_count == 66
+        assert any("fear of missing out" in label.lower() for label in _labels(missed))
+
+        metrics = view.query_one("#lab-metrics-text", Static)
+        assert await _wait_text(pilot, metrics, "by pattern", timeout=30.0)
+        # Kiki: precision 0.857 (12 known / 14 proposed), recall 0.154, F1 0.261
+        assert "P 0.857" in str(metrics.render())
+        diagnostics = view.query_one("#lab-diagnostics-text", Static)
+        assert "misses" in str(diagnostics.render())
+
+    with sqlite3.connect(REAL_DB_CARD_LAB) as conn:
+        runs_after = conn.execute("SELECT COUNT(*) FROM evaluation_runs").fetchone()[0]
+    assert runs_after == runs_before  # mount never persists

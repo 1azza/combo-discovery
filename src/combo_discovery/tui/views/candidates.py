@@ -21,10 +21,14 @@ from textual.widgets.option_list import Option
 from .. import theme as pal
 from ..data import (
     StoreBinding,
+    badge_color,
     effective_status,
     next_status,
+    novelty_badge,
+    pair_hash_for_names,
     status_color,
 )
+from ...evaluation import novelty_status
 from ..widgets import CandidateDetail, EmptyState
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -64,6 +68,7 @@ class CandidatesView(Vertical):
         self._gen = 0
         self._wanted_id: int | None = None
         self._current_hypothesis: dict[str, Any] | None = None
+        self._badges: dict[int, str] = {}
         self._search_timer = None
 
     def compose(self) -> ComposeResult:
@@ -124,19 +129,55 @@ class CandidatesView(Vertical):
             pattern_id=pattern, search=search, limit=HYPOTHESIS_LIMIT
         )
         total = self.data.hypothesis_total(pattern_id=pattern, search=search)
-        app.call_from_thread(self._apply, gen, rows, total)
+        badges = self._ground_truth_badges(rows)
+        app.call_from_thread(self._apply, gen, rows, total, badges)
 
-    def _apply(self, gen: int, rows: list[dict[str, Any]], total: int) -> None:
+    def _ground_truth_badges(self, rows: list[dict[str, Any]]) -> dict[int, str]:
+        """known / contained / candidate per hypothesis (never "novel")."""
+        hashes: dict[int, str | None] = {}
+        for row in rows:
+            cards = row.get("cards") or []
+            hashes[int(row["id"])] = (
+                pair_hash_for_names(cards[0]["name"], cards[1]["name"])
+                if len(cards) == 2
+                else None
+            )
+        real = [h for h in hashes.values() if h]
+        states = self.data.ground_truth_states(real)
+        observed = self.data.observed_hashes(real)
+        return {
+            hypothesis_id: (
+                novelty_badge(states.get(phash, "unknown"), phash in observed)
+                if phash
+                else "candidate"
+            )
+            for hypothesis_id, phash in hashes.items()
+        }
+
+    def _apply(
+        self,
+        gen: int,
+        rows: list[dict[str, Any]],
+        total: int,
+        badges: dict[int, str] | None = None,
+    ) -> None:
         if gen != self._gen:
             return
         self._rows = rows
+        self._badges = badges or {}
         listing = self.query_one("#cand-list", OptionList)
         empty = self.query_one("#cand-empty", EmptyState)
         listing.clear_options()
 
         if rows:
             listing.add_options(
-                [Option(self._label(row), id=str(row["id"])) for row in rows]
+                [
+                    Option(
+                        self._label(row, self._badges.get(int(row["id"]), "candidate")),
+                        id=str(row["id"]),
+                    )
+                    for row in rows
+                ]
             )
             listing.display = True
             empty.display = False
@@ -161,10 +202,11 @@ class CandidatesView(Vertical):
         self._wanted_id = None
 
     @staticmethod
-    def _label(row: dict[str, Any]) -> Text:
+    def _label(row: dict[str, Any], badge: str) -> Text:
         status = effective_status(row)
         text = Text()
         text.append("● ", style=status_color(status))
+        text.append(f"{badge}  ", style=badge_color(badge))
         score = row.get("score")
         text.append(
             f"{float(score):.2f}  " if isinstance(score, (int, float)) else "—  ",
@@ -191,9 +233,27 @@ class CandidatesView(Vertical):
             empty.display = True
             return
         self._current_hypothesis = hypothesis
+        badge = self._badges.get(hypothesis_id, "candidate")
         detail.display = True
         empty.display = False
-        detail.show(hypothesis, self.data.adjudications(hypothesis_id))
+        detail.show(
+            hypothesis,
+            self.data.adjudications(hypothesis_id),
+            badge=badge,
+            novelty=self._novelty_note(hypothesis, badge),
+        )
+
+    def _novelty_note(self, hypothesis: dict[str, Any], badge: str) -> str | None:
+        """Honest ground-truth note; never claims novelty."""
+        if badge in ("known", "contained"):
+            return None
+        cards = hypothesis.get("cards") or []
+        if len(cards) != 2:
+            return None
+        status = novelty_status(self.store, (cards[0]["name"], cards[1]["name"]))
+        if status == "observed":
+            return "Tier B observed — needs review"
+        return "unverified candidate — needs a second source"
 
     # -- actions ------------------------------------------------------------
 

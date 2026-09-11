@@ -11,6 +11,7 @@ Screen {
 CorpusView,
 ExperimentsView,
 CandidatesView,
+CardLabView,
 ActivityView {
     height: 1fr;
     width: 1fr;
@@ -604,6 +605,136 @@ ScratchDeckScreen {
     margin: 1 0 0 0;
 }
 
+/* -- card lab ----------------------------------------------------------- */
+
+#lab-head {
+    height: auto;
+}
+
+#lab-brand {
+    color: $omarchy-accent;
+    text-style: bold;
+}
+
+#lab-card-header {
+    color: $text;
+    margin: 0 0 1 0;
+}
+
+#lab-body {
+    height: 1fr;
+}
+
+#lab-known {
+    width: 1fr;
+    margin: 0 1 0 0;
+}
+
+#lab-proposed {
+    width: 1fr;
+    margin: 0 0 0 0;
+}
+
+.lab-col-head {
+    height: 1;
+}
+
+#lab-known-list,
+#lab-proposed-list {
+    height: 1fr;
+}
+
+#lab-known-detail,
+#lab-proposed-detail {
+    height: 9;
+    margin: 1 0 0 0;
+    background: $surface;
+    border: round $omarchy-border;
+    padding: 0 1;
+}
+
+#lab-known-detail-text,
+#lab-proposed-detail-text {
+    height: auto;
+}
+
+#lab-known-empty,
+#lab-proposed-empty {
+    height: 1fr;
+}
+
+#lab-bottom {
+    height: 13;
+}
+
+#lab-metrics {
+    width: 1fr;
+    margin: 0 1 0 0;
+}
+
+#lab-missed {
+    width: 1.3fr;
+    margin: 0 1 0 0;
+}
+
+#lab-diagnostics {
+    width: 1fr;
+    margin: 0 0 0 0;
+}
+
+#lab-missed-list {
+    height: 1fr;
+}
+
+#lab-missed-detail {
+    height: auto;
+}
+
+#lab-metrics-text,
+#lab-diagnostics-text {
+    height: auto;
+}
+
+/* -- card picker modal -------------------------------------------------- */
+
+CardPickerScreen {
+    align: center middle;
+    background: $background 75%;
+}
+
+#picker-card {
+    width: 70;
+    max-width: 92%;
+    height: auto;
+    max-height: 80%;
+    background: $panel;
+    border: round $omarchy-border-hi;
+    padding: 1 3;
+}
+
+#picker-title {
+    color: $omarchy-accent;
+    text-style: bold;
+}
+
+#picker-search {
+    margin: 1 0;
+}
+
+#picker-count {
+    color: $omarchy-faint;
+    margin: 0 0 1 0;
+}
+
+#picker-list {
+    height: 16;
+}
+
+#picker-foot {
+    color: $omarchy-faint;
+    margin: 1 0 0 0;
+}
+
 /* -- narrow terminals --------------------------------------------------- */
 
 Screen.-narrow #header-bar {
@@ -633,4 +764,29 @@ Screen.-narrow #cand-sidebar {
 
 Screen.-narrow #activity-health {
     width: 38;
+}
+
+Screen.-narrow #lab-body {
+    layout: vertical;
+    height: auto;
+}
+
+Screen.-narrow #lab-known,
+Screen.-narrow #lab-proposed {
+    width: 1fr;
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+Screen.-narrow #lab-bottom {
+    layout: vertical;
+    height: auto;
+}
+
+Screen.-narrow #lab-metrics,
+Screen.-narrow #lab-missed,
+Screen.-narrow #lab-diagnostics {
+    width: 1fr;
+    height: auto;
+    margin: 0 0 1 0;
 }

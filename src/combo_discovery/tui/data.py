@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import DEFAULT_CONFIG, Config
+from ..corpus.names import normalize_card_name, pair_hash
 from ..env import ForgeEnvClient, ForgeEnvError, HarnessConnectionError, ProtocolMismatchError
 from ..goldfish import GoldfishPolicy
 from ..pool import WorkerPool
@@ -95,6 +96,128 @@ def effective_status(row: dict[str, Any]) -> str:
     return str(row.get("latest_verdict") or row.get("status") or "proposed")
 
 
+# -- ground-truth novelty badges (mirrors evaluation.classify_pairs logic) ---
+
+#: known -> exact Spellbook 2-card variant; contained -> inside a larger combo;
+#: candidate -> not in Tier A (never call it "novel"); observed -> Tier B hit.
+BADGE_LABELS = {
+    "known": "known",
+    "contained": "contained",
+    "candidate": "candidate",
+    "observed": "observed",
+}
+
+
+def pair_hash_for_names(name_a: str | None, name_b: str | None) -> str:
+    """Order-independent hash of two card names, normalized like the corpus."""
+    return pair_hash(normalize_card_name(name_a), normalize_card_name(name_b))
+
+
+def novelty_badge(known_state: str, observed: bool = False) -> str:
+    """Map a ground-truth state to a display badge.
+
+    Never returns ``novel``: a pair absent from Tier A (and Tier B) is only an
+    unverified ``candidate`` -- two independent sources are required for that.
+    """
+    if known_state == "known":
+        return "known"
+    if known_state == "contained":
+        return "contained"
+    if observed:
+        return "observed"
+    return "candidate"
+
+
+def badge_color(badge: str) -> str:
+    """Palette colour for a ground-truth badge."""
+    from . import theme as pal
+
+    return {
+        "known": pal.OK,
+        "contained": pal.ACCENT,
+        "candidate": pal.WARN,
+        "observed": pal.MUTED,
+    }.get(badge, pal.FAINT)
+
+
+def combo_badge(n_uses: Any, n_requires: Any) -> str:
+    """``exact pair`` for a 2-card no-require variant, else ``part of N-card``."""
+    uses = int(n_uses or 0)
+    requires = int(n_requires or 0)
+    if uses == 2 and requires == 0:
+        return "exact pair"
+    pieces = uses + requires
+    return f"part of {pieces}-card combo" if pieces else "combo"
+
+
+def known_produces(produces_json: Any) -> list[str]:
+    """Feature names from a ``known_combos.produces_json`` blob."""
+    try:
+        items = json.loads(produces_json or "[]")
+    except (ValueError, TypeError):
+        return []
+    names: list[str] = []
+    for item in items if isinstance(items, list) else []:
+        feature = item.get("feature") if isinstance(item, dict) else None
+        name = feature.get("name") if isinstance(feature, dict) else None
+        if name:
+            names.append(str(name))
+    return names
+
+
+def known_legalities(legalities_json: Any) -> dict[str, bool]:
+    try:
+        parsed = json.loads(legalities_json or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return {str(k): bool(v) for k, v in parsed.items()} if isinstance(parsed, dict) else {}
+
+
+def evidence_summary(evidence: Any) -> dict[str, Any]:
+    """Flatten ``interactions.evidence_json`` into predicates + link flags."""
+    if isinstance(evidence, str):
+        try:
+            evidence = json.loads(evidence or "[]")
+        except (ValueError, TypeError):
+            evidence = []
+    if not isinstance(evidence, list):
+        return {"predicates": [], "verification": {}}
+    predicates: list[str] = []
+    verification: dict[str, Any] = {}
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        if item.get("predicate"):
+            predicates.append(str(item["predicate"]))
+        if {"type_verified", "copy_verified", "ability_linked"} & set(item):
+            verification = {
+                "type_verified": bool(item.get("type_verified")),
+                "copy_verified": bool(item.get("copy_verified")),
+                "ability_linked": bool(item.get("ability_linked")),
+                "kind": item.get("kind"),
+                "link_kind": item.get("link_kind"),
+                "detail": item.get("detail"),
+                "via": item.get("via"),
+            }
+    return {"predicates": sorted(set(predicates)), "verification": verification}
+
+
+def pattern_module_name(pattern_name: str | None) -> str:
+    """Import path of the pattern module (display only for the ``g`` action)."""
+    if not pattern_name:
+        return "combo_discovery.ontology.patterns"
+    try:
+        from ..ontology.patterns import get_pattern
+
+        matcher = get_pattern(pattern_name).matcher
+        return getattr(matcher, "__module__", "") or (
+            f"combo_discovery.ontology.patterns.{pattern_name}"
+        )
+    except Exception:  # noqa: BLE001 - display-only lookup
+        return f"combo_discovery.ontology.patterns.{pattern_name}"
+
+
+
 def is_basic_land(name: str | None, type_line: str | None = None) -> bool:
     """True for the five basic lands (and Wastes), by name or type line."""
     if name and name.strip() in BASIC_LANDS:
@@ -104,7 +227,7 @@ def is_basic_land(name: str | None, type_line: str | None = None) -> bool:
     return False
 
 
-def _chunks(items: Sequence[int], size: int = 800):
+def _chunks(items: Sequence[Any], size: int = 800):
     for start in range(0, len(items), size):
         yield items[start : start + size]
 
@@ -979,6 +1102,208 @@ class StoreBinding:
         params.append(int(limit))
         return self._decorate_hypotheses(self._rows(sql, tuple(params)))
 
+    # -- known combos (Tier A ground truth) ---------------------------------
+
+    @staticmethod
+    def _known_exact_clause(exact_only: bool) -> str:
+        return " AND kc.n_uses = 2 AND kc.n_requires = 0" if exact_only else ""
+
+    def known_combo_total(self, normalized_name: str, *, exact_only: bool = False) -> int:
+        if not self.has_table("known_combos"):
+            return 0
+        row = self._one(
+            "SELECT COUNT(*) AS n FROM known_combo_cards kcc"
+            " JOIN known_combos kc ON kc.id = kcc.combo_id"
+            " WHERE kcc.normalized_name = ? AND kcc.role = 'use'"
+            + self._known_exact_clause(exact_only),
+            (normalized_name,),
+        )
+        return int(row["n"]) if row is not None else 0
+
+    def known_combos_for_card(
+        self,
+        normalized_name: str,
+        *,
+        exact_only: bool = False,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Known Spellbook combos involving one card, popularity-descending."""
+        if not self.has_table("known_combos"):
+            return []
+        rows = self._rows(
+            "SELECT kc.id, kc.source_id, kc.source_version, kc.description,"
+            " kc.easy_prereqs, kc.notable_prereqs, kc.produces_json,"
+            " kc.popularity, kc.bracket_tag, kc.legalities_json,"
+            " kc.n_uses, kc.n_requires, kc.n_produces, kc.variant_count"
+            " FROM known_combo_cards kcc JOIN known_combos kc ON kc.id = kcc.combo_id"
+            " WHERE kcc.normalized_name = ? AND kcc.role = 'use'"
+            + self._known_exact_clause(exact_only)
+            + " ORDER BY kc.popularity DESC, kc.id LIMIT ? OFFSET ?",
+            (normalized_name, int(limit), int(offset)),
+        )
+        pieces = self.known_pieces([int(row["id"]) for row in rows])
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            data["partners"] = [
+                piece
+                for piece in pieces.get(int(row["id"]), [])
+                if piece.get("normalized") != normalized_name
+            ]
+            data["badge"] = combo_badge(data.get("n_uses"), data.get("n_requires"))
+            data["produces"] = known_produces(data.get("produces_json"))
+            data["legalities"] = known_legalities(data.get("legalities_json"))
+            out.append(data)
+        return out
+
+    def known_pieces(self, combo_ids: Sequence[int]) -> dict[int, list[dict[str, Any]]]:
+        """Use-role pieces per combo, with local ``cards.id`` resolved."""
+        if not combo_ids or not self.has_table("known_combo_cards"):
+            return {}
+        out: dict[int, list[dict[str, Any]]] = {}
+        for chunk in _chunks(sorted({int(i) for i in combo_ids})):
+            placeholders = ",".join("?" * len(chunk))
+            for row in self._rows(
+                "SELECT combo_id, raw_name, normalized_name, zone_locations,"
+                " must_be_commander, quantity FROM known_combo_cards"
+                f" WHERE combo_id IN ({placeholders}) AND role = 'use'"
+                " ORDER BY combo_id, id",
+                tuple(chunk),
+            ):
+                out.setdefault(int(row["combo_id"]), []).append(
+                    {
+                        "name": row["raw_name"] or row["normalized_name"],
+                        "normalized": row["normalized_name"],
+                        "zone_locations": row["zone_locations"],
+                        "must_be_commander": bool(row["must_be_commander"]),
+                        "quantity": row["quantity"] or 1,
+                        "id": None,
+                    }
+                )
+        names = {
+            str(piece["normalized"])
+            for pieces in out.values()
+            for piece in pieces
+            if piece.get("normalized")
+        }
+        refs = self.card_refs_for_normalized(names)
+        for pieces in out.values():
+            for piece in pieces:
+                ref = refs.get(str(piece.get("normalized")))
+                if ref:
+                    piece["id"] = ref["id"]
+                    piece["name"] = ref["name"]
+        return out
+
+    def known_descriptions(self, combo_ids: Sequence[int]) -> dict[int, dict[str, Any]]:
+        """``id -> {description, produces}`` for the Missed section."""
+        if not combo_ids or not self.has_table("known_combos"):
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        for chunk in _chunks(sorted({int(i) for i in combo_ids})):
+            placeholders = ",".join("?" * len(chunk))
+            for row in self._rows(
+                "SELECT id, description, produces_json, popularity FROM known_combos"
+                f" WHERE id IN ({placeholders})",
+                tuple(chunk),
+            ):
+                out[int(row["id"])] = {
+                    "description": row["description"] or "",
+                    "produces": known_produces(row["produces_json"]),
+                    "popularity": row["popularity"],
+                }
+        return out
+
+    def card_refs_for_normalized(self, names: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """``normalized_name -> {id, name}`` for local corpus cards."""
+        wanted = sorted({str(n) for n in names if n})
+        out: dict[str, dict[str, Any]] = {}
+        for chunk in _chunks(wanted):
+            placeholders = ",".join("?" * len(chunk))
+            for row in self._rows(
+                "SELECT id, name, normalized_name FROM cards"
+                f" WHERE normalized_name IN ({placeholders})",
+                tuple(chunk),
+            ):
+                out[str(row["normalized_name"])] = {
+                    "id": int(row["id"]),
+                    "name": row["name"],
+                }
+        return out
+
+    # -- ground-truth pair states (Tier A + Tier B) -------------------------
+
+    def ground_truth_states(self, pair_hashes: Iterable[str]) -> dict[str, str]:
+        """``pair_hash -> known | contained | unknown`` from ``known_combo_pairs``."""
+        hashes = sorted({str(h) for h in pair_hashes if h})
+        out = {h: "unknown" for h in hashes}
+        if not hashes or not self.has_table("known_combo_pairs"):
+            return out
+        for chunk in _chunks(hashes):
+            placeholders = ",".join("?" * len(chunk))
+            for row in self._rows(
+                "SELECT pair_hash, MAX(is_full_variant) AS full FROM known_combo_pairs"
+                f" WHERE pair_hash IN ({placeholders}) GROUP BY pair_hash",
+                tuple(chunk),
+            ):
+                out[str(row["pair_hash"])] = "known" if row["full"] else "contained"
+        return out
+
+    def observed_hashes(self, pair_hashes: Iterable[str]) -> set[str]:
+        """Tier B hits for the given hashes (empty until a scraper is wired)."""
+        hashes = sorted({str(h) for h in pair_hashes if h})
+        if not hashes or not self.has_table("observed_pairs"):
+            return set()
+        found: set[str] = set()
+        for chunk in _chunks(hashes):
+            placeholders = ",".join("?" * len(chunk))
+            for row in self._rows(
+                "SELECT DISTINCT pair_hash FROM observed_pairs"
+                f" WHERE pair_hash IN ({placeholders})",
+                tuple(chunk),
+            ):
+                found.add(str(row["pair_hash"]))
+        return found
+
+    def latest_eval_import_ids(self) -> tuple[str | None, str | None]:
+        """``(known_import_id, ontology_import_id)`` for evaluation provenance."""
+        known = self._one(
+            "SELECT import_id FROM known_combos ORDER BY id DESC LIMIT 1"
+        )
+        ontology = self._one(
+            "SELECT import_id FROM interactions ORDER BY id DESC LIMIT 1"
+        )
+        return (
+            known["import_id"] if known is not None else None,
+            ontology["import_id"] if ontology is not None else None,
+        )
+
+    def interaction_evidence(
+        self,
+        source_card_id: int,
+        target_card_id: int,
+        pattern_name: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Parsed evidence (predicates + link flags) for one proposed pair."""
+        if not self.has_table("interactions"):
+            return None
+        sql = (
+            "SELECT evidence_json FROM interactions"
+            " WHERE ((source_card_id = ? AND target_card_id = ?)"
+            " OR (source_card_id = ? AND target_card_id = ?))"
+        )
+        params: list[Any] = [
+            int(source_card_id), int(target_card_id),
+            int(target_card_id), int(source_card_id),
+        ]
+        if pattern_name:
+            sql += " AND pattern_id = (SELECT id FROM patterns WHERE name = ?)"
+            params.append(pattern_name)
+        sql += " ORDER BY score DESC LIMIT 1"
+        row = self._one(sql, tuple(params))
+        return evidence_summary(row["evidence_json"]) if row is not None else None
+
     # -- cards (importer-owned table; may be absent) ------------------------
 
     def card_schema(self) -> CardSchema | None:
@@ -1057,6 +1382,7 @@ class StoreBinding:
 
 __all__ = [
     "ActiveRun",
+    "BADGE_LABELS",
     "BASIC_LANDS",
     "CancellablePolicy",
     "CardSchema",
@@ -1071,20 +1397,28 @@ __all__ = [
     "StoreBinding",
     "WorkerProbe",
     "add_card_to_scratch_deck",
+    "badge_color",
     "best_contiguous_run",
     "build_pool",
     "build_run_config",
     "clear_scratch_deck",
+    "combo_badge",
     "discover_decks",
     "effective_status",
     "effects_count",
+    "evidence_summary",
     "fmt_duration",
     "fmt_ms",
     "is_basic_land",
+    "known_legalities",
+    "known_produces",
     "next_status",
     "no_harness_message",
+    "novelty_badge",
+    "pair_hash_for_names",
     "parse_dck",
     "parse_json_list",
+    "pattern_module_name",
     "pool_snapshot",
     "pretty_json",
     "probe_workers",

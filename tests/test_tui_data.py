@@ -14,25 +14,34 @@ from combo_discovery.runner import GameResult
 from combo_discovery.store import ExperimentStore
 from combo_discovery.tui import data as tdata
 from combo_discovery.tui.data import (
+    BADGE_LABELS,
     CancellablePolicy,
     RunCancelled,
     RunConfig,
     StoreBinding,
     WorkerProbe,
     add_card_to_scratch_deck,
+    badge_color,
     best_contiguous_run,
     build_pool,
     build_run_config,
     clear_scratch_deck,
+    combo_badge,
     discover_decks,
     effective_status,
     effects_count,
+    evidence_summary,
     fmt_duration,
     fmt_ms,
     is_basic_land,
+    known_legalities,
+    known_produces,
     next_status,
+    novelty_badge,
+    pair_hash_for_names,
     parse_dck,
     parse_json_list,
+    pattern_module_name,
     pool_snapshot,
     pretty_json,
     probe_workers,
@@ -612,3 +621,127 @@ class TestHypothesisQueries:
         assert effective_status(hypothesis) == "verified"
         assert binding.adjudications(1)[0]["reviewer"] == "tui"
         binding.close()
+
+
+# ---------------------------------------------------------------------------
+# novelty badges + ground-truth reads (Card Lab)
+# ---------------------------------------------------------------------------
+
+
+class TestNoveltyBadge:
+    def test_mapping_never_says_novel(self):
+        assert novelty_badge("known") == "known"
+        assert novelty_badge("contained") == "contained"
+        assert novelty_badge("unknown") == "candidate"
+        assert novelty_badge("unknown", observed=True) == "observed"
+        assert "novel" not in BADGE_LABELS.values()
+        assert badge_color("known") and badge_color("candidate")
+
+    def test_pair_hash_normalizes_and_is_order_independent(self):
+        a = pair_hash_for_names("Kiki-Jiki, Mirror Breaker", "Pestermite")
+        b = pair_hash_for_names("pestermite", "kiki-jiki, mirror breaker")
+        assert a == b and a
+
+    def test_combo_badge(self):
+        assert combo_badge(2, 0) == "exact pair"
+        assert combo_badge(3, 0) == "part of 3-card combo"
+        assert combo_badge(2, 1) == "part of 3-card combo"
+
+    def test_known_produces_and_legalities(self):
+        import json as _json
+
+        produces = [{"feature": {"name": "Infinite combat phases"}}]
+        assert known_produces(_json.dumps(produces)) == ["Infinite combat phases"]
+        assert known_produces("garbage") == []
+        assert known_legalities('{"vintage": true, "modern": false}') == {
+            "vintage": True, "modern": False,
+        }
+
+    def test_evidence_summary(self):
+        summary = evidence_summary(
+            '[{"predicate": "TAPS_COST"}, {"predicate": "COPIES_CREATURE"},'
+            ' {"type_verified": true, "copy_verified": false, "ability_linked": true,'
+            ' "link_kind": "etb_chain", "detail": "ok"}]'
+        )
+        assert summary["predicates"] == ["COPIES_CREATURE", "TAPS_COST"]
+        assert summary["verification"]["type_verified"] is True
+        assert summary["verification"]["copy_verified"] is False
+        assert summary["verification"]["link_kind"] == "etb_chain"
+
+    def test_pattern_module_name(self):
+        module = pattern_module_name("infinite_etb_loop")
+        assert module.endswith("patterns.infinite_loop")
+        assert "patterns" in pattern_module_name("unknown_pattern")
+
+
+class TestCardLabQueries:
+    def test_known_combo_counts_and_badges(self, lab_db):
+        binding = StoreBinding(lab_db)
+        normalized = "kiki jiki mirror breaker"
+        assert binding.known_combo_total(normalized) == 3
+        assert binding.known_combo_total(normalized, exact_only=True) == 2
+
+        rows = binding.known_combos_for_card(normalized)
+        badges = {row["id"]: row["badge"] for row in rows}
+        assert badges == {101: "exact pair", 102: "exact pair", 103: "part of 3-card combo"}
+
+        exact = binding.known_combos_for_card(normalized, exact_only=True)
+        assert {row["id"] for row in exact} == {101, 102}
+        row_101 = next(row for row in rows if row["id"] == 101)
+        assert [p["name"] for p in row_101["partners"]] == ["Pestermite"]
+        assert row_101["partners"][0]["id"] == 2
+        assert row_101["produces"] == ["Infinite creature tokens with haste"]
+        assert row_101["legalities"]["vintage"] is True
+        binding.close()
+
+    def test_known_pieces_resolve_local_ids(self, lab_db):
+        binding = StoreBinding(lab_db)
+        pieces = binding.known_pieces([103])
+        names = {piece["name"] for piece in pieces[103]}
+        assert {"Kiki-Jiki, Mirror Breaker", "Deceiver Exarch", "Third Piece"} <= names
+        deceiver = next(piece for piece in pieces[103] if piece["name"] == "Deceiver Exarch")
+        assert deceiver["id"] == 4
+        binding.close()
+
+    def test_ground_truth_states(self, lab_db):
+        binding = StoreBinding(lab_db)
+        known = pair_hash_for_names("Kiki-Jiki, Mirror Breaker", "Pestermite")
+        contained = pair_hash_for_names("Kiki-Jiki, Mirror Breaker", "Deceiver Exarch")
+        unknown = pair_hash_for_names("Kiki-Jiki, Mirror Breaker", "Splinter Twin")
+        states = binding.ground_truth_states([known, contained, unknown])
+        assert states[known] == "known"
+        assert states[contained] == "contained"
+        assert states[unknown] == "unknown"
+        assert binding.observed_hashes([known, unknown]) == set()
+        binding.close()
+
+    def test_interaction_evidence_and_import_ids(self, lab_db):
+        binding = StoreBinding(lab_db)
+        evidence = binding.interaction_evidence(1, 2, "infinite_etb_loop")
+        assert evidence is not None
+        assert "TAPS_COST" in evidence["predicates"]
+        assert evidence["verification"]["type_verified"] is True
+        known_import, ontology_import = binding.latest_eval_import_ids()
+        assert known_import == "sb1"
+        assert ontology_import == "imp1"
+        binding.close()
+
+    def test_known_descriptions(self, lab_db):
+        binding = StoreBinding(lab_db)
+        descriptions = binding.known_descriptions([102])
+        assert descriptions[102]["produces"] == ["Infinite combat phases"]
+        assert "Fear of Missing Out" in descriptions[102]["description"]
+        binding.close()
+
+    def test_novelty_status_never_returns_novel(self, lab_db):
+        from combo_discovery.evaluation import novelty_status
+
+        store = ExperimentStore(lab_db)
+        try:
+            status = novelty_status(store, ("Kiki-Jiki, Mirror Breaker", "Splinter Twin"))
+            assert status == "needs_second_source"
+            assert status != "novel"
+            known = novelty_status(store, ("Kiki-Jiki, Mirror Breaker", "Pestermite"))
+            assert known == "known"
+        finally:
+            store.close()

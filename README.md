@@ -52,7 +52,7 @@ src/combo_discovery/
   tui/                       Textual research console (`combo-tui`)
     app.py                   app shell, tabs, header/statusline, run wiring
     data.py                  read-only store binding, run config, worker probing
-    views/                   Corpus · Experiments · Candidates · Activity
+    views/                   Corpus · Experiments · Candidates · Card Lab · Activity
     widgets.py               shared presentation widgets
     screens.py               key-map help modal
     app.tcss                 "omarchy" stylesheet
@@ -121,7 +121,7 @@ pool can record from multiple threads into one database.
 `combo-tui` is a keyboard-first [Textual](https://textual.textualize.io/) console
 for running experiments interactively. It drives the same library as the
 snippets above — the append-only store, `WorkerPool.map_games(..., store=,
-run_id=)`, and the real policies — from four views:
+run_id=)`, and the real policies — from five views:
 
 - **Corpus** — search the card store, inspect type line / mana / oracle text /
   extracted effect count. From a highlighted card: `i` opens its top
@@ -133,7 +133,16 @@ run_id=)`, and the real policies — from four views:
   `research_scratch.dck` is offered as a deck and `n` creates an empty one.
 - **Candidates** — the live `combo_hypotheses` graph: filter by pattern or card
   name, sort by score, read the mechanism, jump to a card, and cycle its verdict
-  with `v` (an append-only adjudication through the store).
+  with `v` (an append-only adjudication through the store). Each row carries a
+  ground-truth badge: `known` (exact Spellbook pair), `contained` (inside a
+  larger known combo) or `candidate` — never "novel", which needs a second source.
+- **Card Lab** — ground-truth tuning for one card at a time (starts on
+  Kiki-Jiki, `/` picks another). Known Spellbook combos on the left (`f` toggles
+  exact 2-card only), our proposals on the right with verdict badges, a **Missed**
+  list of known combos we fail to propose, the card + aggregate + per-pattern
+  metrics, and false-positive / miss diagnostics. `r` re-runs the evaluation and
+  persists it through the store; `enter` jumps to a partner card; `d` adds the
+  card to the scratch deck; `g` shows the proposal's pattern module.
 - **Activity** — a live tail of experiment events plus worker health.
 
 ```bash
@@ -144,17 +153,19 @@ uv run combo-tui --db runs.sqlite --config research.toml --decks-dir decks
 
 | key | action |
 | --- | --- |
-| `1` `2` `3` `4` | jump to Corpus / Experiments / Candidates / Activity |
+| `1` `2` `3` `4` `5` | Corpus / Experiments / Candidates / Card Lab / Activity |
 | `[` `]` | previous / next view |
 | `tab` `shift+tab` | move focus between panes |
 | `j` `k` | move down / up in a list |
 | `enter` | open / inspect the highlighted row (or a card link) |
-| `/` | focus the search box |
+| `/` | focus the search box / pick a card (Card Lab) |
 | `i` | interactions for the selected card (Corpus) |
 | `d` `D` | add card to the research scratch deck / view-clear it |
 | `v` | cycle a hypothesis verdict (Candidates) |
+| `f` | known filter: exact 2-card only / all combos (Card Lab) |
+| `r` | reload the current view; re-run + persist the evaluation (Card Lab) |
+| `g` | show the proposal's pattern module (Card Lab) |
 | `n` | create an empty `research_scratch.dck` (Experiments) |
-| `r` | reload the current view from the store |
 | `ctrl+r` `ctrl+k` `ctrl+t` | start run / cancel run / re-check harness |
 | `?` `f1` | key map |
 | `ctrl+p` | command palette |
