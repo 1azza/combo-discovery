@@ -64,6 +64,12 @@ DEFAULT_MANA_PER_COLOR = 8
 DEFAULT_MANA_COLORS = ("W", "U", "B", "R", "G", "C")
 DEFAULT_LIFE = 20
 DEFAULT_OPPONENT_LIFE = 20
+#: Both players get a small non-empty library by default so that a witness run
+#: that turns out NOT to be a loop ends naturally (instead of decking out and
+#: reporting ``refuted``). Override via the ``library``/``opponent_library``
+#: arguments when a scenario needs a specific library.
+DEFAULT_LIBRARY_SIZE = 20
+DEFAULT_LIBRARY_LAND = "Forest"
 
 #: Decks used when the caller does not supply real ones (fakes/tests).  A live
 #: harness needs real ``.dck`` paths; the CLI requires ``--decks`` for live runs.
@@ -325,6 +331,11 @@ def _must_be_cast(combo: Any, name: str) -> bool:
     return any(word in kind for word in ("spell", "sorcery", "instant"))
 
 
+def _default_library() -> list[CardSpec]:
+    """A small basic-land library so non-loop witness runs end naturally."""
+    return [CardSpec(name=DEFAULT_LIBRARY_LAND) for _ in range(DEFAULT_LIBRARY_SIZE)]
+
+
 def build_scenario(
     combo: Any = None,
     *,
@@ -351,7 +362,10 @@ def build_scenario(
       everything else starts on the battlefield;
     * the combo player gets ``life`` and a generous mana pool (per colour)
       so the first loop iteration can always be paid for;
-    * the opponent is harmless: ``opponent_life``, empty zones.
+    * the opponent is harmless: ``opponent_life`` and no battlefield, but both
+      players get a small default library (``DEFAULT_LIBRARY_SIZE`` basic
+      lands) unless ``library``/``opponent_library`` is given — so a non-loop
+      line ends naturally rather than by decking out.
     """
     names = tuple(str(c) for c in cards) if cards is not None else _combo_cards(combo)
     if not names:
@@ -378,13 +392,15 @@ def build_scenario(
         battlefield=battlefield,
         hand=starting_hand,
         graveyard=list(graveyard or []),
-        library=list(library or []),
+        library=list(library) if library is not None else _default_library(),
     )
     harmless = PlayerScenario(
         player=int(opponent),
         life=int(opponent_life),
         mana={},
-        library=list(opponent_library or []),
+        library=(
+            list(opponent_library) if opponent_library is not None else _default_library()
+        ),
     )
     players = sorted([combo_player, harmless], key=lambda p: p.player)
     return Scenario(
