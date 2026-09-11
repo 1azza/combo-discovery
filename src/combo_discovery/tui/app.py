@@ -369,8 +369,10 @@ def main(argv: list[str] | None = None) -> None:
         prog="combo-tui",
         description="MTG combo-discovery research console (Textual TUI).",
     )
+    config = load_config(DEFAULT_CONFIG_PATH)
     parser.add_argument(
-        "--db", default="experiments.sqlite", help="SQLite experiment store (created on demand)"
+        "--db", default=config.db_path,
+        help="SQLite experiment store (default: db_path from research.toml)",
     )
     parser.add_argument(
         "--config", default=DEFAULT_CONFIG_PATH, help="research.toml path"

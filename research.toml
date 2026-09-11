@@ -14,3 +14,6 @@ n_workers = 8
 # The default local dev harness listens on 50051 (see ARCHITECTURE.md);
 # spawn_servers-based pools use base_port..base_port+n-1 instead.
 base_port = 50051
+# Single shared experiment/corpus database for every tool (TUI, importer,
+# ontology builder).
+db_path = "research.db"

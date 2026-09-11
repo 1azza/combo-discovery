@@ -20,6 +20,7 @@ DEFAULT_MODEL = "openrouter/z-ai/glm-5.3-flash"
 DEFAULT_POLICY_VERSION = "default-v1"
 DEFAULT_ENGINE_COMMIT = "4f577da7b2a9074f9f66544aaf99405e38cf5ac3"
 DEFAULT_PROTO_VERSION = 6
+DEFAULT_DB_PATH = "research.db"
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class ResearchConfig:
     timeout_seconds: int = 0
     n_workers: int = 8
     base_port: int = 50060
+    db_path: str = DEFAULT_DB_PATH
 
     def experiment_meta(self) -> dict:
         """Kwargs for ExperimentStore.start_experiment()."""
@@ -63,4 +65,5 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> ResearchConfig:
         timeout_seconds=int(defaults.get("timeout_seconds", 0)),
         n_workers=int(defaults.get("n_workers", 8)),
         base_port=int(defaults.get("base_port", 50060)),
+        db_path=str(defaults.get("db_path", DEFAULT_DB_PATH)),
     )
