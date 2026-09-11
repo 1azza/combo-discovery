@@ -291,6 +291,65 @@ class TestWitnessPolicy:
         assert answer == ("option_id", 0)
         assert policy.cursor == 0
 
+    # -- robust matching (the zero-iteration bug) ---------------------------
+
+    def test_backward_wrap_counts_a_full_iteration(self):
+        # Regression: a two-link line whose second link is a passive trigger is
+        # never offered as a PRIORITY option.  Re-offering the first link must
+        # close the pass and increment ``iterations`` rather than pinning the
+        # cursor forever (which produced the original zero-iteration result).
+        policy = WitnessPolicy(
+            links=[LinkPlan("Kiki", "Hippo"), LinkPlan("Hippo", "Kiki")], player=0
+        )
+        policy.new_game()
+        ctx = priority_ctx(["Kiki"])
+        assert policy(ctx) == ("option_id", 0)
+        assert policy.iterations == 0
+        assert policy(ctx) == ("option_id", 0)
+        assert policy.iterations == 1
+        assert policy(ctx) == ("option_id", 0)
+        assert policy.iterations == 2
+        assert policy.link_hits == [3, 0]
+
+    def test_matches_source_in_description_when_card_name_empty(self):
+        policy = WitnessPolicy(links=[LinkPlan("Altar", "Ghost")], player=0)
+        policy.new_game()
+        option = pb.Option(
+            id=7, kind="activate", card_name="", description="Activate Altar ability"
+        )
+        ctx = DecisionContext(
+            request=pb.DecisionRequest(
+                game_id=1,
+                decision_id=1,
+                player=0,
+                decision_type=pb.DECISION_TYPE_PRIORITY,
+                options=[option],
+            )
+        )
+        assert policy(ctx) == ("option_id", 7)
+
+    def test_matches_option_kind_when_source_name_empty(self):
+        policy = WitnessPolicy(links=[LinkPlan("", "", kind="activate")], player=0)
+        policy.new_game()
+        assert policy(priority_ctx(["Something"])) == ("option_id", 0)
+
+    def test_short_name_does_not_match_inside_a_word(self):
+        # Word-boundary matching: the one-letter card "a" must not match the
+        # "a" inside "Activate".
+        options = [pb.Option(id=0, kind="activate", card_name="", description="Activate")]
+        assert WitnessPolicy._match_option(options, "a") is None
+
+    def test_per_iteration_decision_budget_is_bounded(self):
+        policy = WitnessPolicy(
+            links=[LinkPlan("Z", "Y")], player=0,
+            max_stall=1000, max_decisions_per_iteration=4,
+        )
+        policy.new_game()
+        for _ in range(5):
+            policy(priority_ctx(["Pass"]))
+        assert any("budget" in note for note in policy.notes)
+        assert policy.iterations >= 1
+
 
 # ---------------------------------------------------------------------------
 # Signature + loop detection
@@ -314,11 +373,41 @@ def make_state(*, mana: int = 0, life: tuple[int, int] = (20, 20), hash_: str = 
     return state
 
 
+def add_token(state: pb.FullState, name: str = "Altar", *, tapped: bool = False) -> int:
+    """Append a token permanent to player 0's battlefield; return its engine id."""
+    pid = len(state.battlefield_cards)
+    state.battlefield_cards.append(
+        pb.Permanent(id=pid, card_name=name, is_token=True, tapped=tapped)
+    )
+    state.battlefield[0].permanents.append(pid)
+    return pid
+
+
 class TestWitnessSignature:
     def test_signature_excludes_growing_mana(self):
         sig_a = witness_signature(make_state(mana=0))
         sig_b = witness_signature(make_state(mana=9))
         assert sig_a == sig_b
+
+    def test_signature_excludes_token_permanents(self):
+        # A token-growing loop must keep a stable structural signature; tokens
+        # are a *resource*, not part of the structure.
+        base = make_state()
+        with_tokens = make_state()
+        add_token(with_tokens, "Hippocamp")
+        add_token(with_tokens, "Hippocamp")
+        assert witness_signature(base) == witness_signature(with_tokens)
+        obs = build_observation(0, with_tokens)
+        assert obs.resources["tokens"] == 2
+        assert obs.resources["permanents"] == 3
+
+    def test_signature_tracks_non_token_tapped_state(self):
+        base = make_state()
+        changed = make_state()
+        add_token(changed)  # a token is invisible...
+        assert witness_signature(base) == witness_signature(changed)
+        changed.battlefield_cards[0].tapped = True  # ...a real permanent is not
+        assert witness_signature(base) != witness_signature(changed)
 
     def test_resource_totals_track_mana(self):
         low = build_observation(0, make_state(mana=1))
@@ -346,6 +435,21 @@ class TestDetectLoop:
         assert evidence["kind"] == "recurrence"
         assert evidence["pair"] == [0, 2]
         assert evidence["grown"] == ["mana"]
+
+    def test_token_growth_with_recurring_structure_is_loop(self):
+        # Kiki-Jiki-style loop: the non-token board recurs while tokens grow.
+        def state_with(tokens: int) -> pb.FullState:
+            state = make_state(hash_=f"H{tokens}")
+            for _ in range(tokens):
+                add_token(state, "Hippocamp")
+            return state
+
+        observations = [build_observation(i, state_with(i)) for i in range(3)]
+        assert len({o.signature for o in observations}) == 1
+        verdict, evidence = detect_loop(observations)
+        assert verdict == "loops"
+        assert evidence["kind"] == "recurrence"
+        assert "tokens" in evidence["grown"]
 
     def test_rejects_non_repeating_line(self):
         observations = [obs(0, "s1", mana=0), obs(1, "s2", mana=1), obs(2, "s3", mana=2)]
@@ -503,12 +607,36 @@ class TestRunWitness:
         )
         assert result.verdict == "loops"
         assert result.iterations == 3
-        assert len(result.observations) == 3
+        # One baseline ("before") observation plus one per completed iteration.
+        assert len(result.observations) == 4
         assert len(set(result.signatures)) == 1  # structure recurs
         assert result.resource_deltas[-1]["mana"] > 0
         assert result.state_hash_before == "H0"
         assert client.stopped == 77
         assert client.setup_calls and client.setup_calls[0] is scenario
+
+    def test_single_iteration_records_before_and_after(self):
+        client = FakeWitnessClient()
+        result = run_witness(
+            client, build_scenario(combo_ab()), self._policy(), seeds=[1],
+            max_iterations=1,
+        )
+        assert result.verdict == "loops"
+        assert result.iterations == 1
+        # One baseline ("before") + one completed-iteration ("after") sample.
+        assert len(result.observations) == 2
+
+    def test_unexecutable_line_is_inconclusive_with_diagnostic(self):
+        client = FakeWitnessClient()
+        # No link source is ever offered: the policy cannot execute the line.
+        policy = WitnessPolicy(links=[LinkPlan("Never", "Offered")], player=0)
+        result = run_witness(
+            client, build_scenario(combo_ab()), policy, seeds=[1],
+            max_iterations=1, max_decisions=3,
+        )
+        assert result.verdict == "inconclusive"
+        assert "never matched" in result.evidence["reason"]
+        assert result.evidence["diagnostics"]["executed_actions"] == 0
 
     def test_pregame_drive_answers_mulligans_then_injects_once(self):
         client = FakePregameClient(mulligans=3)

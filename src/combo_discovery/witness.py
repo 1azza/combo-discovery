@@ -52,7 +52,11 @@ from .runner import DecisionContext, DecisionTraceEntry, default_policy
 logger = logging.getLogger(__name__)
 
 #: Version stamped on every witness run (loop-detector + policy semantics).
-WITNESS_POLICY_VERSION = "witness-v1"
+#: v2: cursor wraps count an iteration on the wrap itself (a link whose action is
+#: not offered is skipped and, if a *previous* link is re-offered, the pass is
+#: considered complete); structural signatures exclude token permanents; the
+#: driver samples a baseline observation plus one per completed iteration.
+WITNESS_POLICY_VERSION = "witness-v2"
 
 #: Generous default starting pool: enough to begin most loops.  Callers that
 #: know the line's per-iteration cost should override it.
@@ -403,9 +407,27 @@ class WitnessPolicy:
     At each PRIORITY decision it picks the option matching the current link's
     source card and advances the cursor; non-PRIORITY decisions use the active
     link's ``params`` hints (targets/cards/modes/number) and otherwise fall back
-    to :func:`runner.default_policy`.  The cursor wraps, so one full pass is one
-    loop iteration.  Progress is bounded: a stall counter force-advances the
-    cursor when no link ever matches, so the policy cannot spin forever.
+    to :func:`runner.default_policy`.
+
+    **Pass/iteration accounting.**  The cursor wraps, and one full pass is one
+    loop iteration.  A link whose action is not offered at this decision is
+    skipped: the policy searches forward for a later link that *is* offered.  If
+    reaching that link crosses the end of the link list, the pass has completed
+    and ``iterations`` increments.  This is what makes a real loop whose line is
+    ``[Kiki -> Hippocamp, Hippocamp -> Kiki]`` (only Kiki's tap ability is a
+    PRIORITY action; Hippocamp's untap is a passive ETB trigger) count one
+    iteration per Kiki activation instead of stalling the cursor forever.
+
+    **Robust matching.**  A link is matched against the option's ``card_name``,
+    its ``description`` and its ``kind`` (word-boundary, case-insensitive), so
+    an ability with an empty card name or a differently-worded description is
+    still identified.  When ``src`` is empty the link's ``kind`` is matched
+    against the option kind as a last resort.
+
+    **Boundedness.**  ``max_stall`` force-advances the cursor when nothing in the
+    line is ever offered, and ``max_decisions_per_iteration`` caps how many
+    decisions a single pass may consume.  The policy therefore never stalls
+    forever; every miss is recorded for the run diagnostics.
     """
 
     def __init__(
@@ -415,18 +437,25 @@ class WitnessPolicy:
         links: Sequence[LinkPlan] | None = None,
         player: int = 0,
         max_stall: int = 16,
+        max_decisions_per_iteration: int = 64,
         fallback: Callable[[DecisionContext], Answer] | None = None,
     ):
         self.player = player
         self.links = list(links) if links is not None else link_plans(combo)
         self._fallback = fallback or default_policy
         self.max_stall = max(1, int(max_stall))
+        self.max_decisions_per_iteration = max(0, int(max_decisions_per_iteration))
         self.cursor = 0
         self.active: LinkPlan | None = None
         self.iterations = 0
         self.decisions = 0
         self.stall = 0
         self.answers: list[Answer] = []
+        self.link_hits: list[int] = [0] * len(self.links)
+        self.link_misses: list[int] = [0] * len(self.links)
+        self.skipped: list[str] = []
+        self.notes: list[str] = []
+        self._decisions_this_iteration = 0
 
     def new_game(self) -> None:
         """Reset per-game state (run_game/run_witness call this on a new game)."""
@@ -436,8 +465,17 @@ class WitnessPolicy:
         self.decisions = 0
         self.stall = 0
         self.answers = []
+        self.link_hits = [0] * len(self.links)
+        self.link_misses = [0] * len(self.links)
+        self.skipped = []
+        self.notes = []
+        self._decisions_this_iteration = 0
 
     # -- cursor -------------------------------------------------------------
+
+    def _note_iteration(self) -> None:
+        self.iterations += 1
+        self._decisions_this_iteration = 0
 
     def _advance(self) -> None:
         if not self.links:
@@ -445,24 +483,47 @@ class WitnessPolicy:
         self.cursor += 1
         if self.cursor >= len(self.links):
             self.cursor = 0
-            self.iterations += 1
+            self._note_iteration()
 
     @staticmethod
-    def _match_option(options: Sequence[pb.Option], card_name: str) -> pb.Option | None:
+    def _link_label(link: LinkPlan) -> str:
+        label = f"{link.src or '?'} -> {link.dst or '?'}"
+        if link.kind:
+            label += f" [{link.kind}]"
+        return label
+
+    @staticmethod
+    def _match_option(
+        options: Sequence[pb.Option], card_name: str, kind: str = ""
+    ) -> pb.Option | None:
         target = (card_name or "").strip().lower()
-        if not target:
+        if target:
+            for option in options:
+                if (option.card_name or "").strip().lower() == target:
+                    return option
+            # Description/ability-text fallback on word boundaries only, so a
+            # one-letter card name cannot match the "a" inside "Activate".
+            edge = rf"(?<![A-Za-z0-9]){re.escape(target)}(?![A-Za-z0-9])"
+            for option in options:
+                text = (
+                    f"{option.card_name} {option.description} {option.kind}"
+                ).lower()
+                if re.search(edge, text):
+                    return option
             return None
-        for option in options:
-            if (option.card_name or "").strip().lower() == target:
-                return option
-        # Description fallback on word boundaries only, so a one-letter card
-        # name cannot match the "a" inside "Activate".
-        edge = rf"(?<![A-Za-z0-9]){re.escape(target)}(?![A-Za-z0-9])"
-        for option in options:
-            text = f"{option.card_name} {option.description}".lower()
-            if re.search(edge, text):
-                return option
+        # No source name to match on: fall back to the link kind (e.g. a dict
+        # link with only a kind).  Never overrides a name match above.
+        kind_norm = (kind or "").strip().lower()
+        if kind_norm:
+            for option in options:
+                if (option.kind or "").strip().lower() == kind_norm:
+                    return option
         return None
+
+    def _match_link(
+        self, options: Sequence[pb.Option], link: LinkPlan
+    ) -> pb.Option | None:
+        return self._match_option(options, link.src, link.kind)
 
     @staticmethod
     def _candidate_id(ctx: DecisionContext, name: str) -> int | None:
@@ -477,25 +538,53 @@ class WitnessPolicy:
     def _priority(self, ctx: DecisionContext) -> Answer:
         if not self.links:
             return self._fallback(ctx)
+        self._decisions_this_iteration += 1
+        if (
+            self.max_decisions_per_iteration
+            and self._decisions_this_iteration > self.max_decisions_per_iteration
+        ):
+            self.notes.append(
+                f"per-iteration decision budget "
+                f"{self.max_decisions_per_iteration} exceeded at cursor "
+                f"{self.cursor} ({self._link_label(self.links[self.cursor])})"
+            )
+            self._decisions_this_iteration = 0
+            self._advance()
+
         link = self.links[self.cursor]
-        option = self._match_option(ctx.options, link.src)
+        option = self._match_link(ctx.options, link)
+        wrapped = False
         if option is None:
-            # Search forward for a later link that is currently available.
+            # Search forward for a later link that is currently available.  If
+            # reaching it requires crossing the end of the list, this decision
+            # closes the pass (that wrap is the loop iteration boundary).
             for offset in range(1, len(self.links) + 1):
                 idx = (self.cursor + offset) % len(self.links)
                 candidate = self.links[idx]
-                option = self._match_option(ctx.options, candidate.src)
-                if option is not None:
+                candidate_option = self._match_link(ctx.options, candidate)
+                if candidate_option is not None:
+                    if idx <= self.cursor:
+                        wrapped = True
                     self.cursor = idx
                     link = candidate
+                    option = candidate_option
                     break
         if option is None:
+            # Nothing in the line is offered at this decision.  Record the miss
+            # and force-advance once the stall bound is reached so the policy can
+            # never spin forever.
+            self.link_misses[self.cursor] += 1
+            self.skipped.append(self._link_label(self.links[self.cursor]))
             self.stall += 1
             if self.stall >= self.max_stall:
                 self.stall = 0
                 self._advance()
             return self._fallback(ctx)
+        if wrapped:
+            # We moved back to an earlier link: one full pass has completed.
+            self._note_iteration()
         self.stall = 0
+        self.link_hits[self.cursor] += 1
         self.active = link
         self._advance()
         return ("option_id", int(option.id))
@@ -550,6 +639,28 @@ class WitnessPolicy:
         self.answers.append(answer)
         return answer
 
+    # -- introspection ------------------------------------------------------
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Per-link execution/miss counts and notes, for run diagnostics.
+
+        ``executed_actions`` is the number of PRIORITY decisions the policy
+        matched to a link.  When it is zero the run never executed the line and
+        the verdict must be ``inconclusive`` with this diagnostic rather than a
+        silent empty result.
+        """
+        return {
+            "policy_version": WITNESS_POLICY_VERSION,
+            "links": [self._link_label(link) for link in self.links],
+            "link_hits": list(self.link_hits),
+            "link_misses": list(self.link_misses),
+            "skipped": list(self.skipped),
+            "notes": list(self.notes),
+            "executed_actions": int(sum(self.link_hits)),
+            "iterations": int(self.iterations),
+            "decisions": int(self.decisions),
+        }
+
 
 # ---------------------------------------------------------------------------
 # Observations / loop detection
@@ -577,12 +688,22 @@ def _zone_count(zone: Any) -> int:
 
 
 def _battlefield_entries(state: pb.FullState) -> list[tuple[Any, ...]]:
+    """Non-token battlefield permanents as the structural signature.
+
+    Token permanents are deliberately excluded: a token-growing loop (e.g.
+    Kiki-Jiki copying a creature every iteration) adds a new token each pass, so
+    including tokens would make the structural signature change on every
+    iteration and the recurrence could never be detected.  Token counts are
+    tracked as a *growing resource* instead (:func:`resource_totals`).
+    """
     permanents = list(getattr(state, "battlefield_cards", ()) or ())
     entries: list[tuple[Any, ...]] = []
     for zone in state.battlefield:
         for pid in zone.permanents:
             if 0 <= pid < len(permanents):
                 perm = permanents[pid]
+                if bool(perm.is_token):
+                    continue
                 counters = tuple(
                     sorted((str(c.type), int(c.count)) for c in perm.typed_counters)
                 )
@@ -590,26 +711,41 @@ def _battlefield_entries(state: pb.FullState) -> list[tuple[Any, ...]]:
                     (
                         str(perm.card_name),
                         bool(perm.tapped),
-                        bool(perm.is_token),
                         counters,
                     )
                 )
             else:  # harness without a flat battlefield listing: fall back to names
                 for card in zone.cards:
-                    entries.append((str(card.name), False, False, ()))
+                    entries.append((str(card.name), False, ()))
     entries.sort()
     return entries
+
+
+def _non_token_battlefield_count(state: pb.FullState, zone: Any) -> int:
+    """Count one player's battlefield permanents that are not tokens."""
+    permanents = list(getattr(state, "battlefield_cards", ()) or ())
+    total = 0
+    for pid in zone.permanents:
+        if 0 <= pid < len(permanents):
+            if not bool(permanents[pid].is_token):
+                total += 1
+        else:
+            total += len(list(zone.cards))
+    return total
 
 
 def witness_signature(state: pb.FullState) -> dict[str, Any]:
     """The structural projection that must recur for a loop.
 
-    Captures battlefield names/tapped/token/counters, phase, active player,
-    per-player life, zone counts and the stack shape.  Monotonic *scalars*
-    (mana pool, total damage, cast counts) are deliberately excluded so they can
-    accumulate across iterations without changing the signature.  ``turn`` is
-    also excluded (a turn-cycling loop should recur).  Library order is not
-    exposed by FullState v2 and is represented only as a count.
+    Captures *non-token* battlefield names/tapped/counters, phase, active
+    player, per-player life, zone counts and the stack shape.  Monotonic
+    *scalars* (mana pool, total damage, cast counts, **token count**) are
+    deliberately excluded so they can accumulate across iterations without
+    changing the signature; they are tracked as growing resources by
+    :func:`resource_totals`.  A token-growing loop therefore shows a recurring
+    structure + a strictly growing ``tokens`` resource.  ``turn`` is also
+    excluded (a turn-cycling loop should recur).  Library order is not exposed
+    by FullState v2 and is represented only as a count.
     """
     return {
         "phase": state.phase,
@@ -618,7 +754,9 @@ def witness_signature(state: pb.FullState) -> dict[str, Any]:
         "battlefield": _battlefield_entries(state),
         "zone_counts": {
             "hand": [_zone_count(z) for z in state.hand],
-            "battlefield": [len(list(z.permanents)) for z in state.battlefield],
+            "battlefield": [
+                _non_token_battlefield_count(state, z) for z in state.battlefield
+            ],
             "graveyard": [_zone_count(z) for z in state.graveyard],
             "library": [_zone_count(z) for z in state.library],
             "exile": [_zone_count(z) for z in state.exile],
@@ -824,6 +962,25 @@ def _resource_deltas(observations: Sequence[Observation]) -> list[dict[str, int]
     return deltas
 
 
+def _policy_diagnostics(policy: Any) -> dict[str, Any]:
+    """Best-effort per-link execution/miss diagnostics from ``policy``.
+
+    Works for :class:`WitnessPolicy`; any other callable (or a policy without
+    the method) yields ``{}`` so the driver stays usable with custom policies.
+    """
+    diagnostics = getattr(policy, "diagnostics", None)
+    if not callable(diagnostics):
+        return {}
+    try:
+        raw = diagnostics()
+    except Exception:  # noqa: BLE001 - diagnostics must never break a run
+        logger.debug("policy diagnostics failed", exc_info=True)
+        return {}
+    if isinstance(raw, dict):
+        return {str(key): value for key, value in raw.items()}
+    return {}
+
+
 def _is_over(client: Any, game_id: int) -> bool:
     try:
         return bool(client.is_game_over(game_id).over)
@@ -934,11 +1091,16 @@ def _run_witness_seed(
     spells_resolved = 0
     game_over = False
 
-    def make_result(verdict: str, evidence: dict[str, Any], error: str = "") -> WitnessResult:
+    def make_result(
+        verdict: str,
+        evidence: dict[str, Any],
+        error: str = "",
+        iterations: int = 0,
+    ) -> WitnessResult:
         return WitnessResult(
             verdict=verdict,
             scenario=scenario,
-            iterations=len(observations),
+            iterations=int(iterations),
             signatures=[o.signature for o in observations],
             resource_deltas=_resource_deltas(observations),
             state_hash_before=state_hash_before,
@@ -982,8 +1144,39 @@ def _run_witness_seed(
         client.get_decision(game_id)
 
         decisions = 0
-        iteration_seen = 0
-        while len(observations) < max_iterations and decisions < max_decisions:
+        iterations_done = 0
+        iteration_seen = 0  # watermark over policy.iterations
+
+        def capture_observation(label: int) -> None:
+            """Sample the (quiescent) state + new events into observations.
+
+            Called once *before* the loop (baseline) and once per completed
+            iteration, so a single-iteration loop still records the "before"
+            and "after" samples the detector needs.
+            """
+            nonlocal event_cursor, cast_count, spells_resolved
+            state = client.get_state(game_id, view_as_player=view_as_player)
+            batch = client.poll_events(game_id, event_cursor)
+            for event in batch.events:
+                if event.type == "SpellCast":
+                    cast_count += 1
+                elif event.type == "SpellResolved":
+                    spells_resolved += 1
+            event_cursor = int(batch.next_cursor)
+            observations.append(
+                build_observation(
+                    label,
+                    state,
+                    cast_count=cast_count,
+                    spells_resolved=spells_resolved,
+                    event_seq=event_cursor,
+                )
+            )
+
+        # Pre-loop baseline sample.
+        capture_observation(0)
+
+        while iterations_done < max_iterations and decisions < max_decisions:
             if _is_over(client, game_id):
                 game_over = True
                 break
@@ -1007,38 +1200,47 @@ def _run_witness_seed(
             decisions += 1
 
             completed = int(getattr(policy, "iterations", 0))
-            while iteration_seen < completed and len(observations) < max_iterations:
+            while iteration_seen < completed and iterations_done < max_iterations:
                 iteration_seen += 1
-                state = client.get_state(game_id, view_as_player=view_as_player)
-                batch = client.poll_events(game_id, event_cursor)
-                for event in batch.events:
-                    if event.type == "SpellCast":
-                        cast_count += 1
-                    elif event.type == "SpellResolved":
-                        spells_resolved += 1
-                event_cursor = int(batch.next_cursor)
-                observations.append(
-                    build_observation(
-                        len(observations),
-                        state,
-                        cast_count=cast_count,
-                        spells_resolved=spells_resolved,
-                        event_seq=event_cursor,
-                    )
-                )
+                iterations_done += 1
+                capture_observation(iterations_done)
+
+        # Post-loop sample only when the loop recorded no completed iteration:
+        # a zero-iteration run still carries two observations (best-effort: a
+        # stopped engine may reject GetState).
+        if len(observations) < 2:
+            try:
+                capture_observation(iterations_done + 1)
+            except Exception:  # noqa: BLE001 - diagnostic sample only
+                logger.debug("post-loop observation sample failed", exc_info=True)
 
         state_hash_after = str(
             client.get_state(game_id, view_as_player=view_as_player).state_hash
         )
         event_end_seq = int(client.poll_events(game_id, event_cursor).next_cursor)
+        diagnostics = _policy_diagnostics(policy)
         verdict, evidence = detect_loop(observations)
-        if verdict == "no_loop" and game_over:
+        evidence = {**evidence, "diagnostics": diagnostics}
+        if int(diagnostics.get("executed_actions", 0)) == 0:
+            # The policy never matched a single offered option to a link: report
+            # the diagnostic instead of a silent zero-iteration result.
+            verdict = "inconclusive"
+            evidence = {
+                **evidence,
+                "reason": (
+                    "policy never matched an offered option to a link source; "
+                    "no loop action was executed"
+                ),
+            }
+        elif verdict == "no_loop" and game_over:
             verdict = "refuted"
             evidence = {**evidence, "game_over": True}
-        return make_result(verdict, evidence)
+        return make_result(verdict, evidence, iterations=iterations_done)
     except Exception as exc:  # noqa: BLE001 - surfaced as the "error" verdict
         logger.warning("witness run failed (seed=%s): %s", seed, exc)
-        return make_result("error", {"error": f"{type(exc).__name__}: {exc}"}, error=str(exc))
+        return make_result(
+            "error", {"error": f"{type(exc).__name__}: {exc}"}, error=str(exc)
+        )
     finally:
         if game_id is not None:
             try:
