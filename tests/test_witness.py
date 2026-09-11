@@ -1,0 +1,511 @@
+"""Witness-search tests (fakes only; no live harness)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import pytest
+
+from combo_discovery.env import GameNotActiveError
+from combo_discovery.generated import forge_env_pb2 as pb
+from combo_discovery.runner import DecisionContext
+from combo_discovery.witness import (
+    CardSpec,
+    LinkPlan,
+    Observation,
+    PlayerScenario,
+    Scenario,
+    WitnessPolicy,
+    build_observation,
+    build_scenario,
+    detect_loop,
+    link_plans,
+    run_witness,
+    synthetic_cycle,
+    witness_signature,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fakes
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FakeContext:
+    type_line: str = ""
+
+
+class FakeAbility:
+    def __init__(self, card_name: str, ability_kind: str = "", type_line: str = ""):
+        self.card_name = card_name
+        self.ability_kind = ability_kind
+        self._ctx = FakeContext(type_line) if type_line else None
+
+    def card_context(self):
+        return self._ctx
+
+
+@dataclass
+class FakeRef:
+    card_name: str
+
+
+@dataclass
+class FakeLink:
+    src: FakeRef
+    dst: FakeRef
+    kind: str = "re_trigger"
+    subkind: str = "copy"
+    motif: str = "COPIES_CREATURE~ETB_TRIGGER"
+
+
+@dataclass
+class FakeCombo:
+    cards: tuple[str, ...]
+    links: tuple = ()
+    abilities: tuple = ()
+    card_ids: tuple[int, ...] = ()
+    preconditions: tuple[str, ...] = ()
+    infinite: bool = False
+
+
+def combo_ab(**kwargs) -> FakeCombo:
+    return FakeCombo(
+        cards=("Altar", "Ghost"),
+        links=(
+            FakeLink(FakeRef("Altar"), FakeRef("Ghost")),
+            FakeLink(FakeRef("Ghost"), FakeRef("Altar")),
+        ),
+        **kwargs,
+    )
+
+
+def priority_ctx(names, *, player=0, decision_id=1) -> DecisionContext:
+    options = [
+        pb.Option(id=i, kind="activate", card_name=n, description=f"Activate {n}")
+        for i, n in enumerate(names)
+    ]
+    return DecisionContext(
+        request=pb.DecisionRequest(
+            game_id=1,
+            decision_id=decision_id,
+            player=player,
+            turn=1,
+            phase="Main1",
+            decision_type=pb.DECISION_TYPE_PRIORITY,
+            options=options,
+        )
+    )
+
+
+def obs(iteration: int, signature: str, **resources) -> Observation:
+    return Observation(iteration=iteration, signature=signature, resources=dict(resources))
+
+
+# ---------------------------------------------------------------------------
+# Scenario build
+# ---------------------------------------------------------------------------
+
+
+class TestBuildScenario:
+    def test_permanents_start_on_battlefield(self):
+        scenario = build_scenario(combo_ab())
+        assert len(scenario.players) == 2
+        combo_player, opponent = scenario.players
+        assert combo_player.player == 0
+        assert [c.name for c in combo_player.battlefield] == ["Altar", "Ghost"]
+        assert combo_player.hand == []
+        assert combo_player.life == 20
+        assert combo_player.mana  # generous starting pool
+        assert combo_player.mana == {"W": 8, "U": 8, "B": 8, "R": 8, "G": 8, "C": 8}
+        assert opponent.player == 1
+        assert opponent.battlefield == []
+        assert opponent.life == 20
+        assert scenario.active_player == 0
+        assert scenario.turn == 1
+        assert scenario.phase == "Main1"
+        assert scenario.require_outstanding_decision is True
+
+    def test_non_permanent_starts_in_hand(self):
+        combo = FakeCombo(
+            cards=("Ritual", "Ghost"),
+            abilities=(
+                FakeAbility("Ritual", type_line="Instant"),
+                FakeAbility("Ghost", type_line="Creature — Spirit"),
+            ),
+            links=(),
+        )
+        scenario = build_scenario(combo)
+        combo_player = scenario.players[0]
+        assert [c.name for c in combo_player.hand] == ["Ritual"]
+        assert [c.name for c in combo_player.battlefield] == ["Ghost"]
+
+    def test_ability_kind_fallback_marks_cast(self):
+        combo = FakeCombo(
+            cards=("Ritual",),
+            abilities=(FakeAbility("Ritual", ability_kind="spell"),),
+        )
+        scenario = build_scenario(combo)
+        assert [c.name for c in scenario.players[0].hand] == ["Ritual"]
+
+    def test_candidate_pair_names_accepted(self):
+        scenario = build_scenario(("A", "B"))
+        assert [c.name for c in scenario.players[0].battlefield] == ["A", "B"]
+
+    def test_empty_combo_rejected(self):
+        with pytest.raises(ValueError, match="at least one"):
+            build_scenario(None)
+
+    def test_explicit_overrides(self):
+        scenario = build_scenario(
+            combo_ab(),
+            life=7,
+            opponent_life=3,
+            mana={"U": 2},
+            turn=4,
+            phase="Combat",
+            active_player=1,
+        )
+        assert scenario.players[0].life == 7
+        assert scenario.players[1].life == 3
+        assert scenario.players[0].mana == {"U": 2}
+        assert scenario.active_player == 1
+        assert (scenario.turn, scenario.phase) == (4, "Combat")
+
+
+class TestCanonical:
+    def test_canonical_is_stable(self):
+        scenario = build_scenario(combo_ab())
+        assert scenario.canonical() == scenario.canonical()
+        assert scenario.scenario_hash() == scenario.scenario_hash()
+
+    def test_non_library_zone_order_is_irrelevant(self):
+        a = Scenario(players=[PlayerScenario(player=0, battlefield=[CardSpec("A"), CardSpec("B")])])
+        b = Scenario(players=[PlayerScenario(player=0, battlefield=[CardSpec("B"), CardSpec("A")])])
+        assert a.canonical() == b.canonical()
+        assert a.scenario_hash() == b.scenario_hash()
+
+    def test_library_order_is_significant(self):
+        a = Scenario(players=[PlayerScenario(player=0, library=[CardSpec("A"), CardSpec("B")])])
+        b = Scenario(players=[PlayerScenario(player=0, library=[CardSpec("B"), CardSpec("A")])])
+        assert a.scenario_hash() != b.scenario_hash()
+        assert [c["name"] for c in a.canonical()["players"][0]["library"]] == ["A", "B"]
+
+    def test_card_spec_canonical_sorts_counters(self):
+        spec = CardSpec("X", counters={"+1/+1": 2, "loyalty": 1})
+        assert spec.canonical()["counters"] == {"+1/+1": 2, "loyalty": 1}
+
+
+# ---------------------------------------------------------------------------
+# Policy
+# ---------------------------------------------------------------------------
+
+
+class TestWitnessPolicy:
+    def test_walks_synthetic_two_link_cycle(self):
+        policy = WitnessPolicy(links=[LinkPlan("A", "B"), LinkPlan("B", "A")], player=0)
+        policy.new_game()
+        first = policy(priority_ctx(["A", "B"]))
+        second = policy(priority_ctx(["A", "B"]))
+        third = policy(priority_ctx(["A", "B"]))
+        fourth = policy(priority_ctx(["A", "B"]))
+        assert first == ("option_id", 0)
+        assert second == ("option_id", 1)
+        assert third == ("option_id", 0)
+        assert fourth == ("option_id", 1)
+        assert policy.iterations == 2
+
+    def test_cursor_searches_forward_when_current_link_unavailable(self):
+        policy = WitnessPolicy(links=[LinkPlan("A", "B"), LinkPlan("B", "A")], player=0)
+        policy.new_game()
+        answer = policy(priority_ctx(["B"]))  # A is unavailable; skip to B
+        assert answer == ("option_id", 0)
+        assert policy.cursor == 0  # B was the last link, so it wrapped
+        assert policy.iterations == 1
+
+    def test_non_priority_uses_active_link_params(self):
+        link = LinkPlan("A", "B", params={"targets": ["A"]})
+        policy = WitnessPolicy(links=[link], player=0)
+        policy.new_game()
+        policy(priority_ctx(["A"]))  # sets active = link
+        target_ctx = DecisionContext(
+            request=pb.DecisionRequest(
+                game_id=1,
+                decision_id=2,
+                player=0,
+                decision_type=pb.DECISION_TYPE_CHOOSE_TARGETS,
+                candidates=[pb.CardCandidate(card_id=5, name="A")],
+                min_choices=1,
+                max_choices=1,
+            )
+        )
+        assert policy(target_ctx) == ("targets", ([5], []))
+
+    def test_mode_and_announce_params(self):
+        link = LinkPlan("A", "B", params={"modes": [1, 2], "number": 5})
+        policy = WitnessPolicy(links=[link], player=0)
+        policy.new_game()
+        policy(priority_ctx(["A"]))
+        mode_ctx = DecisionContext(
+            request=pb.DecisionRequest(
+                game_id=1,
+                decision_id=3,
+                player=0,
+                decision_type=pb.DECISION_TYPE_CHOOSE_MODE,
+                mode_options=[pb.ModeOption(id=1), pb.ModeOption(id=2)],
+                min_choices=2,
+                max_choices=2,
+            )
+        )
+        assert policy(mode_ctx) == ("mode_selection", [1, 2])
+        announce_ctx = DecisionContext(
+            request=pb.DecisionRequest(
+                game_id=1,
+                decision_id=4,
+                player=0,
+                decision_type=pb.DECISION_TYPE_ANNOUNCE,
+                min_number=0,
+                max_number=10,
+            )
+        )
+        assert policy(announce_ctx) == ("number_answer", 5)
+
+    def test_stall_is_bounded_and_iterations_advance(self):
+        policy = WitnessPolicy(links=[LinkPlan("A", "B")], player=0, max_stall=3)
+        policy.new_game()
+        for _ in range(30):
+            policy(priority_ctx(["Pass"]))  # no link ever matches
+        assert policy.decisions == 30
+        assert policy.iterations == 10  # every 3 stalls force one advance
+        assert policy.cursor == 0
+
+    def test_opponent_decisions_fall_back(self):
+        policy = WitnessPolicy(links=[LinkPlan("A", "B")], player=0)
+        policy.new_game()
+        answer = policy(priority_ctx(["A"], player=1))
+        # Opponent is not the combo player: default policy takes the highest id.
+        assert answer == ("option_id", 0)
+        assert policy.cursor == 0
+
+
+# ---------------------------------------------------------------------------
+# Signature + loop detection
+# ---------------------------------------------------------------------------
+
+
+def make_state(*, mana: int = 0, life: tuple[int, int] = (20, 20), hash_: str = "H") -> pb.FullState:
+    state = pb.FullState(game_id=1, turn=1, phase="Main1", active_player=0, state_hash=hash_)
+    state.life.extend(life)
+    state.typed_mana_pools.add(colorless=mana)
+    perm = pb.Permanent(id=0, card_name="Altar")
+    state.battlefield_cards.append(perm)
+    zone = state.battlefield.add()
+    zone.permanents.append(0)
+    for _ in range(1):
+        state.hand.add()
+        state.graveyard.add()
+        state.library.add()
+        state.exile.add()
+        state.command.add()
+    return state
+
+
+class TestWitnessSignature:
+    def test_signature_excludes_growing_mana(self):
+        sig_a = witness_signature(make_state(mana=0))
+        sig_b = witness_signature(make_state(mana=9))
+        assert sig_a == sig_b
+
+    def test_resource_totals_track_mana(self):
+        low = build_observation(0, make_state(mana=1))
+        high = build_observation(1, make_state(mana=4))
+        assert low.signature == high.signature
+        assert high.resources["mana"] - low.resources["mana"] == 3
+
+    def test_signature_changes_with_battlefield(self):
+        base = witness_signature(make_state())
+        changed = make_state()
+        changed.battlefield_cards[0].tapped = True
+        assert witness_signature(changed) != base
+
+
+class TestDetectLoop:
+    def test_accepts_growing_resource_cycle(self):
+        observations = [
+            obs(0, "s1", mana=0),
+            obs(1, "s2", mana=1),
+            obs(2, "s1", mana=2),
+            obs(3, "s2", mana=3),
+        ]
+        verdict, evidence = detect_loop(observations)
+        assert verdict == "loops"
+        assert evidence["kind"] == "recurrence"
+        assert evidence["pair"] == [0, 2]
+        assert evidence["grown"] == ["mana"]
+
+    def test_rejects_non_repeating_line(self):
+        observations = [obs(0, "s1", mana=0), obs(1, "s2", mana=1), obs(2, "s3", mana=2)]
+        verdict, evidence = detect_loop(observations)
+        assert verdict == "no_loop"
+        assert "no signature recurrence" in evidence["reason"]
+
+    def test_rejects_growth_without_recurrence(self):
+        observations = [obs(0, "a", mana=0), obs(1, "b", mana=5), obs(2, "c", mana=9)]
+        verdict, _ = detect_loop(observations)
+        assert verdict == "no_loop"
+
+    def test_recurrence_without_growth_is_no_loop(self):
+        observations = [
+            obs(0, "s1", mana=2),
+            obs(1, "s2", mana=2),
+            obs(2, "s1", mana=2),
+        ]
+        verdict, evidence = detect_loop(observations)
+        assert verdict == "no_loop"
+        assert "no tracked resource grew" in evidence["reason"]
+
+    def test_degenerate_identical_hash_is_loop(self):
+        observations = [
+            Observation(iteration=0, signature="s1", state_hash="SAME"),
+            Observation(iteration=1, signature="s2", state_hash="SAME"),
+        ]
+        verdict, evidence = detect_loop(observations)
+        assert verdict == "loops"
+        assert evidence["kind"] == "degenerate"
+
+    def test_insufficient_observations_is_inconclusive(self):
+        assert detect_loop([])[0] == "inconclusive"
+        assert detect_loop([obs(0, "s1", mana=0)])[0] == "inconclusive"
+
+
+# ---------------------------------------------------------------------------
+# run_witness (fake client)
+# ---------------------------------------------------------------------------
+
+
+class FakeWitnessClient:
+    """Deterministic fake: each submitted decision adds one colorless mana."""
+
+    def __init__(self):
+        self.game_id = 77
+        self.mana = 0
+        self.decision_seq = 0
+        self.stopped: int | None = None
+        self.setup_calls: list[Scenario] = []
+        self.view_players: list[int] = []
+
+    def start_game(self, decks, seed, player_types=None, **kwargs):
+        return self.game_id
+
+    def get_decision(self, game_id):
+        self.decision_seq += 1
+        return pb.DecisionRequest(
+            game_id=game_id,
+            decision_id=self.decision_seq,
+            player=0,
+            turn=1,
+            phase="Main1",
+            decision_type=pb.DECISION_TYPE_PRIORITY,
+            options=[
+                pb.Option(id=0, kind="activate", card_name="A"),
+                pb.Option(id=1, kind="activate", card_name="B"),
+            ],
+        )
+
+    def setup_scenario(self, game_id, scenario):
+        self.setup_calls.append(scenario)
+        return "H0", 3
+
+    def submit_decision(self, game_id, decision_id, answer):
+        self.mana += 1
+        return pb.StepResult()
+
+    def is_game_over(self, game_id):
+        return pb.GameOver(over=False)
+
+    def get_state(self, game_id, view_as_player=0):
+        self.view_players.append(view_as_player)
+        state = make_state(mana=self.mana, hash_=f"H{self.mana}")
+        return state
+
+    def poll_events(self, game_id, cursor=0):
+        return pb.EventBatch(next_cursor=cursor)
+
+    def stop_game(self, game_id):
+        self.stopped = game_id
+
+
+class TestRunWitness:
+    def _policy(self):
+        return WitnessPolicy(links=[LinkPlan("A", "B"), LinkPlan("B", "A")], player=0)
+
+    def test_growing_run_reports_loops_and_stops_game(self):
+        client = FakeWitnessClient()
+        scenario = build_scenario(combo_ab())
+        result = run_witness(
+            client, scenario, self._policy(), seeds=[1], max_iterations=3
+        )
+        assert result.verdict == "loops"
+        assert result.iterations == 3
+        assert len(result.observations) == 3
+        assert len(set(result.signatures)) == 1  # structure recurs
+        assert result.resource_deltas[-1]["mana"] > 0
+        assert result.state_hash_before == "H0"
+        assert client.stopped == 77
+        assert client.setup_calls and client.setup_calls[0] is scenario
+
+    def test_setup_failure_reports_error(self):
+        client = FakeWitnessClient()
+
+        def boom(game_id, scenario):
+            raise GameNotActiveError("requires an outstanding decision")
+
+        client.setup_scenario = boom
+        result = run_witness(
+            client, build_scenario(combo_ab()), self._policy(), seeds=[1], max_iterations=2
+        )
+        assert result.verdict == "error"
+        assert "requires an outstanding decision" in result.error
+        assert client.stopped == 77
+
+    def test_persist_witness_roundtrip(self, tmp_path):
+        from combo_discovery.store import ExperimentStore
+        from combo_discovery.witness import persist_witness
+
+        client = FakeWitnessClient()
+        result = run_witness(
+            client, build_scenario(combo_ab()), self._policy(), seeds=[1], max_iterations=2
+        )
+        store = ExperimentStore(tmp_path / "w.sqlite")
+        run_id, result_id = persist_witness(
+            store, result, engine_commit="deadbeef", proto_version=7
+        )
+        runs = store.witness_runs()
+        results = store.witness_results(run_id)
+        store.close()
+        assert runs[0]["scenario_json"] == result.scenario.canonical_json()
+        assert runs[0]["proto_version"] == 7
+        assert results[0]["id"] == result_id
+        assert results[0]["verdict"] == result.verdict
+        assert results[0]["iterations"] == result.iterations
+
+
+# ---------------------------------------------------------------------------
+# Link-plan helpers
+# ---------------------------------------------------------------------------
+
+
+class TestLinkHelpers:
+    def test_link_plans_from_combo(self):
+        plans = link_plans(combo_ab())
+        assert [(p.src, p.dst) for p in plans] == [("Altar", "Ghost"), ("Ghost", "Altar")]
+
+    def test_link_plans_accepts_dicts(self):
+        plans = link_plans([{"src": "A", "dst": "B", "kind": "enables"}])
+        assert plans[0].src == "A" and plans[0].kind == "enables"
+
+    def test_synthetic_cycle(self):
+        plans = synthetic_cycle(["A", "B", "C"])
+        assert [(p.src, p.dst) for p in plans] == [("A", "B"), ("B", "C"), ("C", "A")]
+        assert synthetic_cycle(["A"]) == []

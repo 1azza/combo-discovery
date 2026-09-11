@@ -108,6 +108,7 @@ class TestSchema:
             "observed_deck_cards", "observed_pairs",
             "evaluation_runs", "evaluation_results",
             "motif_runs", "motif_enrichment",
+            "witness_runs", "witness_results",
         ):
             assert t in tables
         indexes = sqlite3.connect(path).execute(
@@ -118,9 +119,10 @@ class TestSchema:
             "idx_events_game", "idx_decisions_game", "idx_cards_name",
             "idx_predicates_pred", "idx_hypotheses_status_score",
             "idx_oracle_ids_oracle", "idx_known_pairs_hash", "idx_eval_results_scope",
-            "idx_motif_enrichment_motif",
+            "idx_motif_enrichment_motif", "idx_witness_results_run",
+            "idx_witness_results_verdict",
         } <= idx_names
-        assert [tuple(r) for r in versions] == [(1,), (2,), (3,), (4,), (5,)]
+        assert [tuple(r) for r in versions] == [(1,), (2,), (3,), (4,), (5,), (6,)]
 
     def test_foreign_keys_enforced(self, tmp_path):
         store = ExperimentStore(tmp_path / "exp.sqlite")
@@ -131,6 +133,78 @@ class TestSchema:
         with pytest.raises(sqlite3.IntegrityError):
             store.record_events(999999, [pb.GameEvent(seq=1, type="TurnStarted")])
         store.record_events(game_row, [pb.GameEvent(seq=1, type="TurnStarted")])
+        store.close()
+
+    def test_v5_database_migrates_to_v6(self, tmp_path, monkeypatch):
+        path = tmp_path / "v5.sqlite"
+        monkeypatch.setattr(store_module, "_SCHEMA_VERSION", 5)
+        old = ExperimentStore(path)
+        old.close()
+        monkeypatch.setattr(store_module, "_SCHEMA_VERSION", 6)
+        upgraded = ExperimentStore(path)
+        tables = {
+            r[0]
+            for r in upgraded._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        versions = [
+            tuple(r)
+            for r in upgraded._conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchall()
+        ]
+        upgraded.close()
+        assert "witness_runs" in tables
+        assert "witness_results" in tables
+        assert versions == [(1,), (2,), (3,), (4,), (5,), (6,)]
+
+
+class TestWitnessPersistence:
+    def test_witness_run_result_roundtrip(self, tmp_path):
+        store = ExperimentStore(tmp_path / "w.sqlite")
+        run_id = store.start_witness_run(
+            engine_commit="abc", proto_version=7, policy_version="witness-v1",
+            scenario_json='{"players": []}', seeds=[1, 2],
+            params={"max_iterations": 4}, notes="n",
+        )
+        result_id = store.record_witness_result(
+            run_id, candidate_kind="pair", candidate_key="42",
+            card_names=["A", "B"], verdict="loops", infinite=True,
+            iterations=3, signature=["s1", "s2", "s1"],
+            resource_deltas=[{"mana": 0}, {"mana": 1}],
+            state_hash_before="H0", state_hash_after="H1",
+            event_start_seq=5, event_end_seq=12,
+            trace=[[1, 1, ("option_id", 0)]],
+        )
+        runs = store.witness_runs()
+        results = store.witness_results(run_id)
+        assert runs[0]["id"] == run_id
+        assert runs[0]["engine_commit"] == "abc"
+        assert runs[0]["proto_version"] == 7
+        assert json.loads(runs[0]["seeds_json"]) == [1, 2]
+        assert json.loads(runs[0]["params_json"]) == {"max_iterations": 4}
+        assert results[0]["id"] == result_id
+        assert results[0]["run_id"] == run_id
+        assert results[0]["verdict"] == "loops"
+        assert results[0]["infinite"] == 1
+        assert results[0]["iterations"] == 3
+        assert json.loads(results[0]["card_names_json"]) == ["A", "B"]
+        assert json.loads(results[0]["signature_json"]) == ["s1", "s2", "s1"]
+        assert (results[0]["event_start_seq"], results[0]["event_end_seq"]) == (5, 12)
+        store.close()
+
+    def test_witness_verdict_check_constraint(self, tmp_path):
+        store = ExperimentStore(tmp_path / "w.sqlite")
+        run_id = store.start_witness_run()
+        with pytest.raises(sqlite3.IntegrityError):
+            store.record_witness_result(run_id, verdict="bogus")
+        store.close()
+
+    def test_witness_result_requires_run_fk(self, tmp_path):
+        store = ExperimentStore(tmp_path / "w.sqlite")
+        with pytest.raises(sqlite3.IntegrityError):
+            store.record_witness_result(999999, verdict="no_loop")
         store.close()
 
 
@@ -277,12 +351,12 @@ class TestConfig:
         cfg = load_config(tmp_path / "absent.toml")
         assert cfg == ResearchConfig()
         assert cfg.engine_commit == DEFAULT_ENGINE_COMMIT
-        assert cfg.proto_version == 6
+        assert cfg.proto_version == 7
         assert cfg.model == "openrouter/z-ai/glm-5.3-flash"
         meta = cfg.experiment_meta()
         assert meta == {
             "engine_commit": DEFAULT_ENGINE_COMMIT,
-            "proto_version": 6,
+            "proto_version": 7,
             "policy_version": "default-v1",
             "model_version": "openrouter/z-ai/glm-5.3-flash",
         }
@@ -302,7 +376,7 @@ class TestConfig:
     def test_repo_research_toml_loads_real_values(self):
         cfg = load_config("research.toml")
         assert cfg.engine_commit == "4f577da7b2a9074f9f66544aaf99405e38cf5ac3"
-        assert cfg.proto_version == 6
+        assert cfg.proto_version == 7
         assert cfg.model == "openrouter/z-ai/glm-5.3-flash"
 
 

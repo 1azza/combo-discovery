@@ -72,6 +72,11 @@ class ForgeEnvStub:
                 request_serializer=forge__env__pb2.RestoreRequest.SerializeToString,
                 response_deserializer=forge__env__pb2.Empty.FromString,
                 _registered_method=True)
+        self.SetupScenario = channel.unary_unary(
+                '/forgeenv.ForgeEnv/SetupScenario',
+                request_serializer=forge__env__pb2.SetupScenarioRequest.SerializeToString,
+                response_deserializer=forge__env__pb2.SetupScenarioResponse.FromString,
+                _registered_method=True)
         self.IsGameOver = channel.unary_unary(
                 '/forgeenv.ForgeEnv/IsGameOver',
                 request_serializer=forge__env__pb2.GameQuery.SerializeToString,
@@ -144,6 +149,14 @@ class ForgeEnvServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SetupScenario(self, request, context):
+        """Inject a pre-configured board state (witness search). Requires a LIVE
+        outstanding decision; invalidates it (client must refetch GetDecision).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def IsGameOver(self, request, context):
         """Query game-over status without stepping.
         """
@@ -202,6 +215,11 @@ def add_ForgeEnvServicer_to_server(servicer, server):
                     servicer.Restore,
                     request_deserializer=forge__env__pb2.RestoreRequest.FromString,
                     response_serializer=forge__env__pb2.Empty.SerializeToString,
+            ),
+            'SetupScenario': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetupScenario,
+                    request_deserializer=forge__env__pb2.SetupScenarioRequest.FromString,
+                    response_serializer=forge__env__pb2.SetupScenarioResponse.SerializeToString,
             ),
             'IsGameOver': grpc.unary_unary_rpc_method_handler(
                     servicer.IsGameOver,
@@ -408,6 +426,33 @@ class ForgeEnv:
             '/forgeenv.ForgeEnv/Restore',
             forge__env__pb2.RestoreRequest.SerializeToString,
             forge__env__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetupScenario(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/forgeenv.ForgeEnv/SetupScenario',
+            forge__env__pb2.SetupScenarioRequest.SerializeToString,
+            forge__env__pb2.SetupScenarioResponse.FromString,
             options,
             channel_credentials,
             insecure,

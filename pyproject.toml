@@ -21,6 +21,7 @@ combo-build-ontology = "combo_discovery.ontology.__main__:main"
 combo-import-spellbook = "combo_discovery.corpus.spellbook_main:main"
 combo-evaluate = "combo_discovery.evaluation:main"
 combo-analyze-motifs = "combo_discovery.analysis.enrichment:main"
+combo-witness = "combo_discovery.witness:main"
 
 [build-system]
 requires = ["uv_build>=0.12.11,<0.13.0"]

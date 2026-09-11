@@ -29,7 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only (avoids an import cycle)
     from .runner import DecisionContext, GameResult
 
 # Current schema version. Bump this and register a migration in _MIGRATIONS.
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 # Serializes all DB access; see the module docstring for why.
 _DB_LOCK = threading.Lock()
@@ -65,6 +65,8 @@ _TABLES = (
     "evaluation_results",
     "motif_runs",
     "motif_enrichment",
+    "witness_runs",
+    "witness_results",
 )
 
 _SCHEMA_SQL = """
@@ -455,12 +457,58 @@ def _migration_5(conn: sqlite3.Connection) -> None:
     conn.executescript(_MOTIF_SCHEMA_SQL)
 
 
+# Schema v6 (witness search).  ``witness_runs`` records one scenario-driven
+# search batch; ``witness_results`` appends one verdict per candidate.  Both are
+# append-only; ``combo_hypotheses.status`` is deliberately NOT touched (the
+# ``adjudications`` table remains the bridge).
+_WITNESS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS witness_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  started_at TEXT NOT NULL,
+  engine_commit TEXT,
+  proto_version INTEGER,
+  policy_version TEXT,
+  scenario_json TEXT,
+  seeds_json TEXT,
+  params_json TEXT,
+  notes TEXT);
+CREATE TABLE IF NOT EXISTS witness_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL REFERENCES witness_runs(id),
+  candidate_kind TEXT,
+  candidate_key TEXT,
+  card_names_json TEXT,
+  verdict TEXT NOT NULL
+    CHECK (verdict IN ('loops','no_loop','inconclusive','refuted','error')),
+  infinite INTEGER,
+  iterations INTEGER,
+  signature_json TEXT,
+  resource_deltas_json TEXT,
+  state_hash_before TEXT,
+  state_hash_after TEXT,
+  event_start_seq INTEGER,
+  event_end_seq INTEGER,
+  trace_json TEXT,
+  created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_witness_results_run ON witness_results(run_id);
+CREATE INDEX IF NOT EXISTS idx_witness_results_verdict ON witness_results(verdict);
+CREATE INDEX IF NOT EXISTS idx_witness_results_candidate
+  ON witness_results(candidate_kind, candidate_key);
+"""
+
+
+def _migration_6(conn: sqlite3.Connection) -> None:
+    """Schema v6: witness-search runs and per-candidate verdicts (append-only)."""
+    conn.executescript(_WITNESS_SCHEMA_SQL)
+
+
 # version -> callable applying the change for that version.
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migration_2,
     3: _migration_3,
     4: _migration_4,
     5: _migration_5,
+    6: _migration_6,
 }
 
 
@@ -707,6 +755,115 @@ class ExperimentStore:
                     self._conn.execute("PRAGMA foreign_keys=ON")
             assert cur.lastrowid is not None  # set by the INSERT above
             return int(cur.lastrowid)
+
+    # -- witness search (schema v6) ----------------------------------------
+
+    def start_witness_run(
+        self,
+        *,
+        engine_commit: str = "",
+        proto_version: int = 0,
+        policy_version: str = "",
+        scenario_json: str = "{}",
+        seeds: Sequence[int] | None = None,
+        params: dict[str, Any] | None = None,
+        notes: str = "",
+    ) -> int:
+        """Append a witness-run row and return its id."""
+        with _DB_LOCK:
+            cur = self._conn.execute(
+                "INSERT INTO witness_runs "
+                "(started_at, engine_commit, proto_version, policy_version, "
+                " scenario_json, seeds_json, params_json, notes) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    _utc_now(),
+                    engine_commit,
+                    int(proto_version),
+                    policy_version,
+                    scenario_json,
+                    json.dumps([int(s) for s in (seeds or [])]),
+                    json.dumps(params or {}, sort_keys=True),
+                    notes,
+                ),
+            )
+            self._conn.commit()
+            assert cur.lastrowid is not None  # set by the INSERT above
+            return int(cur.lastrowid)
+
+    def record_witness_result(
+        self,
+        run_id: int,
+        *,
+        candidate_kind: str = "",
+        candidate_key: str = "",
+        card_names: Sequence[str] = (),
+        verdict: str = "inconclusive",
+        infinite: bool = False,
+        iterations: int = 0,
+        signature: Any = None,
+        resource_deltas: Any = None,
+        state_hash_before: str = "",
+        state_hash_after: str = "",
+        event_start_seq: int = 0,
+        event_end_seq: int = 0,
+        trace: Any = None,
+    ) -> int:
+        """Append a witness-result row and return its id."""
+        with _DB_LOCK:
+            cur = self._conn.execute(
+                "INSERT INTO witness_results "
+                "(run_id, candidate_kind, candidate_key, card_names_json, verdict, "
+                " infinite, iterations, signature_json, resource_deltas_json, "
+                " state_hash_before, state_hash_after, event_start_seq, "
+                " event_end_seq, trace_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    int(run_id),
+                    candidate_kind,
+                    candidate_key,
+                    json.dumps(list(card_names), sort_keys=True),
+                    verdict,
+                    1 if infinite else 0,
+                    int(iterations),
+                    json.dumps(signature if signature is not None else [], sort_keys=True),
+                    json.dumps(
+                        resource_deltas if resource_deltas is not None else [],
+                        sort_keys=True,
+                    ),
+                    state_hash_before,
+                    state_hash_after,
+                    int(event_start_seq),
+                    int(event_end_seq),
+                    json.dumps(trace if trace is not None else [], default=str, sort_keys=True),
+                    _utc_now(),
+                ),
+            )
+            self._conn.commit()
+            assert cur.lastrowid is not None  # set by the INSERT above
+            return int(cur.lastrowid)
+
+    def witness_runs(self) -> list[dict[str, Any]]:
+        """All witness runs, oldest first."""
+        with _DB_LOCK:
+            rows = self._conn.execute(
+                "SELECT * FROM witness_runs ORDER BY id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def witness_results(self, run_id: int | None = None) -> list[dict[str, Any]]:
+        """Witness results, optionally filtered to one run, oldest first."""
+        with _DB_LOCK:
+            if run_id is None:
+                rows = self._conn.execute(
+                    "SELECT * FROM witness_results ORDER BY id"
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM witness_results WHERE run_id = ? ORDER BY id",
+                    (int(run_id),),
+                ).fetchall()
+        return [dict(row) for row in rows]
 
     # -- export -------------------------------------------------------------
 

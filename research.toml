@@ -5,7 +5,7 @@ policy_version = "default-v1"
 
 [engine]
 forge_commit = "4f577da7b2a9074f9f66544aaf99405e38cf5ac3"
-proto_version = 6
+proto_version = 7
 
 [defaults]
 max_turns = 0

@@ -512,6 +512,82 @@ class RestoreRequest(_message.Message):
     token: bytes
     def __init__(self, game_id: _Optional[int] = ..., token: _Optional[bytes] = ...) -> None: ...
 
+class CardSpec(_message.Message):
+    __slots__ = ("name", "set", "tapped", "summoning_sick", "counters", "damage", "no_etb_triggers")
+    class CountersEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: int
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[int] = ...) -> None: ...
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    SET_FIELD_NUMBER: _ClassVar[int]
+    TAPPED_FIELD_NUMBER: _ClassVar[int]
+    SUMMONING_SICK_FIELD_NUMBER: _ClassVar[int]
+    COUNTERS_FIELD_NUMBER: _ClassVar[int]
+    DAMAGE_FIELD_NUMBER: _ClassVar[int]
+    NO_ETB_TRIGGERS_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    set: str
+    tapped: bool
+    summoning_sick: bool
+    counters: _containers.ScalarMap[str, int]
+    damage: int
+    no_etb_triggers: bool
+    def __init__(self, name: _Optional[str] = ..., set: _Optional[str] = ..., tapped: _Optional[bool] = ..., summoning_sick: _Optional[bool] = ..., counters: _Optional[_Mapping[str, int]] = ..., damage: _Optional[int] = ..., no_etb_triggers: _Optional[bool] = ...) -> None: ...
+
+class PlayerScenario(_message.Message):
+    __slots__ = ("player", "life", "mana", "battlefield", "hand", "graveyard", "library", "exile")
+    class ManaEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: int
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[int] = ...) -> None: ...
+    PLAYER_FIELD_NUMBER: _ClassVar[int]
+    LIFE_FIELD_NUMBER: _ClassVar[int]
+    MANA_FIELD_NUMBER: _ClassVar[int]
+    BATTLEFIELD_FIELD_NUMBER: _ClassVar[int]
+    HAND_FIELD_NUMBER: _ClassVar[int]
+    GRAVEYARD_FIELD_NUMBER: _ClassVar[int]
+    LIBRARY_FIELD_NUMBER: _ClassVar[int]
+    EXILE_FIELD_NUMBER: _ClassVar[int]
+    player: int
+    life: int
+    mana: _containers.ScalarMap[str, int]
+    battlefield: _containers.RepeatedCompositeFieldContainer[CardSpec]
+    hand: _containers.RepeatedCompositeFieldContainer[CardSpec]
+    graveyard: _containers.RepeatedCompositeFieldContainer[CardSpec]
+    library: _containers.RepeatedCompositeFieldContainer[CardSpec]
+    exile: _containers.RepeatedCompositeFieldContainer[CardSpec]
+    def __init__(self, player: _Optional[int] = ..., life: _Optional[int] = ..., mana: _Optional[_Mapping[str, int]] = ..., battlefield: _Optional[_Iterable[_Union[CardSpec, _Mapping]]] = ..., hand: _Optional[_Iterable[_Union[CardSpec, _Mapping]]] = ..., graveyard: _Optional[_Iterable[_Union[CardSpec, _Mapping]]] = ..., library: _Optional[_Iterable[_Union[CardSpec, _Mapping]]] = ..., exile: _Optional[_Iterable[_Union[CardSpec, _Mapping]]] = ...) -> None: ...
+
+class SetupScenarioRequest(_message.Message):
+    __slots__ = ("game_id", "players", "active_player", "turn", "phase", "require_outstanding_decision")
+    GAME_ID_FIELD_NUMBER: _ClassVar[int]
+    PLAYERS_FIELD_NUMBER: _ClassVar[int]
+    ACTIVE_PLAYER_FIELD_NUMBER: _ClassVar[int]
+    TURN_FIELD_NUMBER: _ClassVar[int]
+    PHASE_FIELD_NUMBER: _ClassVar[int]
+    REQUIRE_OUTSTANDING_DECISION_FIELD_NUMBER: _ClassVar[int]
+    game_id: int
+    players: _containers.RepeatedCompositeFieldContainer[PlayerScenario]
+    active_player: int
+    turn: int
+    phase: str
+    require_outstanding_decision: bool
+    def __init__(self, game_id: _Optional[int] = ..., players: _Optional[_Iterable[_Union[PlayerScenario, _Mapping]]] = ..., active_player: _Optional[int] = ..., turn: _Optional[int] = ..., phase: _Optional[str] = ..., require_outstanding_decision: _Optional[bool] = ...) -> None: ...
+
+class SetupScenarioResponse(_message.Message):
+    __slots__ = ("state_hash", "applied_events")
+    STATE_HASH_FIELD_NUMBER: _ClassVar[int]
+    APPLIED_EVENTS_FIELD_NUMBER: _ClassVar[int]
+    state_hash: str
+    applied_events: int
+    def __init__(self, state_hash: _Optional[str] = ..., applied_events: _Optional[int] = ...) -> None: ...
+
 class GameOver(_message.Message):
     __slots__ = ("over", "winner", "reason", "outcome")
     OVER_FIELD_NUMBER: _ClassVar[int]

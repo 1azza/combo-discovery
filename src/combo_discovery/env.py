@@ -1,4 +1,4 @@
-"""Typed synchronous client for the forge-harness gRPC service (protocol v6).
+"""Typed synchronous client for the forge-harness gRPC service (protocol v7).
 
 Mirrors the service defined in proto/forge_env.proto. All methods are blocking;
 use WorkerPool for parallelism.
@@ -51,18 +51,31 @@ v6 note (normalized events + FullState v2): GameEvent carries a normalized
 old_value/new_value and extra (see runner.EVENT_VOCABULARY). get_state() takes
 `view_as_player` (0 = observer: other players' hands/libraries are counts only)
 and FullState v2 adds typed_mana_pools, stack, exile and command zones.
+
+v7 note (scenario injection): setup_scenario() injects a pre-configured board
+state (see witness.Scenario). Like snapshot(), it REQUIRES a LIVE outstanding
+decision (the engine thread is parked, so the state is quiescent) and raises
+GameNotActiveError on FAILED_PRECONDITION ("requires an outstanding decision").
+It INVALIDATES that decision and appends a deterministic `ScenarioInjected`
+event, so the caller MUST refetch via ``get_decision`` before submitting again
+(the decision_id may change, mirroring restore()). Injection consumes no RNG
+and is deterministic for a fixed scenario + seed; the scenario hash is folded
+into `state_hash`. Library list order is the library order (index 0 = top).
 """
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import grpc
 
 from .generated import forge_env_pb2 as pb
 from .generated.forge_env_pb2_grpc import ForgeEnvStub
 
-PROTOCOL_VERSION = 6
+if TYPE_CHECKING:  # pragma: no cover - typing only (avoids importing witness)
+    from .witness import Scenario
+
+PROTOCOL_VERSION = 7
 
 # INVALID_ARGUMENT classification for decision calls (get_decision /
 # submit_decision). The harness exposes no machine-readable subcode, so we match
@@ -241,6 +254,19 @@ def build_submit(game_id: int, decision_id: int, answer: Answer) -> pb.DecisionS
             top=[int(c) for c in top], bottom=[int(c) for c in bottom]
         )
     return pb.DecisionSubmit(**kwargs)
+
+
+def _card_spec_to_proto(spec: Any) -> pb.CardSpec:
+    """Convert a witness.CardSpec (duck-typed) to proto."""
+    return pb.CardSpec(
+        name=str(spec.name),
+        set=str(spec.set),
+        tapped=bool(spec.tapped),
+        summoning_sick=bool(spec.summoning_sick),
+        counters={str(k): int(v) for k, v in spec.counters.items()},
+        damage=int(spec.damage),
+        no_etb_triggers=bool(spec.no_etb_triggers),
+    )
 
 
 class ForgeEnvError(RuntimeError):
@@ -503,6 +529,54 @@ class ForgeEnvClient:
         """
         req = pb.RestoreRequest(game_id=game_id, token=token)
         self._call(self._ensure_stub().Restore, req)
+
+    def setup_scenario(self, game_id: int, scenario: "Scenario") -> tuple[str, int]:
+        """Inject a pre-configured board state into a running game (v7).
+
+        ``scenario`` is a :class:`combo_discovery.witness.Scenario`; this builds
+        the v7 ``SetupScenarioRequest`` from it. Returns
+        ``(state_hash, applied_events)`` where ``applied_events`` is the number
+        of events the injection appended (a deterministic ``ScenarioInjected``
+        marker among them).
+
+        REQUIRES a LIVE outstanding decision — the engine thread is parked, so
+        the state is quiescent. Raises GameNotActiveError on FAILED_PRECONDITION
+        (no outstanding decision / game not active). The call INVALIDATES the
+        outstanding decision, so the caller MUST refetch via ``get_decision``
+        before submitting again (the decision_id may change, mirroring
+        ``restore``). Library list order is the library order (index 0 = top).
+        """
+        players = [self._player_scenario_to_proto(p) for p in scenario.players]
+        req = pb.SetupScenarioRequest(
+            game_id=game_id,
+            players=players,
+            active_player=int(scenario.active_player),
+            turn=int(scenario.turn),
+            phase=str(scenario.phase),
+            require_outstanding_decision=bool(scenario.require_outstanding_decision),
+        )
+        resp: pb.SetupScenarioResponse = self._call(
+            self._ensure_stub().SetupScenario, req
+        )
+        return resp.state_hash, int(resp.applied_events)
+
+    @staticmethod
+    def _player_scenario_to_proto(p: Any) -> pb.PlayerScenario:
+        """Convert a witness.PlayerScenario (duck-typed) to proto."""
+        ps = pb.PlayerScenario(
+            player=int(p.player), life=int(p.life), mana=dict(p.mana)
+        )
+        for spec in p.battlefield:
+            ps.battlefield.append(_card_spec_to_proto(spec))
+        for spec in p.hand:
+            ps.hand.append(_card_spec_to_proto(spec))
+        for spec in p.graveyard:
+            ps.graveyard.append(_card_spec_to_proto(spec))
+        for spec in p.library:
+            ps.library.append(_card_spec_to_proto(spec))
+        for spec in p.exile:
+            ps.exile.append(_card_spec_to_proto(spec))
+        return ps
 
     def is_game_over(self, game_id: int) -> pb.GameOver:
         return self._call(self._ensure_stub().IsGameOver, pb.GameQuery(game_id=game_id))

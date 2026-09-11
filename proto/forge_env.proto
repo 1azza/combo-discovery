@@ -1,4 +1,4 @@
-// ForgeEnv gRPC contract — v6 (normalized event taxonomy + FullState v2).
+// ForgeEnv gRPC contract — v7 (scenario injection, for witness search).
 // Canonical copy lives in the Python repo: combo-discovery/proto/forge_env.proto.
 // The Java harness mirrors it at forge-harness/src/main/proto/forge_env.proto.
 //
@@ -24,6 +24,19 @@
 //    (0 = observer: others' hands/libraries are counts only).
 //  - Permanent gains typed counters and damage.
 //  - protocol_version is now 6.
+//
+// v7 changes on top of v6 (see docs/WITNESS_SEARCH.md):
+//  - SetupScenario injects a pre-configured board state (life, mana, and the
+//    battlefield/hand/graveyard/library/exile contents with tapped /
+//    summoning-sick / counters / damage) into a RUNNING game. It requires a
+//    LIVE outstanding decision (the engine thread is parked, so the state is
+//    quiescent); it invalidates that decision, so the client MUST refetch via
+//    GetDecision afterwards (the sink completes with a SCENARIO_APPLIED
+//    sentinel, handled like RESTORED). Injection consumes no RNG and is
+//    deterministic for a fixed scenario + seed; a deterministic
+//    `ScenarioInjected` event is appended and the scenario hash is folded into
+//    `state_hash`. Library list order is the library order (top first).
+//  - protocol_version is now 7.
 
 syntax = "proto3";
 package forgeenv;
@@ -49,6 +62,9 @@ service ForgeEnv {
   // the game, max 32 live per game.
   rpc Snapshot(GameQuery) returns (SnapshotResponse);
   rpc Restore(RestoreRequest) returns (Empty);
+  // Inject a pre-configured board state (witness search). Requires a LIVE
+  // outstanding decision; invalidates it (client must refetch GetDecision).
+  rpc SetupScenario(SetupScenarioRequest) returns (SetupScenarioResponse);
   // Query game-over status without stepping.
   rpc IsGameOver(GameQuery) returns (GameOver);
   // Stop the game, release resources, and drop its event buffer.
@@ -62,7 +78,7 @@ message Empty {}
 message Pong {
   string version = 1;
   bool game_active = 2;
-  int32 protocol_version = 3;  // 6 for this contract
+  int32 protocol_version = 3;  // 7 for this contract
 }
 
 message DeckSpec {
@@ -405,6 +421,46 @@ message SnapshotResponse {
 message RestoreRequest {
   int64 game_id = 1;
   bytes token = 2;
+}
+
+// --- v7: scenario injection ------------------------------------------------
+
+// One card in an injected zone.
+message CardSpec {
+  string name = 1;                    // Forge card name (must resolve uniquely)
+  string set = 2;                     // optional set code for disambiguation
+  bool tapped = 3;
+  bool summoning_sick = 4;
+  map<string, int32> counters = 5;    // e.g. {"+1/+1": 2}
+  int32 damage = 6;
+  bool no_etb_triggers = 7;           // suppress enters-the-battlefield triggers
+}
+
+// One player's injected state. Repeated CardSpec lists preserve order; for
+// `library` the order is the library order (index 0 = top).
+message PlayerScenario {
+  int32 player = 1;
+  int32 life = 2;                     // -1 = leave unchanged
+  map<string, int32> mana = 3;        // e.g. {"W": 2, "C": 1}; replaces the pool
+  repeated CardSpec battlefield = 4;
+  repeated CardSpec hand = 5;
+  repeated CardSpec graveyard = 6;
+  repeated CardSpec library = 7;
+  repeated CardSpec exile = 8;
+}
+
+message SetupScenarioRequest {
+  int64 game_id = 1;
+  repeated PlayerScenario players = 2;
+  int32 active_player = 3;            // -1 = leave unchanged
+  int32 turn = 4;                     // 0 = leave unchanged
+  string phase = 5;                   // empty = leave unchanged
+  bool require_outstanding_decision = 6;  // default true (engine parked)
+}
+
+message SetupScenarioResponse {
+  string state_hash = 1;              // after injection
+  int32 applied_events = 2;           // events appended by the injection
 }
 
 message GameOver {

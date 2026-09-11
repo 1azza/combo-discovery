@@ -179,11 +179,11 @@ class TestEnvClient:
             client.submit_decision(5, 3, ("option_id", 1))
         assert excinfo.value.code == grpc.StatusCode.FAILED_PRECONDITION
 
-    def test_connect_accepts_protocol_v6(self):
+    def test_connect_accepts_protocol_v7(self):
         client, stub = make_client()
-        stub.Ping.return_value = pb.Pong(version="0.6.0", protocol_version=6)
+        stub.Ping.return_value = pb.Pong(version="0.7.0", protocol_version=7)
         pong = client.connect()
-        assert pong.protocol_version == 6
+        assert pong.protocol_version == 7
 
     def test_connect_rejects_protocol_mismatch(self):
         client, stub = make_client()
@@ -421,6 +421,95 @@ class TestEnvClient:
         events = client.drain_events(5)
         assert events == []
         assert stub.PollEvents.call_count == 1
+
+    # --- v7 SetupScenario --------------------------------------------------
+
+    def test_setup_scenario_builds_v7_request(self):
+        from combo_discovery.witness import CardSpec, PlayerScenario, Scenario
+
+        client, stub = make_client()
+        stub.SetupScenario.return_value = pb.SetupScenarioResponse(
+            state_hash="H7", applied_events=3
+        )
+        scenario = Scenario(
+            players=[
+                PlayerScenario(
+                    player=0,
+                    life=17,
+                    mana={"W": 2, "C": 1},
+                    battlefield=[
+                        CardSpec(
+                            name="Altar", set="LEA", tapped=True,
+                            counters={"+1/+1": 2}, damage=1,
+                        ),
+                        CardSpec(name="Sick Bear", summoning_sick=True),
+                    ],
+                    hand=[CardSpec(name="Bolt")],
+                    graveyard=[CardSpec(name="Dead")],
+                    library=[CardSpec(name="Top"), CardSpec(name="Second")],
+                    exile=[CardSpec(name="Gone")],
+                ),
+                PlayerScenario(player=1, life=20),
+            ],
+            active_player=0,
+            turn=3,
+            phase="Main1",
+            require_outstanding_decision=True,
+        )
+        state_hash, applied = client.setup_scenario(9, scenario)
+        assert (state_hash, applied) == ("H7", 3)
+        req = stub.SetupScenario.call_args[0][0]
+        assert isinstance(req, pb.SetupScenarioRequest)
+        assert req.game_id == 9
+        assert (req.active_player, req.turn, req.phase) == (0, 3, "Main1")
+        assert req.require_outstanding_decision is True
+        assert len(req.players) == 2
+        p0 = req.players[0]
+        assert (p0.player, p0.life) == (0, 17)
+        assert dict(p0.mana) == {"W": 2, "C": 1}
+        assert [c.name for c in p0.battlefield] == ["Altar", "Sick Bear"]
+        assert p0.battlefield[0].tapped is True
+        assert dict(p0.battlefield[0].counters) == {"+1/+1": 2}
+        assert p0.battlefield[0].damage == 1
+        assert p0.battlefield[1].summoning_sick is True
+        assert [c.name for c in p0.hand] == ["Bolt"]
+        assert [c.name for c in p0.graveyard] == ["Dead"]
+        # Library order is preserved (index 0 = top).
+        assert [c.name for c in p0.library] == ["Top", "Second"]
+        assert [c.name for c in p0.exile] == ["Gone"]
+        assert req.players[1].player == 1
+        assert req.players[1].life == 20
+
+    def test_setup_scenario_require_outstanding_decision_false(self):
+        from combo_discovery.witness import Scenario
+
+        client, stub = make_client()
+        stub.SetupScenario.return_value = pb.SetupScenarioResponse(
+            state_hash="H", applied_events=0
+        )
+        client.setup_scenario(4, Scenario(require_outstanding_decision=False))
+        assert stub.SetupScenario.call_args[0][0].require_outstanding_decision is False
+
+    def test_setup_scenario_requires_decision_maps_to_game_not_active(self):
+        from combo_discovery.witness import Scenario
+
+        client, stub = make_client()
+        stub.SetupScenario.side_effect = _rpc_error(
+            "FAILED_PRECONDITION",
+            details="setupScenario requires an outstanding decision",
+        )
+        with pytest.raises(GameNotActiveError, match="requires an outstanding decision"):
+            client.setup_scenario(9, Scenario())
+
+    def test_setup_scenario_invalid_argument_is_invalid_request(self):
+        from combo_discovery.witness import Scenario
+
+        client, stub = make_client()
+        stub.SetupScenario.side_effect = _rpc_error(
+            "INVALID_ARGUMENT", details="card name does not resolve uniquely: X"
+        )
+        with pytest.raises(InvalidRequestError, match="does not resolve uniquely"):
+            client.setup_scenario(9, Scenario())
 
 
 class TestBuildSubmit:
