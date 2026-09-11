@@ -8,6 +8,10 @@ persisted run.  Run with::
 
     uv run python scripts/demo_algebra.py [--db research.db] [--max-len 2]
 
+Every run is bounded *internally* (``--max-seconds`` / ``--max-steps``); the
+report always states the budget and whether the search was truncated, so an
+external ``timeout`` is only a backstop.
+
 Pruning used for the full corpus (documented in ``ontology.links.LinkOptions``):
 
 * ``scope="retrigger"`` — only explore ``enables``/``satisfies`` links around
@@ -30,10 +34,16 @@ from collections import Counter
 from pathlib import Path
 
 from combo_discovery.corpus.spellbook import DEFAULT_VINTAGE_FORMAT, VintageLegality
+from combo_discovery.ontology.budget import (
+    DEFAULT_MAX_SECONDS,
+    DEFAULT_MAX_STEPS,
+    SearchBudget,
+)
 from combo_discovery.ontology.cycles import (
     build_graph,
     find_combos,
     load_motif_weights,
+    loop_machinery_cards,
     vintage_pool,
 )
 from combo_discovery.ontology.extractor import load_contexts
@@ -53,21 +63,6 @@ LAND_UNTAPPERS = (
 )
 
 
-def _loop_machinery(sig) -> bool:
-    """Cards that carry a loop-relevant typed port (the demo's scoped pool)."""
-    if any(p.kind in ("copy_permanent", "extra_phase", "untap") for p in sig.produces):
-        return True
-    if any(p.kind == "zone_move" and str(p.params.get("to") or "").lower() == "battlefield"
-           for p in sig.produces):
-        return True
-    if any(p.kind == "sacrifice" for p in sig.consumes):
-        return True
-    if any(p.kind == "zone_move" and "graveyard" in str(p.params.get("from") or "").lower()
-           for p in sig.produces):
-        return True
-    return False
-
-
 def _latest_corpus_import(conn: sqlite3.Connection) -> str | None:
     row = conn.execute(
         "SELECT r.import_id FROM import_runs r "
@@ -84,6 +79,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="maximum cards per cycle (2 keeps the full-corpus demo fast)")
     parser.add_argument("--max-retrigger", type=int, default=256)
     parser.add_argument("--max-enables", type=int, default=8)
+    parser.add_argument("--max-seconds", type=float, default=DEFAULT_MAX_SECONDS,
+                        help="internal wall-clock budget for the whole search")
+    parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS,
+                        help="internal step budget for the whole search")
+    parser.add_argument("--max-cycles", type=int, default=100_000,
+                        help="cycle-enumeration cap (bounded; never 5_000_000)")
+    parser.add_argument("--broad", action="store_true",
+                        help="opt in to the full Vintage pool (requires --allow-over-budget)")
+    parser.add_argument("--allow-over-budget", action="store_true",
+                        help="proceed above the safe pool/closure thresholds under the budget")
     args = parser.parse_args(argv)
 
     started = time.monotonic()
@@ -110,22 +115,28 @@ def main(argv: list[str] | None = None) -> int:
         else:
             legality = VintageLegality.permissive()
         vintage = set(vintage_pool([c.card_id for c in contexts.values()], names, legality))
-        pool = sorted({s.card_id for s in sigs if s.card_id in vintage and _loop_machinery(s)})
+        if args.broad:
+            pool = sorted(s.card_id for s in sigs if s.card_id in vintage)
+        else:
+            pool = sorted(set(loop_machinery_cards(sigs)) & vintage)
 
         weights = load_motif_weights(conn)
-        options = LinkOptions(
-            scope="retrigger",
+        options = LinkOptions.safe(
             max_retrigger=args.max_retrigger,
             max_enables=args.max_enables,
             closure_depth=2 if args.max_len <= 2 else 3,
         )
+        budget = SearchBudget(args.max_seconds, args.max_steps)
         t_graph = time.monotonic()
-        graph = build_graph(sigs, pool=pool, options=options)
+        graph = build_graph(sigs, pool=pool, options=options, budget=budget,
+                            allow_over_budget=args.allow_over_budget)
         t_graph = time.monotonic() - t_graph
         t_search = time.monotonic()
         combos = find_combos(
             sigs, weights=weights, max_len=args.max_len, pool=pool,
-            options=options, graph=graph, max_cycles=5_000_000,
+            options=options, graph=graph, max_cycles=args.max_cycles,
+            max_seconds=args.max_seconds, max_steps=args.max_steps,
+            allow_over_budget=args.allow_over_budget, budget=budget,
         )
         t_search = time.monotonic() - t_search
         total = time.monotonic() - started
@@ -134,22 +145,27 @@ def main(argv: list[str] | None = None) -> int:
 
     # -- report ------------------------------------------------------------
     lines = [
-        "Interaction-algebra demo (READ-ONLY)",
+        "Interaction-algebra demo (READ-ONLY, bounded)",
         f"  database            : {db_path}",
         f"  corpus import       : {import_id}",
         f"  signatures          : {len(sigs)}  ({t_sig:.1f}s)",
         f"  Vintage pool        : {len(vintage)} cards",
-        f"  loop-machinery scope: {len(pool)} cards",
+        f"  {'broad' if args.broad else 'loop-machinery'} pool: {len(pool)} cards",
         f"  motif weights       : {len(weights)} (latest enrichment run)",
         "",
         "  pruning:",
         f"    scope=retrigger  closure_depth={options.closure_depth}  "
         f"max_len={args.max_len}",
         f"    max_retrigger={args.max_retrigger}  max_enables={args.max_enables}",
+        f"    budget: max_seconds={args.max_seconds} max_steps={args.max_steps} "
+        f"max_cycles={args.max_cycles}",
         f"    graph: nodes={len(graph.by_card)} links={len(graph.links)} "
-        f"re_triggers={len(graph.re_triggers)}  ({t_graph:.1f}s)",
+        f"re_triggers={len(graph.re_triggers)}  ({t_graph:.1f}s)"
+        f"{'  TRUNCATED: ' + str(graph.truncation_reason) if graph.truncated else ''}",
+        f"    cost estimate: {graph.cost_estimate}",
         "",
-        f"(a) cycles found: {len(combos)}  ({t_search:.1f}s search)",
+        f"(a) cycles found: {len(combos)}  ({t_search:.1f}s search)"
+        f"{'  TRUNCATED: ' + str(combos.truncation_reason) if combos.truncated else ''}",
     ]
     by_pattern = Counter(p for combo in combos for p in combo.patterns)
     for pattern, count in by_pattern.most_common():

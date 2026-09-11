@@ -15,7 +15,13 @@ from pathlib import Path
 import pytest
 
 from combo_discovery.corpus.importer import import_corpus, normalize_name
+from combo_discovery.ontology.budget import (
+    BudgetExceeded,
+    SearchBudget,
+    preflight,
+)
 from combo_discovery.ontology.cycles import (
+    ComboList,
     _gate_preconditions,
     build_graph,
     find_combos,
@@ -23,6 +29,7 @@ from combo_discovery.ontology.cycles import (
 )
 from combo_discovery.ontology.extractor import CardContext, load_contexts
 from combo_discovery.ontology.links import (
+    LinkOptions,
     copy_accepts,
     link_enables,
     link_hostile,
@@ -349,3 +356,67 @@ class TestCyclesAndQueries:
             assert load_motif_weights(conn) == {}
         finally:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Hard budgets + cost pre-flight
+# ---------------------------------------------------------------------------
+
+
+def _retrigger_cluster(engines: int = 40, listeners: int = 40) -> list[AbilitySig]:
+    """A synthetic graph whose re-trigger fan-out is large enough to need a cap."""
+    sigs: list[AbilitySig] = []
+    tap = Port("tap", {"self": True, "predicate": "TAPS_COST"})
+    etb = Port("enters_battlefield", {"self": True, "predicate": "ETB_TRIGGER"})
+    for i in range(engines):
+        sigs.append(_sig(1000 + i, f"Engine {i}", f"e{i}",
+                         consumes=(tap,), produces=(_copy_port("Creature"),)))
+    for j in range(listeners):
+        sigs.append(_sig(2000 + j, f"Listener {j}", f"l{j}", kind="trigger",
+                         trigger=etb, produces=(_untap_port("Creature"),)))
+    return sigs
+
+
+class TestBudgetsAndPreflight:
+    def test_preflight_clamps_closure_depth(self):
+        with pytest.warns(RuntimeWarning, match="clamped"):
+            depth, messages = preflight(100, 5)
+        assert depth == 2
+        assert messages
+
+    def test_preflight_refuses_large_pool_unless_overridden(self):
+        with pytest.raises(BudgetExceeded):
+            preflight(9_000, 2)
+        with pytest.warns(RuntimeWarning, match="safe limit"):
+            depth, messages = preflight(9_000, 2, allow_over_budget=True)
+        assert depth == 2
+        assert messages
+
+    def test_safe_link_options_are_tight(self):
+        options = LinkOptions.safe()
+        assert options.scope == "retrigger"
+        assert options.closure_depth == 2
+        assert options.max_enables is not None
+
+    def test_pathological_config_truncates_instead_of_hanging(self):
+        sigs = _retrigger_cluster()
+        combos = find_combos(sigs, max_len=3, options=LinkOptions.safe(),
+                             max_seconds=10, max_steps=50)
+        assert isinstance(combos, ComboList)
+        assert combos.truncated is True
+        assert combos.truncation_reason is not None
+        assert "max_steps" in combos.truncation_reason
+
+    def test_build_graph_reports_partial_on_budget(self):
+        sigs = _retrigger_cluster()
+        graph = build_graph(sigs, options=LinkOptions.safe(),
+                            max_seconds=10, max_steps=50)
+        assert graph.truncated is True
+        assert "max_steps" in (graph.truncation_reason or "")
+        assert graph.budget_report and graph.budget_report["truncated"] is True
+
+    def test_default_budget_completes_small_graph(self):
+        combos = find_combos(_three_card_cycle(), max_len=3)
+        assert combos
+        assert combos.truncated is False
+        assert combos.truncation_reason is None

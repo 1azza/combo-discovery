@@ -634,19 +634,23 @@ async def test_live_card_lab_read_only(monkeypatch):
         assert "showing 200 of 791" in str(view.query_one("#lab-known-count", Static).render())
 
         proposals = view.query_one("#lab-proposed-list", OptionList)
-        assert proposals.option_count == 14
+        assert proposals.option_count == 130
         labels = " | ".join(_labels(proposals)).lower()
         assert "known" in labels and "candidate" in labels and "novel" not in labels
 
         missed = view.query_one("#lab-missed-list", OptionList)
         await _wait_option(pilot, missed, timeout=30.0)
-        assert missed.option_count == 66
-        assert any("fear of missing out" in label.lower() for label in _labels(missed))
+        assert missed.option_count == 63
+        # Fear of Missing Out is now proposed (a known pair), so it left the
+        # missed list and appears among the proposals instead.
+        assert "fear of missing out" in labels
+        assert missed.option_count > 0
 
         metrics = view.query_one("#lab-metrics-text", Static)
         assert await _wait_text(pilot, metrics, "by pattern", timeout=30.0)
-        # Kiki: precision 0.857 (12 known / 14 proposed), recall 0.154, F1 0.261
-        assert "P 0.857" in str(metrics.render())
+        # Kiki over the combined legacy + algebra proposal surface:
+        # 40 known / 79 proposed (precision 0.506), recall 0.388, F1 0.440.
+        assert "P 0.506" in str(metrics.render())
         diagnostics = view.query_one("#lab-diagnostics-text", Static)
         assert "misses" in str(diagnostics.render())
 

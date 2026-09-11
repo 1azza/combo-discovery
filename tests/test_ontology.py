@@ -42,6 +42,7 @@ from combo_discovery.ontology.extractor import (
     mana_value,
     parse_restriction,
 )
+from combo_discovery.ontology.queries import QUERIES
 from combo_discovery.store import ExperimentStore, _migration_3
 
 FIXTURES = Path(__file__).parent / "fixtures" / "ontology_cards"
@@ -182,7 +183,7 @@ def ontology_db(tmp_path: Path) -> tuple[Path, dict[str, int]]:
     db = tmp_path / "research.db"
     store = ExperimentStore(db)
     import_corpus(store, root)
-    report = build_ontology(store, apply_caps=False)
+    report = build_ontology(store, apply_caps=False, mode="legacy")
     assert report.interactions_total > 0
     store.close()
 
@@ -984,7 +985,7 @@ class TestSchemaAndPersistence:
         db, _ = ontology_db
         before = _query(db, "SELECT COUNT(*) AS n FROM interactions")[0]["n"]
         store = ExperimentStore(db)
-        report = build_ontology(store)  # already built
+        report = build_ontology(store, mode="legacy")  # already built
         store.close()
         assert report.already_built is True
         assert _query(db, "SELECT COUNT(*) AS n FROM interactions")[0]["n"] == before
@@ -998,6 +999,91 @@ class TestSchemaAndPersistence:
         lines = out.read_text().splitlines()
         assert len(lines) == _query(db, "SELECT COUNT(*) AS n FROM card_predicates")[0]["n"]
         assert json.loads(lines[0])["predicate"]
+
+
+# ---------------------------------------------------------------------------
+# Algebra builder (default path): q: patterns, cycles, determinism
+# ---------------------------------------------------------------------------
+
+
+class TestAlgebraBuilder:
+    @staticmethod
+    def _build(root: Path):
+        store = ExperimentStore(root / "research.db")
+        try:
+            import_corpus(store, root)
+            return build_ontology(store, mode="algebra")
+        finally:
+            store.close()
+
+    def test_registers_q_patterns_and_keeps_legacy(self, tmp_path):
+        root = _seed_cardsfolder(tmp_path)
+        report = self._build(root)
+        db = root / "research.db"
+        assert report.mode == "algebra"
+        assert report.interactions_total > 0
+        names = {row["name"] for row in _query(db, "SELECT name FROM patterns")}
+        assert {p.name for p in PATTERNS} <= names
+        assert {f"q:{q.name}" for q in QUERIES} <= names
+        used = {
+            row["name"] for row in _query(
+                db,
+                "SELECT DISTINCT p.name AS name FROM interactions i "
+                "JOIN patterns p ON p.id = i.pattern_id",
+            )
+        }
+        assert used and all(name.startswith("q:") for name in used)
+
+    def test_maps_cycles_to_hypotheses_and_links_to_interactions(self, tmp_path):
+        root = _seed_cardsfolder(tmp_path)
+        report = self._build(root)
+        db = root / "research.db"
+        hypotheses = _query(
+            db,
+            "SELECT h.card_ids_json, h.mechanism FROM combo_hypotheses h "
+            "JOIN patterns p ON p.id = h.pattern_id WHERE p.name LIKE 'q:%'",
+        )
+        assert hypotheses and report.hypotheses_total > 0
+        for row in hypotheses:
+            assert len(json.loads(row["card_ids_json"])) >= 2
+            assert row["mechanism"]
+        assert report.links_total > 0
+        assert report.pool_size > 0
+
+    def test_finds_kiki_exarch_as_an_algebra_proposal(self, tmp_path):
+        root = _seed_cardsfolder(tmp_path)
+        self._build(root)
+        db = root / "research.db"
+        row = _interaction(db, "Kiki-Jiki, Mirror Breaker", "Deceiver Exarch",
+                           "q:infinite_etb_loop")
+        assert row is not None
+
+    def test_is_idempotent_without_force(self, tmp_path):
+        root = _seed_cardsfolder(tmp_path)
+        store = ExperimentStore(root / "research.db")
+        try:
+            import_corpus(store, root)
+            first = build_ontology(store, mode="algebra")
+            second = build_ontology(store, mode="algebra")
+        finally:
+            store.close()
+        assert first.interactions_total > 0
+        assert second.already_built is True
+
+    def test_two_builds_are_deterministic(self, tmp_path):
+        sql = (
+            "SELECT p.name, i.source_card_id, i.target_card_id, i.score, "
+            "i.evidence_json FROM interactions i "
+            "JOIN patterns p ON p.id = i.pattern_id "
+            "WHERE p.name LIKE 'q:%' "
+            "ORDER BY p.name, i.source_card_id, i.target_card_id"
+        )
+        digests = []
+        for sub in ("one", "two"):
+            root = _seed_cardsfolder(tmp_path / sub)
+            self._build(root)
+            digests.append([tuple(row) for row in _query(root / "research.db", sql)])
+        assert digests[0] and digests[0] == digests[1]
 
 
 # ---------------------------------------------------------------------------

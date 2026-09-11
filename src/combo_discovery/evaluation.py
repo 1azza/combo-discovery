@@ -186,8 +186,14 @@ def _load_proposals(
     conn: sqlite3.Connection,
     ontology_import_id: str | None,
     pattern: str | None,
+    patterns: Iterable[str] | None = None,
 ) -> list[tuple[int, str, int, int, float]]:
-    """Proposal pairs from ``interactions`` (richest: carries evidence_json)."""
+    """Proposal pairs from ``interactions`` (richest: carries evidence_json).
+
+    ``patterns`` (if given) restricts to a set of pattern names; this is how the
+    legacy registry and the algebra ``q:*`` vocabulary are scored separately
+    when both live under the same corpus import.
+    """
     sql = (
         "SELECT i.id AS id, p.name AS pattern, i.source_card_id AS source_card_id, "
         "i.target_card_id AS target_card_id, i.score AS score "
@@ -201,6 +207,13 @@ def _load_proposals(
     if pattern:
         clauses.append("p.name = ?")
         params.append(pattern)
+    if patterns is not None:
+        names = sorted({str(name) for name in patterns})
+        if not names:
+            return []
+        placeholders = ",".join("?" for _ in names)
+        clauses.append(f"p.name IN ({placeholders})")  # noqa: S608 - fixed placeholders
+        params.extend(names)
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY i.id"
@@ -218,16 +231,21 @@ def classify_pairs(
     *,
     card: str | None = None,
     pattern: str | None = None,
+    patterns: Iterable[str] | None = None,
     ontology_import_id: str | None = None,
     known_import_id: str | None = None,
 ) -> list[PairVerdict]:
-    """Classify every proposal for a scope and list missed exact known variants."""
+    """Classify every proposal for a scope and list missed exact known variants.
+
+    ``pattern`` restricts to one pattern; ``patterns`` restricts to a set (used
+    to score the legacy registry and the algebra ``q:*`` vocabulary separately).
+    """
     conn = store._conn
     with store_module._DB_LOCK:
         ontology_import_id = ontology_import_id or _latest_import(conn)
         known_import_id = known_import_id or _latest_import(conn, source=SOURCE_A)
         card_names = _load_card_names(conn)
-        proposals = _load_proposals(conn, ontology_import_id, pattern)
+        proposals = _load_proposals(conn, ontology_import_id, pattern, patterns)
         any_set, full_set, combo_by_hash = _load_known_hashes(conn, known_import_id)
 
     card_filter_id: int | None = None

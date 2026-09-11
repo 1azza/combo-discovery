@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
 from . import vocabulary as vocab
+from .budget import SearchBudget
 from .extractor import CardPredicate
 from .patterns.base import CardView
 from .ports import AbilitySig, Port
@@ -309,6 +310,25 @@ class LinkOptions:
     scope: str | None = None  # None = full build; "retrigger" = endpoint-bounded
     closure_depth: int = 3  # scoped build: 2 = 2-card cycles only, 3 = one hop out
 
+    @classmethod
+    def safe(cls, **overrides: Any) -> "LinkOptions":
+        """The recommended full-corpus preset: tight, bounded, depth-2.
+
+        This is the "safe default" the builder and the demo use.  The full
+        ``LinkOptions()`` default (an unbounded ``scope=None`` build at
+        ``closure_depth=3``) is retained only for small/hermetic corpora; the
+        broad pool is opt-in and must pass ``allow_over_budget=True``.
+        """
+        base: dict[str, Any] = {
+            "scope": "retrigger",
+            "max_retrigger": 256,
+            "max_enables": 8,
+            "closure_depth": 2,
+            "include_satisfies": True,
+        }
+        base.update(overrides)
+        return cls(**base)
+
 
 def _closure_rank(sig: AbilitySig) -> int:
     """Prefer listener/engine abilities that can close a resource loop."""
@@ -344,11 +364,14 @@ def _add_satisfies(
     add,
     *,
     cap: int | None = None,
+    budget: SearchBudget | None = None,
 ) -> None:
     if not holder.gates:
         return
     for kind in _SATISFY_PRODUCER_KINDS:
         for producer in _capped(produced_index.get(kind, ()), cap):
+            if budget is not None and not budget.tick():
+                return
             if producer.card_id == holder.card_id:
                 continue
             add(link_satisfies(producer, holder))
@@ -359,9 +382,18 @@ def build_links(
     *,
     weights: dict[str, float] | None = None,
     options: LinkOptions | None = None,
+    budget: SearchBudget | None = None,
 ) -> list[Link]:
-    """Generate deduplicated links among ``sigs`` deterministically."""
+    """Generate deduplicated links among ``sigs`` deterministically.
+
+    ``budget`` bounds the work: the function returns the partial link set and
+    sets ``budget.truncated`` / ``budget.reason`` when the wall-clock or step
+    ceiling is hit.  When ``budget`` is ``None`` a default (finite) budget is
+    used so no call is accidentally unbounded; callers that need the truncation
+    report pass their own :class:`~.budget.SearchBudget`.
+    """
     options = options or LinkOptions()
+    budget = budget or SearchBudget()
     sigs = list(sigs)
     produced_index: dict[str, list[AbilitySig]] = {}
     consumed_index: dict[str, list[AbilitySig]] = {}
@@ -380,6 +412,12 @@ def build_links(
         if link is not None:
             links.setdefault(link.key(), link)
 
+    def result() -> list[Link]:
+        return sorted(links.values(), key=lambda l: (
+            l.src.card_name, l.src.ability_ref, l.dst.card_name, l.dst.ability_ref,
+            l.kind, l.subkind, l.motif,
+        ))
+
     # -- re_trigger ---------------------------------------------------------
     closure_listeners: list[AbilitySig] = []
     listener_producers: dict[str, list[AbilitySig]] = {}
@@ -392,6 +430,8 @@ def build_links(
 
     re_triggers: list[Link] = []
     for engine in sigs:
+        if not budget.tick():
+            return result()
         if not _is_retrigger_engine(engine):
             continue
         has_inputs = bool(engine.consumes)
@@ -422,25 +462,49 @@ def build_links(
         if options.max_retrigger is not None and not has_inputs:
             ordered = ordered[: options.max_retrigger]
         for listener in ordered:
+            if not budget.tick():
+                return result()
             link = link_re_trigger(engine, listener)
             if link is not None:
                 re_triggers.append(link)
                 add(link)
 
     # -- enables / satisfies scope -----------------------------------------
-    if options.scope == "retrigger" and re_triggers:
+    if options.scope == "retrigger" and re_triggers and not budget.expired:
         engine_cards = {link.src.card_id for link in re_triggers}
         listener_cards = {link.dst.card_id for link in re_triggers}
         # For 2-card cycles only the listener endpoints can feed the engine back.
         incoming_cards = listener_cards if options.closure_depth <= 2 else None
 
+        # Precompute the capped producer/consumer fan-out once instead of
+        # re-sorting the same lists for every engine/listener (the broad-pool
+        # blow-up was partly this repeated ``_capped`` sort).
+        capped_by_kind = {
+            kind: _capped(members, options.max_enables)
+            for kind, members in produced_index.items()
+        }
+        capped_consumers_by_kind = {
+            kind: _capped(members, options.max_enables)
+            for kind, members in consumed_index.items()
+        }
+
         # incoming to endpoint engines: producers of what they consume.
         for engine in sigs:
+            if not budget.tick():
+                return result()
             if engine.card_id not in engine_cards:
                 continue
             for consumed in engine.consumes:
                 for producer_kind in ENABLE_PRODUCERS.get(consumed.kind, ()):
-                    for producer in produced_index.get(producer_kind, ()):
+                    # Tap-loop untappers are left uncapped so a specific partner
+                    # is never dropped by name; other resource feeds are bounded.
+                    if consumed.kind == "tap" or options.max_enables is None:
+                        producers = produced_index.get(producer_kind, ())
+                    else:
+                        producers = capped_by_kind.get(producer_kind, ())
+                    for producer in producers:
+                        if not budget.tick():
+                            return result()
                         if producer.card_id == engine.card_id:
                             continue
                         if incoming_cards is not None and \
@@ -448,18 +512,23 @@ def build_links(
                             continue
                         add(link_enables(producer, engine))
             if options.include_satisfies:
-                _add_satisfies(engine, produced_index, add)
+                _add_satisfies(engine, produced_index, add, budget=budget)
+                if budget.expired:
+                    return result()
 
         # outgoing from endpoint listeners: consumers of what they produce
         # (only needed to reach a third card).
         if options.closure_depth >= 3:
             for listener in sigs:
+                if not budget.tick():
+                    return result()
                 if listener.card_id not in listener_cards:
                     continue
                 for produced in listener.produces:
                     for consume_kind in CONSUME_FOR_PRODUCE.get(produced.kind, ()):
-                        consumers = consumed_index.get(consume_kind, ())
-                        for consumer in _capped(consumers, options.max_enables):
+                        for consumer in capped_consumers_by_kind.get(consume_kind, ()):
+                            if not budget.tick():
+                                return result()
                             if consumer.card_id != listener.card_id:
                                 add(link_enables(listener, consumer))
     else:
@@ -470,22 +539,26 @@ def build_links(
         }
         seen_consumers: set[tuple[int, str]] = set()
         for consumer in consumer_sigs:
+            if not budget.tick():
+                return result()
             if consumer.key in seen_consumers:
                 continue
             seen_consumers.add(consumer.key)
             for consumed in consumer.consumes:
                 for producer_kind in ENABLE_PRODUCERS.get(consumed.kind, ()):  # type: ignore[arg-type]
                     for producer in producer_order.get(producer_kind, ()):
+                        if not budget.tick():
+                            return result()
                         if producer.card_id == consumer.card_id:
                             continue
                         add(link_enables(producer, consumer))
             if options.include_satisfies:
-                _add_satisfies(consumer, produced_index, add, cap=options.max_enables)
+                _add_satisfies(consumer, produced_index, add, cap=options.max_enables,
+                               budget=budget)
+                if budget.expired:
+                    return result()
 
-    return sorted(links.values(), key=lambda l: (
-        l.src.card_name, l.src.ability_ref, l.dst.card_name, l.dst.ability_ref,
-        l.kind, l.subkind, l.motif,
-    ))
+    return result()
 
 
 def link_weight(link: Link, weights: dict[str, float] | None) -> float:
