@@ -184,10 +184,14 @@ precision against Commander Spellbook, driven from the TUI Card Lab.
       (observed during Wave-2 staging with custom decks; engine-side, not a
       harness defect — the harness correctly detects the unterminated engine
       thread)
-- [ ] Remote priority options are AI-curated (`canPlaySa` filter, not a
-      legality filter): legal actions the AI deems unattractive never appear
-      as options — matters now that targeting has landed; switch to a
-      pure-legality filter in a hardening round
+- [x] Remote priority options use a pure-legality filter (`canPlay` +
+      `canPayCost`, deliberately **not** `canPlaySa`) — resolved in the
+      hardening round; legal-but-AI-unattractive actions are surfaced
+- [ ] `state_hash` coverage is incomplete for scenario work: it ignores
+      library/hand/graveyard order, card ids, summoning sickness, attachments,
+      player counters and lands-played, so distinct scenarios can collide.
+      Fold a scenario hash into the projection when scenario injection lands
+      (see `docs/WITNESS_SEARCH.md`)
 - [ ] GetState zone snapshot uses bounded retry over live zone lists; an
       immutable game-thread snapshot is the deferred full fix (TODO in code)
 - [ ] Long-tail callbacks deliberately keep AI defaults (mana payment,
