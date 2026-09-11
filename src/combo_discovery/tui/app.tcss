@@ -148,12 +148,33 @@ ActivityView {
     margin: 0 0 1 0;
 }
 
+.filter-row {
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+#cand-pattern {
+    width: 22;
+    margin: 0 1 0 0;
+}
+
+#cand-search {
+    width: 1fr;
+}
+
 #cand-list {
     height: 1fr;
 }
 
 #cand-empty {
     height: 1fr;
+}
+
+/* Card links in the hypothesis detail pane. */
+#cand-card-links {
+    height: auto;
+    max-height: 8;
+    margin: 0 0 1 0;
 }
 
 /* -- activity ----------------------------------------------------------- */
@@ -419,6 +440,11 @@ ProgressBar > .bar--complete {
     color: $omarchy-faint;
 }
 
+.detail-actions {
+    color: $omarchy-faint;
+    margin: 1 0 0 0;
+}
+
 #card-detail,
 #candidate-detail {
     height: auto;
@@ -477,6 +503,103 @@ HelpScreen {
 }
 
 #help-foot {
+    color: $omarchy-faint;
+    margin: 1 0 0 0;
+}
+
+/* -- interactions modal ------------------------------------------------- */
+
+InteractionsScreen {
+    align: center middle;
+    background: $background 75%;
+}
+
+#interactions-card {
+    width: 96;
+    max-width: 94%;
+    height: auto;
+    max-height: 88%;
+    background: $panel;
+    border: round $omarchy-border-hi;
+    padding: 1 2;
+}
+
+#interactions-title {
+    color: $omarchy-accent;
+    text-style: bold;
+}
+
+#interactions-sub {
+    color: $omarchy-faint;
+    margin: 0 0 1 0;
+}
+
+#interactions-body {
+    height: 18;
+}
+
+#interactions-list {
+    width: 48;
+    height: 1fr;
+    margin: 0 1 0 0;
+}
+
+#interactions-detail {
+    width: 1fr;
+    height: 1fr;
+    background: $surface;
+    border: round $omarchy-border;
+    padding: 0 1;
+}
+
+#interactions-mechanism {
+    color: $text;
+}
+
+#interactions-foot {
+    color: $omarchy-faint;
+    margin: 1 0 0 0;
+}
+
+/* -- scratch deck modal ------------------------------------------------- */
+
+ScratchDeckScreen {
+    align: center middle;
+    background: $background 75%;
+}
+
+#scratch-card {
+    width: 64;
+    max-width: 92%;
+    height: auto;
+    max-height: 80%;
+    background: $panel;
+    border: round $omarchy-border-hi;
+    padding: 1 3;
+}
+
+#scratch-title {
+    color: $omarchy-accent;
+    text-style: bold;
+}
+
+#scratch-sub {
+    color: $omarchy-faint;
+    margin: 0 0 1 0;
+}
+
+#scratch-body {
+    height: 14;
+    background: $surface;
+    border: round $omarchy-border;
+    padding: 0 1;
+}
+
+#scratch-list {
+    height: auto;
+}
+
+#scratch-foot {
     color: $omarchy-faint;
     margin: 1 0 0 0;
 }

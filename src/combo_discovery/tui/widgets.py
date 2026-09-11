@@ -10,13 +10,15 @@ from __future__ import annotations
 from typing import Any
 
 from rich.console import Group
-from rich.syntax import Syntax
 from rich.text import Text
 from textual.containers import Vertical
-from textual.widgets import Rule, Static
+from textual.widgets import OptionList, Rule, Static
+from textual.widgets.option_list import Option
 
 from . import theme as pal
-from .data import pretty_json, short_id
+from .data import effective_status, status_color
+
+CARD_ACTION_HINT = "i interactions   ·   d add to research deck   ·   D view deck"
 
 # run / worker state -> accent color for the little status glyph
 _STATE_COLORS = {
@@ -162,6 +164,7 @@ class CardDetail(Vertical):
         yield Rule()
         yield Static("", id="card-effects", classes="detail-effects")
         yield Static("", id="card-extra", classes="detail-extra")
+        yield Static("", id="card-actions", classes="detail-actions")
 
     def clear(self) -> None:
         for widget in self.query(Static):
@@ -197,66 +200,90 @@ class CardDetail(Vertical):
         self.query_one("#card-extra", Static).update(
             Text("  ·  ".join(extras), style=pal.FAINT)
         )
+        self.query_one("#card-actions", Static).update(
+            Text(CARD_ACTION_HINT, style=pal.FAINT)
+        )
 
 
 class CandidateDetail(Vertical):
-    """Right-hand candidate inspector for the Candidates view."""
+    """Right-hand inspector for a combo hypothesis (row ids are hypothesis ids)."""
 
     def compose(self):
         yield Static("", id="cand-title", classes="detail-name")
         yield Static("", id="cand-meta", classes="detail-type")
         yield Rule()
-        yield Static("Evidence", classes="section-label")
-        yield Static("", id="cand-evidence")
+        yield Static("Mechanism", classes="section-label")
+        yield Static("", id="cand-mechanism")
+        yield Static("Cards", classes="section-label")
+        yield OptionList(id="cand-card-links")
         yield Static("Adjudications", classes="section-label")
         yield Static("", id="cand-verdicts")
+        yield Static("", id="cand-actions", classes="detail-actions")
 
     def clear(self) -> None:
         for widget in self.query(Static):
             widget.update("")
+        self.query_one("#cand-card-links", OptionList).clear_options()
 
-    def show(self, candidate: dict[str, Any] | None, verdicts: list[dict[str, Any]] | None = None) -> None:
+    def show(
+        self,
+        hypothesis: dict[str, Any] | None,
+        verdicts: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.clear()
-        if candidate is None:
+        if hypothesis is None:
             return
-        from .data import parse_json_list
 
-        names = [str(n) for n in parse_json_list(candidate.get("card_names_json"))]
-        names = [n for n in names if n]
-        title = "  +  ".join(names) if names else f"candidate #{candidate.get('id')}"
+        names = [str(name) for name in hypothesis.get("card_names") or [] if name]
+        title = "  +  ".join(names) if names else f"hypothesis #{hypothesis.get('id')}"
         self.query_one("#cand-title", Static).update(Text(title, style=f"bold {pal.ACCENT}"))
 
-        status = str(candidate.get("status") or "unknown")
-        status_color = {
-            "verified": pal.OK,
-            "refuted": pal.ERR,
-            "inconclusive": pal.WARN,
-            "proposed": pal.ACCENT,
-        }.get(status, pal.MUTED)
+        status = effective_status(hypothesis)
+        status_style = status_color(status)
+        score = hypothesis.get("score")
         meta = Text()
-        meta.append("status ", style=pal.FAINT)
-        meta.append(status, style=f"bold {status_color}")
-        meta.append("    run ", style=pal.FAINT)
-        meta.append(short_id(candidate.get("run_id")), style=pal.MUTED)
-        meta.append("    created ", style=pal.FAINT)
-        meta.append(str(candidate.get("created_at") or "—"), style=pal.MUTED)
+        meta.append("pattern ", style=pal.FAINT)
+        meta.append(str(hypothesis.get("pattern") or "—"), style=pal.MUTED)
+        meta.append("  ·  ", style=pal.FAINT)
+        meta.append("● ", style=status_style)
+        meta.append(status, style=f"bold {status_style}")
+        meta.append("  ·  score ", style=pal.FAINT)
+        meta.append(f"{float(score):.3f}" if isinstance(score, (int, float)) else "—",
+                    style=pal.ACCENT)
+        meta.append("  ·  id ", style=pal.FAINT)
+        meta.append(str(hypothesis.get("id")), style=pal.FAINT)
         self.query_one("#cand-meta", Static).update(meta)
 
-        evidence = pretty_json(candidate.get("evidence_json"))
-        if evidence:
-            self.query_one("#cand-evidence", Static).update(
-                Syntax(evidence, "json", theme="monokai", word_wrap=True, background_color="default")
-            )
+        mechanism = str(hypothesis.get("mechanism") or "").strip()
+        self.query_one("#cand-mechanism", Static).update(
+            Text(mechanism or "No mechanism text recorded.", style=pal.TEXT)
+        )
+
+        links = self.query_one("#cand-card-links", OptionList)
+        cards = hypothesis.get("cards") or []
+        links.add_options(
+            [
+                Option(
+                    Text.assemble(
+                        ("→ ", pal.FAINT),
+                        (str(card.get("name") or card.get("id")), pal.TEXT),
+                    ),
+                    id=str(card.get("id")),
+                )
+                for card in cards
+            ]
+        )
+        if cards:
+            links.highlighted = 0
         else:
-            self.query_one("#cand-evidence", Static).update(
-                Text("No evidence recorded for this candidate yet.", style=pal.FAINT)
-            )
+            links.add_options([Option("no cards recorded", disabled=True)])
 
         if verdicts:
             lines: list[Any] = []
             for entry in verdicts:
                 line = Text()
-                line.append(str(entry.get("verdict") or "—"), style=f"bold {pal.TEXT}")
+                line.append(str(entry.get("verdict") or "—"),
+                            style=f"bold {status_color(str(entry.get('verdict') or ''))}")
                 if entry.get("reviewer"):
                     line.append(f"  ·  {entry['reviewer']}", style=pal.MUTED)
                 if entry.get("created_at"):
@@ -267,11 +294,19 @@ class CandidateDetail(Vertical):
             self.query_one("#cand-verdicts", Static).update(Group(*lines))
         else:
             self.query_one("#cand-verdicts", Static).update(
-                Text("No adjudications recorded.", style=pal.FAINT)
+                Text("No adjudications yet.", style=pal.FAINT)
             )
+
+        self.query_one("#cand-actions", Static).update(
+            Text(
+                "v cycle status   ·   tab to a card link, enter jumps to Corpus",
+                style=pal.FAINT,
+            )
+        )
 
 
 __all__ = [
+    "CARD_ACTION_HINT",
     "CardDetail",
     "CandidateDetail",
     "EmptyState",

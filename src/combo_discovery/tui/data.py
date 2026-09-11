@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +45,68 @@ POLICY_LABELS: dict[str, str] = {
     "default": "default_policy",
     "goldfish": "GoldfishPolicy",
 }
+
+# The persistent scratch deck the Corpus view builds by adding cards.
+SCRATCH_DECK_FILE = "research_scratch.dck"
+SCRATCH_DECK_NAME = "Research Scratch"
+BASIC_LANDS = frozenset({"Plains", "Island", "Swamp", "Mountain", "Forest", "Wastes"})
+
+# combo_hypotheses status vocabulary (mirrors the store CHECK constraint).
+HYPOTHESIS_STATUSES = ("proposed", "verified", "refuted", "inconclusive")
+STATUS_CYCLE = {
+    "proposed": "verified",
+    "verified": "refuted",
+    "refuted": "inconclusive",
+    "inconclusive": "proposed",
+}
+STATUS_COLORS = {
+    "proposed": "warn",  # amber
+    "verified": "ok",  # green
+    "refuted": "err",  # red
+    "inconclusive": "faint",  # dim
+}
+STATUS_GLYPHS = {
+    "proposed": "●",
+    "verified": "●",
+    "refuted": "●",
+    "inconclusive": "○",
+}
+
+
+def next_status(status: str) -> str:
+    """Cycle proposed -> verified -> refuted -> inconclusive -> proposed."""
+    return STATUS_CYCLE.get(str(status).lower(), "proposed")
+
+
+def status_color(status: str) -> str:
+    """Palette key (see :mod:`combo_discovery.tui.theme`) for a hypothesis status."""
+    from . import theme as pal
+
+    return {
+        "warn": pal.WARN,
+        "ok": pal.OK,
+        "err": pal.ERR,
+        "faint": pal.FAINT,
+    }.get(STATUS_COLORS.get(status, "faint"), pal.FAINT)
+
+
+def effective_status(row: dict[str, Any]) -> str:
+    """The hypothesis status as last adjudicated in the TUI, else its own."""
+    return str(row.get("latest_verdict") or row.get("status") or "proposed")
+
+
+def is_basic_land(name: str | None, type_line: str | None = None) -> bool:
+    """True for the five basic lands (and Wastes), by name or type line."""
+    if name and name.strip() in BASIC_LANDS:
+        return True
+    if type_line:
+        return any(basic in type_line for basic in BASIC_LANDS)
+    return False
+
+
+def _chunks(items: Sequence[int], size: int = 800):
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
 
 
 class RunCancelled(RuntimeError):
@@ -192,6 +254,106 @@ def discover_decks(decks_dir: str | Path) -> list[tuple[str, str]]:
         return []
     found = [(p.stem, str(p)) for p in directory.glob("*.dck") if p.is_file()]
     return sorted(found, key=lambda item: item[0].lower())
+
+
+# -- research scratch deck (Forge .dck format) ------------------------------
+
+
+def scratch_deck_path(decks_dir: str | Path) -> Path:
+    """The persistent scratch deck inside the decks directory."""
+    return Path(decks_dir) / SCRATCH_DECK_FILE
+
+
+def parse_dck(text: str) -> tuple[str, list[tuple[int, str]]]:
+    """Parse a Forge ``.dck`` into ``(name, [(count, card_name), ...])``.
+
+    Only ``[metadata] Name=`` and ``[Main]`` entries are read; ``#``/``//``
+    comments and blank lines are ignored. Anything unparseable in ``[Main]`` is
+    kept as a count-1 entry rather than dropped.
+    """
+    name = SCRATCH_DECK_NAME
+    entries: list[tuple[int, str]] = []
+    section: str | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            continue
+        if section == "metadata" and "=" in line:
+            key, value = line.split("=", 1)
+            if key.strip().lower() == "name":
+                name = value.strip() or name
+            continue
+        if section != "main":
+            continue
+        head, _, rest = line.partition(" ")
+        if head.isdigit() and rest.strip():
+            entries.append((int(head), rest.strip()))
+        else:
+            entries.append((1, line))
+    return name, entries
+
+
+def render_dck(name: str, entries: Sequence[tuple[int, str]]) -> str:
+    """Render a Forge ``.dck`` from a deck name and ``(count, card_name)`` rows."""
+    lines = ["[metadata]", f"Name={name}", "", "[Main]"]
+    lines.extend(f"{int(count)} {card_name}" for count, card_name in entries)
+    return "\n".join(lines) + "\n"
+
+
+def read_scratch_deck(path: str | Path) -> tuple[str, list[tuple[int, str]]]:
+    deck = Path(path)
+    if not deck.exists():
+        return SCRATCH_DECK_NAME, []
+    return parse_dck(deck.read_text(encoding="utf-8"))
+
+
+def write_scratch_deck(
+    path: str | Path,
+    entries: Sequence[tuple[int, str]],
+    name: str = SCRATCH_DECK_NAME,
+) -> None:
+    deck = Path(path)
+    deck.parent.mkdir(parents=True, exist_ok=True)
+    deck.write_text(render_dck(name, entries), encoding="utf-8")
+
+
+def add_card_to_scratch_deck(path: str | Path, card_name: str) -> tuple[int, int]:
+    """Add one copy of ``card_name`` to the scratch deck, merging duplicates.
+
+    Returns ``(copies_of_this_card, total_cards)``. Named cards match
+    case-insensitively so re-adding increments the existing entry.
+    """
+    target = (card_name or "").strip()
+    if not target:
+        raise ValueError("card name is required")
+    name, entries = read_scratch_deck(path)
+    new_count = 1
+    for index, (count, existing) in enumerate(entries):
+        if existing.lower() == target.lower():
+            new_count = count + 1
+            entries[index] = (new_count, existing)
+            break
+    else:
+        entries.append((1, target))
+    write_scratch_deck(path, entries, name)
+    total = sum(count for count, _ in entries)
+    return new_count, total
+
+
+def clear_scratch_deck(path: str | Path) -> None:
+    """Empty the scratch deck, keeping the file so deck discovery still sees it."""
+    name, _ = read_scratch_deck(path)
+    write_scratch_deck(path, [], name or SCRATCH_DECK_NAME)
+
+
+def scratch_deck_summary(path: str | Path) -> tuple[int, int]:
+    """``(distinct_cards, total_cards)`` for the scratch deck."""
+    _, entries = read_scratch_deck(path)
+    return len(entries), sum(count for count, _ in entries)
+
 
 
 def resolve_policy(name: str):
@@ -501,6 +663,9 @@ class StoreBinding:
         self._conn.row_factory = sqlite3.Row
         with suppress(sqlite3.Error):
             self._conn.execute("PRAGMA query_only = ON")
+        # Worker-thread queries and UI-thread queries share this connection, so
+        # serialize them (SQLite connections are not safe for concurrent use).
+        self._lock = threading.RLock()
         self._card_schema: CardSchema | None = None
         self._card_schema_loaded = False
 
@@ -511,11 +676,12 @@ class StoreBinding:
             self._conn.close()
 
     def _rows(self, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
-        try:
-            return self._conn.execute(sql, params).fetchall()
-        except sqlite3.Error as exc:  # pragma: no cover - defensive
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            return []
+        with self._lock:
+            try:
+                return self._conn.execute(sql, params).fetchall()
+            except sqlite3.Error as exc:  # pragma: no cover - defensive
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                return []
 
     def _one(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
         rows = self._rows(sql, params)
@@ -546,6 +712,7 @@ class StoreBinding:
             "games": self._count("games"),
             "events": self._count("events"),
             "candidates": self._count("candidates"),
+            "hypotheses": self._count("combo_hypotheses"),
         }
 
     # -- experiments / games / events --------------------------------------
@@ -674,6 +841,144 @@ class StoreBinding:
         )
         return [dict(row) for row in rows]
 
+    # -- combo hypotheses (the live interaction graph) ----------------------
+
+    def list_patterns(self) -> list[dict[str, Any]]:
+        if not self.has_table("patterns"):
+            return []
+        rows = self._rows("SELECT id, name, description FROM patterns ORDER BY id")
+        return [dict(row) for row in rows]
+
+    def card_names_for_ids(self, ids: Iterable[int]) -> dict[int, str]:
+        """One ``id -> name`` lookup for a batch of card ids."""
+        wanted = sorted({int(i) for i in ids})
+        names: dict[int, str] = {}
+        for chunk in _chunks(wanted):
+            placeholders = ",".join("?" * len(chunk))
+            rows = self._rows(
+                f"SELECT id, name FROM cards WHERE id IN ({placeholders})",
+                tuple(chunk),
+            )
+            for row in rows:
+                names[int(row["id"])] = row["name"]
+        return names
+
+    @staticmethod
+    def _hypothesis_card_ids(row: sqlite3.Row) -> list[int]:
+        ids: list[int] = []
+        for value in parse_json_list(row["card_ids_json"]):
+            try:
+                ids.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        return ids
+
+    def _decorate_hypotheses(self, rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+        parsed = [(row, self._hypothesis_card_ids(row)) for row in rows]
+        names = self.card_names_for_ids(cid for _, ids in parsed for cid in ids)
+        out: list[dict[str, Any]] = []
+        for row, ids in parsed:
+            data = dict(row)
+            data["card_ids"] = ids
+            data["cards"] = [
+                {"id": cid, "name": names.get(cid, f"#{cid}")} for cid in ids
+            ]
+            data["card_names"] = [card["name"] for card in data["cards"]]
+            data["effective_status"] = effective_status(data)
+            out.append(data)
+        return out
+
+    _HYPOTHESIS_SELECT = """
+        SELECT h.id, h.pattern_id, p.name AS pattern, h.card_ids_json,
+               h.mechanism, h.score, h.status, h.created_at,
+               (SELECT a.verdict FROM adjudications a
+                 WHERE a.candidate_id = h.id ORDER BY a.id DESC LIMIT 1)
+                 AS latest_verdict
+        FROM combo_hypotheses h
+        LEFT JOIN patterns p ON p.id = h.pattern_id
+    """
+
+    def _hypothesis_filter(
+        self, pattern_id: int | None, search: str
+    ) -> tuple[str, list[Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if pattern_id:
+            clauses.append("h.pattern_id = ?")
+            params.append(int(pattern_id))
+        if search.strip():
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(h.card_ids_json) je"
+                " JOIN cards c ON c.id = CAST(je.value AS INTEGER)"
+                " WHERE c.name LIKE ? ESCAPE '\\')"
+            )
+            params.append(f"%{_like_escape(search.strip())}%")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where, params
+
+    def list_hypotheses(
+        self,
+        *,
+        pattern_id: int | None = None,
+        search: str = "",
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        if not self.has_table("combo_hypotheses"):
+            return []
+        where, params = self._hypothesis_filter(pattern_id, search)
+        sql = (
+            f"{self._HYPOTHESIS_SELECT} {where}"
+            " ORDER BY h.score DESC, h.id LIMIT ? OFFSET ?"
+        )
+        params.extend([int(limit), int(offset)])
+        return self._decorate_hypotheses(self._rows(sql, tuple(params)))
+
+    def hypothesis_total(self, *, pattern_id: int | None = None, search: str = "") -> int:
+        if not self.has_table("combo_hypotheses"):
+            return 0
+        where, params = self._hypothesis_filter(pattern_id, search)
+        row = self._one(
+            f"SELECT COUNT(*) AS n FROM combo_hypotheses h {where}", tuple(params)
+        )
+        return int(row["n"]) if row is not None else 0
+
+    def hypothesis(self, hypothesis_id: int) -> dict[str, Any] | None:
+        if not self.has_table("combo_hypotheses"):
+            return None
+        rows = self._rows(
+            f"{self._HYPOTHESIS_SELECT} WHERE h.id = ?", (int(hypothesis_id),)
+        )
+        if not rows:
+            return None
+        return self._decorate_hypotheses(rows)[0]
+
+    def hypotheses_for_card(
+        self,
+        card_id: int,
+        *,
+        pattern_id: int | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Top hypotheses involving ``card_id``, excluding refuted ones."""
+        if not self.has_table("combo_hypotheses"):
+            return []
+        clauses = [
+            "h.status != 'refuted'",
+            "EXISTS (SELECT 1 FROM json_each(h.card_ids_json) je"
+            " WHERE CAST(je.value AS INTEGER) = ?)",
+        ]
+        params: list[Any] = [int(card_id)]
+        if pattern_id:
+            clauses.append("h.pattern_id = ?")
+            params.append(int(pattern_id))
+        sql = (
+            f"{self._HYPOTHESIS_SELECT} WHERE {' AND '.join(clauses)}"
+            " ORDER BY h.score DESC, h.id LIMIT ?"
+        )
+        params.append(int(limit))
+        return self._decorate_hypotheses(self._rows(sql, tuple(params)))
+
     # -- cards (importer-owned table; may be absent) ------------------------
 
     def card_schema(self) -> CardSchema | None:
@@ -752,27 +1057,43 @@ class StoreBinding:
 
 __all__ = [
     "ActiveRun",
+    "BASIC_LANDS",
     "CancellablePolicy",
     "CardSchema",
+    "HYPOTHESIS_STATUSES",
     "MAX_SEEDS",
     "POLICY_LABELS",
     "PROBE_TIMEOUT",
     "RunCancelled",
     "RunConfig",
+    "SCRATCH_DECK_FILE",
+    "SCRATCH_DECK_NAME",
     "StoreBinding",
     "WorkerProbe",
+    "add_card_to_scratch_deck",
     "best_contiguous_run",
     "build_pool",
     "build_run_config",
+    "clear_scratch_deck",
     "discover_decks",
+    "effective_status",
     "effects_count",
     "fmt_duration",
     "fmt_ms",
+    "is_basic_land",
+    "next_status",
     "no_harness_message",
+    "parse_dck",
     "parse_json_list",
     "pool_snapshot",
     "pretty_json",
     "probe_workers",
+    "read_scratch_deck",
+    "render_dck",
     "resolve_policy",
+    "scratch_deck_path",
+    "scratch_deck_summary",
     "short_id",
+    "status_color",
+    "write_scratch_deck",
 ]

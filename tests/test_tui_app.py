@@ -11,12 +11,27 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from textual.widgets import Button, ContentSwitcher, DataTable, OptionList, Static, Tabs
+from textual.widgets import (
+    Button,
+    ContentSwitcher,
+    DataTable,
+    Input,
+    OptionList,
+    Select,
+    Static,
+    Tabs,
+)
 
 from combo_discovery.generated import forge_env_pb2 as pb
 from combo_discovery.runner import GameResult
 from combo_discovery.tui.app import ComboDiscoveryApp
-from combo_discovery.tui.data import ActiveRun, WorkerProbe, build_run_config
+from combo_discovery.tui.data import (
+    ActiveRun,
+    WorkerProbe,
+    build_run_config,
+    read_scratch_deck,
+    scratch_deck_path,
+)
 from combo_discovery.tui.views import experiments as exp
 from combo_discovery.tui.widgets import EmptyState
 
@@ -271,3 +286,178 @@ async def test_start_run_records_through_store(tmp_path, monkeypatch):
         assert len(app.data.list_experiments()) == 1
         assert len(app.data.games_for_run(app.active_run.run_id)) == 1
         assert app.query_one("#exp-results", DataTable).row_count == 1
+
+
+# ---------------------------------------------------------------------------
+# card loop: corpus -> interactions / deck -> experiments / candidates
+# ---------------------------------------------------------------------------
+
+
+def _app_for_db(tmp_path: Path, db: Path):
+    decks = _decks_dir(tmp_path)
+    app = ComboDiscoveryApp(db_path=db, decks_dir=decks, config_path=tmp_path / "absent.toml")
+    return app, decks
+
+
+def _wait_option(pilot, listing, timeout: float = 6.0):
+    """Pause until an OptionList has options (worker threads populate async)."""
+
+    async def _inner():
+        waited = 0.0
+        while waited < timeout:
+            if listing.option_count:
+                return
+            await pilot.pause(0.05)
+            waited += 0.05
+
+    return _inner()
+
+
+async def test_corpus_interactions_modal_populates(ontology_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(exp, "probe_workers", _fake_probe)
+    app, _decks = _app_for_db(tmp_path, ontology_db)
+    async with app.run_test(size=(150, 44)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+
+        app.open_card(1, "Kiki-Jiki, Mirror Breaker")
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.pause()
+
+        screen = app.screen_stack[-1]
+        listing = screen.query_one("#interactions-list", OptionList)
+        await _wait_option(pilot, listing)
+        # Only hypothesis #1 (Kiki + Pestermite) is non-refuted and involves Kiki.
+        assert listing.option_count == 1
+        labels = str(listing.get_option_at_index(0).prompt)
+        assert "Pestermite" in labels
+        assert "infinite_etb_loop" in labels
+
+
+async def test_add_to_deck_increments_and_is_offered(ontology_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(exp, "probe_workers", _fake_probe)
+    app, decks = _app_for_db(tmp_path, ontology_db)
+    async with app.run_test(size=(150, 44)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+
+        app.open_card(1, "Kiki-Jiki, Mirror Breaker")
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+
+        path = scratch_deck_path(decks)
+        assert path.exists()
+        _name, entries = read_scratch_deck(path)
+        assert entries == [(2, "Kiki-Jiki, Mirror Breaker")]
+        assert "[Main]" in path.read_text(encoding="utf-8")
+
+        # The scratch deck is offered by the Experiments deck selects.
+        await pilot.press("2")
+        await pilot.pause()
+        select = app.query_one("#exp-deck-a", Select)
+        scratch = str(path)
+        select.value = scratch  # raises if the option is not present
+        assert select.value == scratch
+
+
+async def test_candidates_list_and_verdict_cycle(ontology_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(exp, "probe_workers", _fake_probe)
+    app, _decks = _app_for_db(tmp_path, ontology_db)
+    async with app.run_test(size=(150, 44)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("3")
+        await pilot.pause()
+
+        view = app.query_one("#view-candidates")
+        listing = view.query_one("#cand-list", OptionList)
+        await _wait_option(pilot, listing)
+        assert listing.option_count == 4
+        assert int(listing.get_option_at_index(0).id) == 1  # highest score
+
+        await pilot.press("v")
+        await pilot.pause()
+        meta = ""
+        for _ in range(60):
+            await pilot.pause(0.05)
+            meta = str(view.query_one("#cand-meta", Static).render())
+            if "verified" in meta:
+                break
+
+        verdicts = app.data.adjudications(1)
+        assert verdicts and verdicts[-1]["verdict"] == "verified"
+        assert verdicts[-1]["reviewer"] == "tui"
+        assert "verified" in meta
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+REAL_DB = REPO_ROOT / "research.db"
+REAL_DECKS = REPO_ROOT / "decks"
+
+
+@pytest.mark.skipif(not REAL_DB.exists(), reason="live research.db not present")
+async def test_live_research_db_read_only(monkeypatch):
+    """Populate Candidates and Kiki interactions from the real DB (no writes)."""
+    monkeypatch.setattr(exp, "probe_workers", _fake_probe)
+    app = ComboDiscoveryApp(
+        db_path=REAL_DB, decks_dir=REAL_DECKS, config_path=REPO_ROOT / "research.toml"
+    )
+    async with app.run_test(size=(150, 44)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+
+        await pilot.press("3")
+        await pilot.pause()
+        view = app.query_one("#view-candidates")
+        listing = view.query_one("#cand-list", OptionList)
+        await _wait_option(pilot, listing, timeout=15.0)
+        assert listing.option_count > 0
+
+        matches = app.data.list_cards("Kiki-Jiki", limit=5)
+        kiki = next(c for c in matches if c["name"] == "Kiki-Jiki, Mirror Breaker")
+        app.open_card(int(kiki["id"]), kiki["name"])
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.pause()
+
+        screen = app.screen_stack[-1]
+        interactions = screen.query_one("#interactions-list", OptionList)
+        await _wait_option(pilot, interactions, timeout=15.0)
+        assert interactions.option_count > 0
+
+
+async def test_interactions_row_jumps_to_partner(ontology_db, tmp_path, monkeypatch):
+    """Enter on an interaction closes the modal and opens the partner card."""
+    monkeypatch.setattr(exp, "probe_workers", _fake_probe)
+    app, _decks = _app_for_db(tmp_path, ontology_db)
+    async with app.run_test(size=(150, 44)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+
+        app.open_card(1, "Kiki-Jiki, Mirror Breaker")
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.pause()
+        screen = app.screen_stack[-1]
+        listing = screen.query_one("#interactions-list", OptionList)
+        await _wait_option(pilot, listing)
+        assert listing.option_count == 1
+
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.screen_stack[-1] is not screen  # modal dismissed
+        assert "Pestermite" in app.query_one("#corpus-search", Input).value
+        corpus_list = app.query_one("#corpus-list", OptionList)
+        assert corpus_list.highlighted is not None
+        assert int(corpus_list.get_option_at_index(corpus_list.highlighted).id) == 2

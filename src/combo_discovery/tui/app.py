@@ -152,12 +152,12 @@ class ComboDiscoveryApp(App[None]):
             id="view-tabs",
         )
         with ContentSwitcher(initial=VIEWS[0][0], id="view-switcher"):
-            yield CorpusView(self.data, id="view-corpus")
+            yield CorpusView(self.data, self.decks_dir, id="view-corpus")
             yield ExperimentsView(
                 self.data, self.store, self.research, self.decks_dir,
                 id="view-experiments",
             )
-            yield CandidatesView(self.data, id="view-candidates")
+            yield CandidatesView(self.data, self.store, id="view-candidates")
             yield ActivityView(self.data, id="view-activity")
         yield StatusLine(id="status-line")
 
@@ -191,6 +191,21 @@ class ComboDiscoveryApp(App[None]):
     def set_pool(self, pool) -> None:
         with self._pool_lock:
             self.pool = pool
+
+    def refresh_decks(self) -> None:
+        """Re-scan the decks directory (called after the scratch deck changes)."""
+        with suppress(NoMatches, AttributeError):
+            self.query_one(ExperimentsView).refresh_decks()
+
+    def open_card(self, card_id: int, name: str | None = None) -> None:
+        """Jump to the Corpus view with a card selected (link / partner jump)."""
+        self.action_goto("view-corpus")
+
+        def _focus() -> None:
+            with suppress(NoMatches, AttributeError):
+                self.query_one(CorpusView).focus_card(card_id, name)
+
+        self.call_after_refresh(_focus)
 
     def worker_status(self) -> tuple[str, str]:
         pool = self.pool
@@ -350,8 +365,8 @@ class ComboDiscoveryApp(App[None]):
             counts = self.data.counts()
             cards = self.data.card_count()
             self._stats_cache = (
-                f"{cards} cards  ·  {counts['experiments']} runs  ·  "
-                f"{counts['games']} games  ·  {counts['candidates']} candidates"
+                f"{cards} cards  ·  {counts['hypotheses']} hypotheses  ·  "
+                f"{counts['experiments']} runs  ·  {counts['games']} games"
             )
             self._stats_at = now
         line = self._stats_cache

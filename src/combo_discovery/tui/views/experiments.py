@@ -31,7 +31,9 @@ from ..data import (
     pool_snapshot,
     probe_workers,
     resolve_policy,
+    scratch_deck_path,
     short_id,
+    write_scratch_deck,
 )
 from ..widgets import EmptyState
 
@@ -56,11 +58,12 @@ def _outcome_style(outcome: str) -> str:
 
 
 class ExperimentsView(Vertical):
-    HINTS = [("ctrl+r", "run"), ("ctrl+k", "cancel"), ("ctrl+t", "check")]
+    HINTS = [("ctrl+r", "run"), ("ctrl+k", "cancel"), ("ctrl+t", "check"), ("n", "new deck")]
     BINDINGS = [
         Binding("ctrl+r", "start_run", "run", show=False),
         Binding("ctrl+k", "cancel_run", "cancel", show=False),
         Binding("ctrl+t", "check_harness", "check", show=False),
+        Binding("n", "new_scratch_deck", "new deck", show=False),
         Binding("r", "reload_data", "reload", show=False),
     ]
 
@@ -118,6 +121,7 @@ class ExperimentsView(Vertical):
                     yield Button("Start run", id="exp-start", variant="primary")
                     yield Button("Cancel", id="exp-cancel", variant="error", disabled=True)
                     yield Button("Check harness", id="exp-check")
+                    yield Button("New scratch deck", id="exp-new-scratch")
                 yield Static("", id="exp-form-note", classes="form-note")
             with Vertical(id="exp-progress", classes="panel"):
                 yield Static("Idle", id="exp-progress-title", classes="panel-title")
@@ -152,17 +156,6 @@ class ExperimentsView(Vertical):
         self.query_one("#exp-start", Button).focus()
 
     def _populate_form(self) -> None:
-        self._decks = discover_decks(self.decks_dir)
-        for seat in ("a", "b"):
-            select = self.query_one(f"#exp-deck-{seat}", Select)
-            select.set_options([(name, path) for name, path in self._decks])
-        if self._decks:
-            self.query_one("#exp-deck-a", Select).value = self._decks[0][1]
-            second = self._decks[1][1] if len(self._decks) > 1 else self._decks[0][1]
-            self.query_one("#exp-deck-b", Select).value = second
-        else:
-            self._set_form_note(f"No .dck decks found in {self.decks_dir}", "err")
-
         policy = self.query_one("#exp-policy", Select)
         policy.set_options([(label, key) for key, label in POLICY_LABELS.items()])
         policy.value = "default"
@@ -171,6 +164,60 @@ class ExperimentsView(Vertical):
         self.query_one("#exp-base-port", Input).value = str(self.research.base_port)
         self.query_one("#exp-max-turns", Input).value = str(self.research.max_turns)
         self.query_one("#exp-timeout", Input).value = str(self.research.timeout_seconds)
+        self.refresh_decks()
+
+    def _deck_value(self, seat: str) -> str | None:
+        value = self.query_one(f"#exp-deck-{seat}", Select).value
+        return value if isinstance(value, str) and value else None
+
+    def refresh_decks(self) -> None:
+        """Re-scan the decks dir (e.g. after the scratch deck changes)."""
+        previous = {"a": self._deck_value("a"), "b": self._deck_value("b")}
+        self._decks = discover_decks(self.decks_dir)
+        available = [path for _, path in self._decks]
+        options = [(name, path) for name, path in self._decks]
+        for seat in ("a", "b"):
+            self.query_one(f"#exp-deck-{seat}", Select).set_options(options)
+
+        if not self._decks:
+            self._set_form_note(f"No .dck decks found in {self.decks_dir}", "err")
+            return
+
+        first = available[0]
+        second = available[1] if len(available) > 1 else first
+        deck_a = previous["a"] if previous["a"] in available else first
+        deck_b = previous["b"] if previous["b"] in available else second
+        self.query_one("#exp-deck-a", Select).value = deck_a
+        self.query_one("#exp-deck-b", Select).value = deck_b
+
+    def action_new_scratch_deck(self) -> None:
+        path = scratch_deck_path(self.decks_dir)
+        if path.exists():
+            self.notify("research_scratch.dck already exists", severity="warning")
+        else:
+            write_scratch_deck(path, [])
+            self.notify("created research_scratch.dck", severity="information")
+        self.refresh_decks()
+
+    @on(Button.Pressed, "#exp-start")
+    def _on_start_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.action_start_run()
+
+    @on(Button.Pressed, "#exp-cancel")
+    def _on_cancel_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.action_cancel_run()
+
+    @on(Button.Pressed, "#exp-check")
+    def _on_check_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.action_check_harness()
+
+    @on(Button.Pressed, "#exp-new-scratch")
+    def _on_new_scratch_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.action_new_scratch_deck()
 
     # -- form helpers -------------------------------------------------------
 

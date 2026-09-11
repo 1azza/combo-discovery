@@ -297,3 +297,32 @@ class TestConfig:
         assert cfg.engine_commit == "4f577da7b2a9074f9f66544aaf99405e38cf5ac3"
         assert cfg.proto_version == 6
         assert cfg.model == "openrouter/z-ai/glm-5.3-flash"
+
+
+class TestAdjudications:
+    def test_unlinked_adjudication_is_appended(self, tmp_path):
+        """Hypothesis ids are stored as candidate_id until the tables link."""
+        store = ExperimentStore(tmp_path / "exp.sqlite")
+        row_id = store.record_adjudication(
+            4242, "verified", reviewer="tui", notes="status cycled in TUI"
+        )
+        row = store._conn.execute(
+            "SELECT * FROM adjudications WHERE id = ?", (row_id,)
+        ).fetchone()
+        assert (row["candidate_id"], row["verdict"]) == (4242, "verified")
+        assert (row["reviewer"], row["notes"]) == ("tui", "status cycled in TUI")
+        # Enforcement is restored for later writes on this connection.
+        with pytest.raises(sqlite3.IntegrityError):
+            store._conn.execute(
+                "INSERT INTO adjudications (candidate_id, verdict, created_at)"
+                " VALUES (?, ?, ?)",
+                (999999, "x", "now"),
+            )
+        store._conn.rollback()
+        store.close()
+
+    def test_linked_adjudication_enforces_fk(self, tmp_path):
+        store = ExperimentStore(tmp_path / "exp.sqlite")
+        with pytest.raises(sqlite3.IntegrityError):
+            store.record_adjudication(999999, "verified", allow_unlinked=False)
+        store.close()

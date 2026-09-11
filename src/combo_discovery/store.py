@@ -476,6 +476,42 @@ class ExperimentStore:
             )
             self._conn.commit()
 
+    # -- adjudications ------------------------------------------------------
+
+    def record_adjudication(
+        self,
+        candidate_id: int,
+        verdict: str,
+        *,
+        reviewer: str = "tui",
+        notes: str = "",
+        allow_unlinked: bool = True,
+    ) -> int:
+        """Append an adjudication row and return its id.
+
+        The ``candidates`` and ``combo_hypotheses`` tables are not linked yet,
+        so callers may pass a ``combo_hypotheses.id``. With ``allow_unlinked``
+        the foreign-key check on ``candidate_id`` is suspended for this single
+        append (an explicit bridge until the tables are joined); the module
+        write lock keeps that pragma flip from interleaving with another write.
+        """
+        with _DB_LOCK:
+            if allow_unlinked:
+                self._conn.execute("PRAGMA foreign_keys=OFF")
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO adjudications "
+                    "(candidate_id, verdict, reviewer, notes, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (int(candidate_id), verdict, reviewer, notes, _utc_now()),
+                )
+                self._conn.commit()
+            finally:
+                if allow_unlinked:
+                    self._conn.execute("PRAGMA foreign_keys=ON")
+            assert cur.lastrowid is not None  # set by the INSERT above
+            return int(cur.lastrowid)
+
     # -- export -------------------------------------------------------------
 
     def export_jsonl(self, table: str, path: str | Path) -> None:

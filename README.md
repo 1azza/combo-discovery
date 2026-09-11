@@ -124,16 +124,20 @@ snippets above — the append-only store, `WorkerPool.map_games(..., store=,
 run_id=)`, and the real policies — from four views:
 
 - **Corpus** — search the card store, inspect type line / mana / oracle text /
-  extracted effect count. The `cards` table is importer-owned; until it lands,
-  the view shows a clear empty state instead of failing.
+  extracted effect count. From a highlighted card: `i` opens its top
+  interactions (hypotheses with the mechanism and partner cards, with a jump to
+  the partner), `d` adds it to the research scratch deck, and `D` views/clears
+  that deck.
 - **Experiments** — pick deck pair, policy, seed range, worker count and port;
   launch a batch and watch live progress, worker health and the results table.
-- **Candidates** — recorded combo candidates with status, evidence JSON and the
-  adjudication trail.
+  `research_scratch.dck` is offered as a deck and `n` creates an empty one.
+- **Candidates** — the live `combo_hypotheses` graph: filter by pattern or card
+  name, sort by score, read the mechanism, jump to a card, and cycle its verdict
+  with `v` (an append-only adjudication through the store).
 - **Activity** — a live tail of experiment events plus worker health.
 
 ```bash
-uv run combo-tui                              # experiments.sqlite, research.toml, ./decks
+uv run combo-tui                              # research.db, research.toml, ./decks
 uv run python -m combo_discovery.tui          # same thing, module form
 uv run combo-tui --db runs.sqlite --config research.toml --decks-dir decks
 ```
@@ -144,13 +148,26 @@ uv run combo-tui --db runs.sqlite --config research.toml --decks-dir decks
 | `[` `]` | previous / next view |
 | `tab` `shift+tab` | move focus between panes |
 | `j` `k` | move down / up in a list |
-| `enter` | open / inspect the highlighted row |
-| `/` | focus the corpus search box |
+| `enter` | open / inspect the highlighted row (or a card link) |
+| `/` | focus the search box |
+| `i` | interactions for the selected card (Corpus) |
+| `d` `D` | add card to the research scratch deck / view-clear it |
+| `v` | cycle a hypothesis verdict (Candidates) |
+| `n` | create an empty `research_scratch.dck` (Experiments) |
 | `r` | reload the current view from the store |
 | `ctrl+r` `ctrl+k` `ctrl+t` | start run / cancel run / re-check harness |
 | `?` `f1` | key map |
 | `ctrl+p` | command palette |
 | `q` | quit (press twice while a run is active) |
+
+**The card loop.** Corpus → interactions (`i`) → scratch deck (`d`) →
+Experiments offers `research_scratch` as a deck. Card and partner links jump
+back into Corpus. Hypothesis verdicts are the only database writes from the
+console: `v` appends a row to `adjudications` through the store's write lock.
+Until `combo_hypotheses` is mirrored into `candidates`, that row's
+`candidate_id` holds the hypothesis id (documented on
+`ExperimentStore.record_adjudication`); status reads prefer the latest
+adjudication over `combo_hypotheses.status`, which stays append-only.
 
 **Empty and absent data are first-class states.** The SQLite store is created on
 demand, so the console starts cleanly against a fresh database: Corpus and

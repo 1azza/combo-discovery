@@ -19,19 +19,31 @@ from combo_discovery.tui.data import (
     RunConfig,
     StoreBinding,
     WorkerProbe,
+    add_card_to_scratch_deck,
     best_contiguous_run,
     build_pool,
     build_run_config,
+    clear_scratch_deck,
     discover_decks,
+    effective_status,
     effects_count,
     fmt_duration,
     fmt_ms,
+    is_basic_land,
+    next_status,
+    parse_dck,
     parse_json_list,
     pool_snapshot,
     pretty_json,
     probe_workers,
+    read_scratch_deck,
+    render_dck,
     resolve_policy,
+    scratch_deck_path,
+    scratch_deck_summary,
     short_id,
+    status_color,
+    write_scratch_deck,
 )
 
 DECK_A = ("goldfish_A", "/decks/goldfish_A.dck")
@@ -348,7 +360,8 @@ class TestStoreBinding:
     def test_empty_database_is_graceful(self, tmp_path):
         binding = StoreBinding(tmp_path / "empty.sqlite")
         assert binding.counts() == {
-            "experiments": 0, "games": 0, "events": 0, "candidates": 0
+            "experiments": 0, "games": 0, "events": 0, "candidates": 0,
+            "hypotheses": 0,
         }
         assert binding.list_experiments() == []
         assert binding.list_candidates() == []
@@ -468,4 +481,134 @@ class TestStoreBinding:
         binding = StoreBinding(path)
         assert binding.card_schema() is None
         assert binding.list_cards() == []
+        binding.close()
+
+
+# ---------------------------------------------------------------------------
+# research scratch deck (.dck)
+# ---------------------------------------------------------------------------
+
+
+class TestScratchDeck:
+    def test_add_merges_and_increments(self, tmp_path):
+        path = scratch_deck_path(tmp_path)
+        assert add_card_to_scratch_deck(path, "Brainstorm") == (1, 1)
+        assert add_card_to_scratch_deck(path, "brainstorm") == (2, 2)
+        assert add_card_to_scratch_deck(path, "Island") == (1, 3)
+
+        name, entries = read_scratch_deck(path)
+        assert name == "Research Scratch"
+        assert entries == [(2, "Brainstorm"), (1, "Island")]
+        assert scratch_deck_summary(path) == (2, 3)
+
+        text = path.read_text(encoding="utf-8")
+        assert "[metadata]" in text
+        assert "Name=Research Scratch" in text
+        assert "[Main]" in text
+        assert "2 Brainstorm" in text
+        assert "1 Island" in text
+
+    def test_parse_render_roundtrip(self):
+        text = "[metadata]\nName=Custom\n\n[Main]\n4 Lightning Bolt\n2 Island\n"
+        name, entries = parse_dck(text)
+        assert name == "Custom"
+        assert entries == [(4, "Lightning Bolt"), (2, "Island")]
+        assert render_dck(name, entries) == text
+
+    def test_clear_keeps_file_and_discovery(self, tmp_path):
+        path = scratch_deck_path(tmp_path)
+        add_card_to_scratch_deck(path, "Brainstorm")
+        clear_scratch_deck(path)
+        assert path.exists()
+        assert read_scratch_deck(path)[1] == []
+        assert "research_scratch" in [name for name, _ in discover_decks(tmp_path)]
+
+    def test_created_scratch_is_discovered(self, tmp_path):
+        write_scratch_deck(scratch_deck_path(tmp_path), [("1", "Brainstorm")])
+        names = [name for name, _ in discover_decks(tmp_path)]
+        assert "research_scratch" in names
+
+
+class TestStatusCycle:
+    def test_cycle_order(self):
+        assert next_status("proposed") == "verified"
+        assert next_status("verified") == "refuted"
+        assert next_status("refuted") == "inconclusive"
+        assert next_status("inconclusive") == "proposed"
+        assert next_status("nonsense") == "proposed"
+
+    def test_status_colors(self):
+        assert status_color("proposed")
+        assert status_color("verified")
+        assert status_color("refuted")
+        assert status_color("inconclusive")
+        assert status_color("nonsense")
+
+    def test_is_basic_land(self):
+        assert is_basic_land("Island")
+        assert is_basic_land("Snow-Covered Forest", "Basic Snow Land — Forest")
+        assert not is_basic_land("Brainstorm", "Instant")
+        assert not is_basic_land(None)
+
+
+# ---------------------------------------------------------------------------
+# combo hypotheses (read-only queries)
+# ---------------------------------------------------------------------------
+
+
+class TestHypothesisQueries:
+    def test_list_sorted_and_decorated(self, ontology_db):
+        binding = StoreBinding(ontology_db)
+        rows = binding.list_hypotheses()
+        assert [row["id"] for row in rows] == [1, 2, 4, 3]  # score desc
+        assert rows[0]["pattern"] == "infinite_etb_loop"
+        assert rows[0]["card_names"] == ["Kiki-Jiki, Mirror Breaker", "Pestermite"]
+        assert rows[0]["cards"][0]["id"] == 1
+        assert rows[0]["effective_status"] == "proposed"
+        assert binding.hypothesis_total() == 4
+        binding.close()
+
+    def test_pattern_filter(self, ontology_db):
+        binding = StoreBinding(ontology_db)
+        rows = binding.list_hypotheses(pattern_id=1)
+        assert {row["id"] for row in rows} == {1, 2, 4}
+        assert binding.hypothesis_total(pattern_id=1) == 3
+        binding.close()
+
+    def test_search_by_card_name(self, ontology_db):
+        binding = StoreBinding(ontology_db)
+        rows = binding.list_hypotheses(search="kiki")
+        assert {row["id"] for row in rows} == {1, 4}
+        assert binding.hypothesis_total(search="Pestermite") == 2
+        binding.close()
+
+    def test_for_card_excludes_refuted(self, ontology_db):
+        binding = StoreBinding(ontology_db)
+        assert [row["id"] for row in binding.hypotheses_for_card(1)] == [1]
+        assert {row["id"] for row in binding.hypotheses_for_card(2)} == {1, 2}
+        binding.close()
+
+    def test_hypothesis_detail(self, ontology_db):
+        binding = StoreBinding(ontology_db)
+        hypothesis = binding.hypothesis(1)
+        assert hypothesis is not None
+        assert hypothesis["pattern"] == "infinite_etb_loop"
+        assert hypothesis["cards"][0]["name"] == "Kiki-Jiki, Mirror Breaker"
+        assert binding.hypothesis(999) is None
+        binding.close()
+
+    def test_effective_status_follows_adjudication(self, ontology_db):
+        store = ExperimentStore(ontology_db)
+        row_id = store.record_adjudication(
+            1, "verified", reviewer="tui", notes="status cycled in TUI"
+        )
+        assert row_id > 0
+        store.close()
+
+        binding = StoreBinding(ontology_db)
+        hypothesis = binding.hypothesis(1)
+        assert hypothesis is not None
+        assert hypothesis["latest_verdict"] == "verified"
+        assert effective_status(hypothesis) == "verified"
+        assert binding.adjudications(1)[0]["reviewer"] == "tui"
         binding.close()
