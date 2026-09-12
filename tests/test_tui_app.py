@@ -621,6 +621,18 @@ async def test_live_card_lab_read_only(monkeypatch):
     )
     with sqlite3.connect(REAL_DB_CARD_LAB) as conn:
         runs_before = conn.execute("SELECT COUNT(*) FROM evaluation_runs").fetchone()[0]
+        # Derive the expected proposal count from the (append-only, rebuildable)
+        # database instead of pinning a snapshot: the store keeps every build, so
+        # the live counts legitimately change when the ontology pool is rebuilt.
+        kiki_id = conn.execute(
+            "SELECT id FROM cards WHERE name = 'Kiki-Jiki, Mirror Breaker'"
+        ).fetchone()[0]
+        expected_proposals = conn.execute(
+            "SELECT COUNT(*) FROM combo_hypotheses h WHERE h.status != 'refuted'"
+            " AND EXISTS (SELECT 1 FROM json_each(h.card_ids_json) je"
+            " WHERE CAST(je.value AS INTEGER) = ?)",
+            (kiki_id,),
+        ).fetchone()[0]
 
     async with app.run_test(size=(160, 48)) as pilot:
         await pilot.pause()
@@ -634,7 +646,7 @@ async def test_live_card_lab_read_only(monkeypatch):
         assert "showing 200 of 791" in str(view.query_one("#lab-known-count", Static).render())
 
         proposals = view.query_one("#lab-proposed-list", OptionList)
-        assert proposals.option_count == 130
+        assert proposals.option_count == min(200, expected_proposals)
         labels = " | ".join(_labels(proposals)).lower()
         assert "known" in labels and "candidate" in labels and "novel" not in labels
 

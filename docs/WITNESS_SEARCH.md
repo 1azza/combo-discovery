@@ -162,10 +162,38 @@ iterations (Pestermite/Deceiver/Reptilian stay in turn 1 while tokens grow),
 whereas the false positives advance `turn` (1 -> 3 -> 5 -> 7) as Kiki untaps
 normally.
 
-Consequence for the discovery claim: **Firbolg Flutist was a false positive.**
-The only engine-verified in-turn loop that survives the fix is
-**Reptilian Recruiter + Kiki-Jiki**, still pending the Tier-B second source
-before it may be called novel.
+Consequence for the discovery claim: **Firbolg Flutist was a false positive**,
+and the pipeline's own two-source policy then removed the only survivor.
+**Kiki-Jiki + Reptilian Recruiter is documented elsewhere** — it was called out as
+"another Kiki-Jiki infinite" on MTG Salvation and r/magicTCG the day BLB previewed
+(2024-07-15) and appears in real decklists — even though Commander Spellbook has
+no variant for it (0 of 791 Kiki combos). It is a genuine **Spellbook coverage
+gap**, not a novel discovery.
+
+## Third false-positive class: counter-only growth (combat loops)
+
+Found while running the fresh combat-loop pool (`q:combat_loop`). Pairs such as
+Aurelia, the Warleader + Genji Glove, Genji Glove + Lightning Runner, and
+Hexplate Wallbreaker + Godo, Bandit Warlord were certified `loops` with a
+*sustained same-turn recurrence* — exactly the shape the baseline/turn guards
+accept.
+
+They are still false positives, and the cards explain why: every extra-combat
+trigger in those pairs is gated to **once per turn** ("if it's the first combat
+phase of the turn" / "first time each turn"), so the chain is bounded, not
+infinite. The only thing growing across iterations was `casts` and
+`spells_resolved` — counters the *witness policy itself* drives by re-acting each
+pass — while the board stayed static and mana drained (40 -> 30).
+
+Fix: `GAME_STATE_GROWTH_KEYS = (mana, tokens, life, damage, permanents)`. A
+same-turn recurrence may only certify `loops` when at least one of these grows.
+Growth in event counters alone (`casts`, `spells_resolved`, `extra_phases`) now
+returns `inconclusive` with reason "only policy-driven event counters grew".
+
+Live acceptance: all six combat pairs (Aurelia / Genji Glove / Hexplate
+Wallbreaker / Godo / Lightning Runner combinations) went `loops` ->
+`inconclusive`, while Deceiver Exarch, Pestermite and Reptilian Recruiter stayed
+`loops`.
 
 Residual limitations:
 - `link_hits` is **not** a valid mechanism gate: a genuine untap that resolves
@@ -174,6 +202,11 @@ Residual limitations:
   events/state, not from policy link counters.
 - A loop that genuinely spans turns (e.g. an extra-turn chain) is rejected by
   the same-turn rule. That is a known, documented false-negative class.
+- Requiring a game-state resource forfeits legitimate loops whose only growth is
+  casts/spells (e.g. some buyback/storm lines) — a second documented
+  false-negative class, chosen deliberately over shipping false positives.
+- Extra-combat loops backed by a genuinely unbounded extra-phase engine are not
+  distinguishable yet, because `extra_phases` is not populated by the driver.
 - One completed iteration cannot certify a loop; runs with `--max-iterations 1`
   now return `inconclusive`.
 

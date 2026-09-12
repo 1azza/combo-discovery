@@ -118,6 +118,13 @@ GROWTH_KEYS = (
     "permanents",
 )
 
+#: Growth in these counters is driven by the *policy's own* repeated actions
+#: (the witness activating/casting on each pass), not by an unbounded game
+#: resource.  On their own they must not qualify a recurrence: a static board
+#: plus the policy spinning produces `casts`/`spells_resolved` growth with no
+#: loop.  Only these keys count as a real, game-state resource.
+GAME_STATE_GROWTH_KEYS = ("mana", "tokens", "life", "damage", "permanents")
+
 #: Word-boundary matchers for the tap/untap modal choice.  The ``\b`` before
 #: ``tap`` is essential: "untap" must never be read as an occurrence of "tap"
 #: (otherwise a modal "Tap or untap target creature" could resolve to tap and
@@ -1185,6 +1192,7 @@ def detect_loop(
             }
 
     first_repeat: tuple[int, int] | None = None
+    counter_only_repeat: tuple[int, int] | None = None
     cross_turn_repeat: tuple[int, int] | None = None
     for j in range(1, len(samples)):
         for i in range(j):
@@ -1197,14 +1205,21 @@ def detect_loop(
                     cross_turn_repeat = (oi.iteration, oj.iteration)
                 continue
             grown = _grown_between(oi.resources, oj.resources)
-            if grown:
+            game_grown = [k for k in grown if k in GAME_STATE_GROWTH_KEYS]
+            if game_grown:
                 return "loops", {
                     "kind": "recurrence",
                     "pair": [oi.iteration, oj.iteration],
                     "turn": oj.turn,
                     "signature": sig,
-                    "grown": grown,
+                    "grown": game_grown,
                 }
+            if grown:
+                # Only policy-driven event counters grew (casts/spells_resolved):
+                # a static board the policy kept poking, not an unbounded loop.
+                if counter_only_repeat is None:
+                    counter_only_repeat = (oi.iteration, oj.iteration)
+                continue
             if first_repeat is None:
                 first_repeat = (oi.iteration, oj.iteration)
 
@@ -1212,6 +1227,12 @@ def detect_loop(
         return "no_loop", {
             "reason": "signature recurred but no tracked resource grew",
             "pair": list(first_repeat),
+        }
+    if counter_only_repeat is not None:
+        return "inconclusive", {
+            "reason": "signature recurred but only policy-driven event counters grew "
+            "(no game-state resource); cannot confirm a loop",
+            "pair": list(counter_only_repeat),
         }
     if cross_turn_repeat is not None:
         return "no_loop", {

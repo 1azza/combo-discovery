@@ -621,6 +621,25 @@ class TestDetectLoop:
         assert verdict == "no_loop"
         assert "across turns" in evidence["reason"]
 
+    def test_counter_only_growth_is_not_a_loop(self):
+        # Live combat false positive (Aurelia/Genji Glove/Hexplate Wallbreaker):
+        # once-per-turn extra-combat cards leave the board static while the
+        # policy's own casts/activations accrue. That is not an infinite loop.
+        observations = [
+            Observation(iteration=0, signature="s0", resources={}, turn=1),
+            Observation(
+                iteration=1, signature="same",
+                resources={"casts": 1, "spells_resolved": 1}, turn=1,
+            ),
+            Observation(
+                iteration=2, signature="same",
+                resources={"casts": 2, "spells_resolved": 2}, turn=1,
+            ),
+        ]
+        verdict, evidence = detect_loop(observations)
+        assert verdict == "inconclusive"
+        assert "counters" in evidence["reason"]
+
     def test_insufficient_observations_is_inconclusive(self):
         assert detect_loop([])[0] == "inconclusive"
         assert detect_loop([obs(0, "s1", mana=0)])[0] == "inconclusive"
