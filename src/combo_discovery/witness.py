@@ -939,6 +939,7 @@ class Observation:
     signature_fields: dict[str, Any] = field(default_factory=dict)
     state_hash: str = ""
     event_seq: int = 0
+    turn: int = 0
 
 
 def _zone_count(zone: Any) -> int:
@@ -1100,6 +1101,7 @@ def build_observation(
         signature_fields=fields,
         state_hash=str(state.state_hash),
         event_seq=int(event_seq),
+        turn=int(getattr(state, "turn", 0) or 0),
     )
 
 
@@ -1135,6 +1137,10 @@ def detect_loop(
     * ``no_loop`` when a signature recurs but nothing grew, or no signature ever
       recurs.
     """
+    # A real infinite combo iterates within one turn, so a recurrence separated
+    # by a turn change is a normal game, not a loop. (Growth across the baseline
+    # transition is safe because the driver refetches the decision after
+    # scenario injection before sampling the baseline.)
     if len(observations) < 2:
         return "inconclusive", {
             "reason": "need at least two observations",
@@ -1142,24 +1148,29 @@ def detect_loop(
         }
 
     for i in range(1, len(observations)):
-        prev_hash = observations[i - 1].state_hash
-        curr_hash = observations[i].state_hash
-        if prev_hash and curr_hash and prev_hash == curr_hash:
+        prev, cur = observations[i - 1], observations[i]
+        if prev.turn > 0 and cur.turn > 0 and prev.turn != cur.turn:
+            continue
+        if prev.state_hash and cur.state_hash and prev.state_hash == cur.state_hash:
             return "loops", {
                 "kind": "degenerate",
                 "pair": [i - 1, i],
-                "state_hash": curr_hash,
+                "state_hash": cur.state_hash,
             }
 
     first_repeat: tuple[int, int] | None = None
+    cross_turn_repeat: tuple[int, int] | None = None
     for j in range(1, len(observations)):
         for i in range(j):
-            sig = observations[i].signature
-            if not sig or sig != observations[j].signature:
+            oi, oj = observations[i], observations[j]
+            sig = oi.signature
+            if not sig or sig != oj.signature:
                 continue
-            grown = _grown_between(
-                observations[i].resources, observations[j].resources
-            )
+            if oi.turn > 0 and oj.turn > 0 and oi.turn != oj.turn:
+                if cross_turn_repeat is None:
+                    cross_turn_repeat = (i, j)
+                continue
+            grown = _grown_between(oi.resources, oj.resources)
             if grown:
                 return "loops", {
                     "kind": "recurrence",
@@ -1174,6 +1185,11 @@ def detect_loop(
         return "no_loop", {
             "reason": "signature recurred but no tracked resource grew",
             "pair": list(first_repeat),
+        }
+    if cross_turn_repeat is not None:
+        return "no_loop", {
+            "reason": "recurrence only across turns (not an infinite loop within a turn)",
+            "pair": list(cross_turn_repeat),
         }
     return "no_loop", {"reason": "no signature recurrence"}
 

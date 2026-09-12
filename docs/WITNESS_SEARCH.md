@@ -114,6 +114,46 @@ and `witness_results(id, run_id, candidate_kind, candidate_key, card_names_json,
 TUI Candidate/Lab badge/action; `pool.map_witness`. Do not mutate
 `combo_hypotheses.status` (append-only; `adjudications` is the existing bridge).
 
+## Known false-positive class: cast-conditional and landfall triggers
+
+The verifier reports `loops` for some pairs that cannot legitimately loop.
+Verified examples (Kiki-Jiki + partner, live harness):
+
+| pair | card's relevant trigger | why it is a false positive |
+|---|---|---|
+| Kiki-Jiki + **Keldon Overseer** | `ChangesZone | ValidCard$ Card.Self+**kicked**` | scenario injection places the card *without casting*, so a kicked ETB cannot fire |
+| Kiki-Jiki + **Elven Raft-Steerer** | `ChangesZone | ValidCard$ **Land.YouCtrl**` (landfall) | no land enters per iteration, so the untap never happens |
+
+Diagnosis (from a live run of Keldon Overseer): `link_hits=[0, 4]` — the
+mechanism's untap link **never executed**, while the copy link fired once per
+turn as Kiki untapped in the untap step. The detector still certified a loop
+because the state structure recurs and a tracked resource grew, and — for these
+cards — the growth is partly the injection itself and partly cross-turn
+activity.
+
+Guards added so far:
+- Observation carries the engine `turn`, and `detect_loop` rejects a recurrence
+  whose two observations are in *different known turns* (an infinite combo
+  iterates within one turn).
+- `WitnessPolicy` is choice-aware (untap over tap, target the engine card).
+
+**Still required (not done):** the same-turn guard only rejects when the
+observation turns are known *and* differ; for these false positives the turns
+do not discriminate, so the verdict is still `loops`. The principled fix is to
+require the *mechanism* to execute within a turn — options:
+1. verify the observation `turn` advances across a multi-turn run and
+   re-tighten the same-turn recurrence (e.g. require ≥2 completed iterations in
+   one turn, with growth between them);
+2. treat a mechanism link that never fires as disqualifying — but note that a
+   genuine loop can have a *passive* link (FOMO's attack trigger never appears
+   as a priority option), so this needs a per-link "expected to surface" flag;
+3. add a cast-faithful staging mode (cast the card with the required kicker
+   etc. instead of placing it) or return `inconclusive` with reason
+   `unverifiable_staging` for cast-conditional abilities.
+
+Until then, treat `loops` verdicts for cards whose ability depends on *how they
+were cast* or on *another card type entering* as unverified.
+
 ## Remote optional triggers & tap/untap semantics
 
 No new proto/decision type is needed for a combo trigger that is both
