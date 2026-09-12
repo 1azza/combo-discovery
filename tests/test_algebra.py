@@ -31,6 +31,7 @@ from combo_discovery.ontology.budget import (
     SearchBudget,
     preflight,
 )
+from combo_discovery.ontology.builder import _combo_cards_legal
 from combo_discovery.ontology.cycles import (
     ComboList,
     _evidence_factor,
@@ -539,6 +540,51 @@ class TestNonVintagePoolExclusion:
         # The set-code map really was loaded from the editions tree.
         assert legality.card_sets
         assert "UST" in legality.unset_sets
+
+
+class TestFinalizationGuard:
+    """Fix: a proposed combo is dropped at finalization if any card is illegal.
+
+    This is the algebra path's choke point (``_write_algebra``): the guard runs
+    over the combo's card ids against the same ``VintageLegality`` the Spellbook
+    resolver uses, so an explicit ``pool`` that bypassed the pool-level filter
+    still cannot leak a non-Vintage card into ``combo_hypotheses``.
+    """
+
+    @staticmethod
+    def _legality() -> VintageLegality:
+        return VintageLegality(
+            card_sets={
+                "eager beaver": frozenset({"UST"}),
+                "blacker lotus": frozenset({"UGL", "LEA"}),
+                "grizzly bears": frozenset({"LEA"}),
+            },
+            unset_sets=frozenset({"UST", "UGL"}),
+        )
+
+    def test_rejects_unset_only_card(self):
+        # (a) Eager Beaver has no name marker and is not banned; only the
+        # set-code signal can see that its every printing is Unstable.
+        names = {1: "Eager Beaver", 2: "Kiki-Jiki, Mirror Breaker"}
+        assert _combo_cards_legal([1, 2], names, self._legality()) is False
+
+    def test_accepts_normal_vintage_card(self):
+        # (b) an ordinary Vintage-legal pair is untouched.
+        names = {1: "Grizzly Bears", 2: "Kiki-Jiki, Mirror Breaker"}
+        assert _combo_cards_legal([1, 2], names, self._legality()) is True
+
+    def test_accepts_card_with_a_normal_reprint(self):
+        # (c) Blacker Lotus is printed in UGL *and* LEA, so it is rescued.
+        names = {1: "Blacker Lotus", 2: "Grizzly Bears"}
+        assert _combo_cards_legal([1, 2], names, self._legality()) is True
+
+    def test_name_level_guard_applies(self):
+        names = {1: "A-Goldspan Dragon", 2: "Grizzly Bears"}
+        assert _combo_cards_legal([1, 2], names, self._legality()) is False
+
+    def test_none_legality_is_permissive(self):
+        names = {1: "Eager Beaver", 2: "Grizzly Bears"}
+        assert _combo_cards_legal([1, 2], names, None) is True
 
 
 class TestScoreDiscrimination:

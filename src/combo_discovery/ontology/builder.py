@@ -29,9 +29,13 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from itertools import combinations
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
-from ..corpus.spellbook import DEFAULT_VINTAGE_FORMAT, VintageLegality
+from ..corpus.spellbook import (
+    DEFAULT_FORGE_EDITIONS,
+    DEFAULT_VINTAGE_FORMAT,
+    VintageLegality,
+)
 from .. import store as store_module
 from ..store import ExperimentStore
 from .budget import DEFAULT_MAX_SECONDS, DEFAULT_MAX_STEPS
@@ -347,6 +351,25 @@ def _pair_evidence(
     return mechanism, items
 
 
+def _combo_cards_legal(
+    card_ids: Sequence[int],
+    names: Mapping[int, str],
+    legality: VintageLegality | None,
+) -> bool:
+    """True when every card of a proposed combo is Vintage-legal.
+
+    Finalization guard for the algebra path.  ``legality`` is the same
+    :class:`VintageLegality` the Spellbook resolver builds from the Forge
+    Vintage format + editions tree, so it applies both signals: the name-level
+    Alchemy/Un-set markers and the set-code signal (a card whose every known
+    printing is a novelty/Un-set set).  ``None`` is permissive (tests / no
+    Forge data).
+    """
+    if legality is None:
+        return True
+    return all(legality.is_legal(names.get(int(cid))) for cid in card_ids)
+
+
 def _write_algebra(
     conn: sqlite3.Connection,
     import_id: str,
@@ -354,11 +377,15 @@ def _write_algebra(
     combos: Sequence[Combo],
     names: dict[int, str],
     query_ids: dict[str, int],
+    legality: VintageLegality | None = None,
 ) -> tuple[int, int]:
     """Append algebra interactions (pairwise) + hypotheses (per cycle/query).
 
     Deduplicated per ordered (pattern, card pair) and per (pattern, card set);
-    the highest score wins.  Deterministic row order.
+    the highest score wins.  Deterministic row order.  A combo containing any
+    non-Vintage-legal card is dropped whole, so it can never reach
+    ``combo_hypotheses`` (or the pairwise ``interactions``) even when the caller
+    supplied an explicit ``pool`` that bypassed the pool-level filter.
     """
     now = _utc_now()
 
@@ -369,6 +396,8 @@ def _write_algebra(
     for combo in combos:
         ids = tuple(sorted(set(combo.card_ids)))
         if len(ids) < 2:
+            continue
+        if not _combo_cards_legal(ids, names, legality):
             continue
         for query_name in combo.patterns:
             pattern_id = query_ids.get(f"{QUERY_PREFIX}{query_name}")
@@ -572,7 +601,9 @@ def _existing_report(
 
 def _load_vintage(names: dict[int, str]):
     if DEFAULT_VINTAGE_FORMAT.is_file():
-        return VintageLegality.from_forge_format(DEFAULT_VINTAGE_FORMAT)
+        return VintageLegality.from_forge_format(
+            DEFAULT_VINTAGE_FORMAT, editions_dir=DEFAULT_FORGE_EDITIONS
+        )
     return VintageLegality.permissive()
 
 
@@ -698,7 +729,7 @@ def build_ontology(
             interaction_counts = Counter()
             hypothesis_counts = Counter()
             _write_algebra(
-                conn, import_id, graph, combos, graph.names, query_ids
+                conn, import_id, graph, combos, graph.names, query_ids, legality
             )
             for combo in combos:
                 for pname in combo.patterns:
