@@ -545,7 +545,7 @@ class TestDetectLoop:
         verdict, evidence = detect_loop(observations)
         assert verdict == "loops"
         assert evidence["kind"] == "recurrence"
-        assert evidence["pair"] == [0, 2]
+        assert evidence["pair"] == [1, 3]
         assert evidence["grown"] == ["mana"]
 
     def test_token_growth_with_recurring_structure_is_loop(self):
@@ -576,9 +576,10 @@ class TestDetectLoop:
 
     def test_recurrence_without_growth_is_no_loop(self):
         observations = [
-            obs(0, "s1", mana=2),
-            obs(1, "s2", mana=2),
-            obs(2, "s1", mana=2),
+            obs(0, "s0", mana=2),
+            obs(1, "s1", mana=2),
+            obs(2, "s2", mana=2),
+            obs(3, "s1", mana=2),
         ]
         verdict, evidence = detect_loop(observations)
         assert verdict == "no_loop"
@@ -586,12 +587,39 @@ class TestDetectLoop:
 
     def test_degenerate_identical_hash_is_loop(self):
         observations = [
-            Observation(iteration=0, signature="s1", state_hash="SAME"),
+            Observation(iteration=0, signature="s1", state_hash="BASE"),
             Observation(iteration=1, signature="s2", state_hash="SAME"),
+            Observation(iteration=2, signature="s3", state_hash="SAME"),
         ]
         verdict, evidence = detect_loop(observations)
         assert verdict == "loops"
         assert evidence["kind"] == "degenerate"
+        assert evidence["pair"] == [1, 2]
+
+    def test_identical_baseline_pair_is_not_a_loop(self):
+        # Regression (live Keldon Overseer / Elven Raft-Steerer): the baseline
+        # sample and the first post-injection sample are bit-identical while
+        # nothing has happened yet. That must not certify a loop.
+        observations = [
+            Observation(iteration=0, signature="s1", state_hash="SAME", turn=1),
+            Observation(iteration=1, signature="s1", state_hash="SAME", turn=1),
+        ]
+        verdict, evidence = detect_loop(observations)
+        assert verdict == "inconclusive"
+        assert "post-baseline" in evidence["reason"]
+
+    def test_cross_turn_recurrence_with_growth_is_not_a_loop(self):
+        # Regression: a creature that untaps each turn (or a token army that
+        # attacks) reproduces the signature across turns while a resource grows.
+        # That is ordinary play, not an infinite loop.
+        observations = [
+            Observation(iteration=1, signature="same", resources={"mana": 0, "tokens": 1, "life": 40}, turn=1),
+            Observation(iteration=3, signature="same", resources={"mana": 0, "tokens": 2, "life": 34}, turn=3),
+            Observation(iteration=5, signature="same", resources={"mana": 0, "tokens": 3, "life": 28}, turn=5),
+        ]
+        verdict, evidence = detect_loop(observations)
+        assert verdict == "no_loop"
+        assert "across turns" in evidence["reason"]
 
     def test_insufficient_observations_is_inconclusive(self):
         assert detect_loop([])[0] == "inconclusive"
@@ -727,13 +755,17 @@ class TestRunWitness:
         assert client.stopped == 77
         assert client.setup_calls and client.setup_calls[0] is scenario
 
-    def test_single_iteration_records_before_and_after(self):
+    def test_single_iteration_records_before_and_after_but_cannot_loop(self):
         client = FakeWitnessClient()
         result = run_witness(
             client, build_scenario(combo_ab()), self._policy(), seeds=[1],
             max_iterations=1,
         )
-        assert result.verdict == "loops"
+        # A single completed iteration cannot prove a loop: the pre-iteration
+        # baseline and the first post-iteration sample must never be compared.
+        # That pair is exactly the live Keldon Overseer / Elven Raft-Steerer
+        # false positive that this rule removes.
+        assert result.verdict == "inconclusive"
         assert result.iterations == 1
         # One baseline ("before") + one completed-iteration ("after") sample.
         assert len(result.observations) == 2

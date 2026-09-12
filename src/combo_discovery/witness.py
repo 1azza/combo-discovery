@@ -1129,57 +1129,84 @@ def detect_loop(
 
     Rule:
 
-    * ``inconclusive`` with fewer than two observations;
-    * ``loops`` (degenerate) when two CONSECUTIVE observations share a
-      non-empty identical ``state_hash`` (the whole state is bit-identical);
-    * ``loops`` when two observations share a non-empty witness signature and a
-      tracked resource grew between them;
-    * ``no_loop`` when a signature recurs but nothing grew, or no signature ever
-      recurs.
+    * ``inconclusive`` with fewer than two *post-baseline* observations;
+    * ``loops`` (degenerate) when two CONSECUTIVE post-baseline observations in
+      the same turn share a non-empty identical ``state_hash``;
+    * ``loops`` when two post-baseline observations in the same turn share a
+      non-empty witness signature and a tracked resource grew between them;
+    * ``no_loop`` when a same-turn signature recurs but nothing grew, when a
+      recurrence only happens across turns, or when no signature recurs.
+
+    Two independent traps motivated the post-baseline / same-turn guards (both
+    observed live on the Forge harness):
+
+    * **Baseline pair.** Observation 0 is sampled *before* the first iteration
+      completes. When the engine has not acted yet, observations 0 and 1 are
+      bit-identical, and the old code certified ``loops`` from that pair alone.
+      That fired on every candidate whose policy made no immediate progress
+      (Keldon Overseer, Elven Raft-Steerer, Firbolg Flutist), regardless of
+      whether a loop existed.
+    * **Cross-turn recurrence.** A creature that untaps during ordinary play
+      (or a token army that attacks each turn) reproduces a structural
+      signature across turns while a resource grows. A real infinite combo
+      iterates *within one turn*, so both endpoints must share a known turn.
+      An unknown turn (0) stays permissive for harnesses that do not report it.
     """
-    # A real infinite combo iterates within one turn, so a recurrence separated
-    # by a turn change is a normal game, not a loop. (Growth across the baseline
-    # transition is safe because the driver refetches the decision after
-    # scenario injection before sampling the baseline.)
     if len(observations) < 2:
         return "inconclusive", {
             "reason": "need at least two observations",
             "n": len(observations),
         }
 
-    for i in range(1, len(observations)):
-        prev, cur = observations[i - 1], observations[i]
-        if prev.turn > 0 and cur.turn > 0 and prev.turn != cur.turn:
+    # Drop the pre-injection baseline: identical baseline/post samples are not
+    # evidence that anything looped.
+    samples = [o for o in observations if int(o.iteration) >= 1]
+    if len(samples) < 2:
+        return "inconclusive", {
+            "reason": "need at least two post-baseline observations",
+            "n": len(samples),
+        }
+
+    def same_turn(a: Observation, b: Observation) -> bool:
+        if a.turn <= 0 or b.turn <= 0:
+            return True  # unknown turn: do not exclude
+        return a.turn == b.turn
+
+    for i in range(1, len(samples)):
+        prev, cur = samples[i - 1], samples[i]
+        if not same_turn(prev, cur):
             continue
         if prev.state_hash and cur.state_hash and prev.state_hash == cur.state_hash:
             return "loops", {
                 "kind": "degenerate",
-                "pair": [i - 1, i],
+                "pair": [prev.iteration, cur.iteration],
+                "turn": cur.turn,
                 "state_hash": cur.state_hash,
             }
 
     first_repeat: tuple[int, int] | None = None
     cross_turn_repeat: tuple[int, int] | None = None
-    for j in range(1, len(observations)):
+    for j in range(1, len(samples)):
         for i in range(j):
-            oi, oj = observations[i], observations[j]
+            oi, oj = samples[i], samples[j]
             sig = oi.signature
             if not sig or sig != oj.signature:
                 continue
-            if oi.turn > 0 and oj.turn > 0 and oi.turn != oj.turn:
+            if not same_turn(oi, oj):
                 if cross_turn_repeat is None:
-                    cross_turn_repeat = (i, j)
+                    cross_turn_repeat = (oi.iteration, oj.iteration)
                 continue
             grown = _grown_between(oi.resources, oj.resources)
             if grown:
                 return "loops", {
                     "kind": "recurrence",
-                    "pair": [i, j],
+                    "pair": [oi.iteration, oj.iteration],
+                    "turn": oj.turn,
                     "signature": sig,
                     "grown": grown,
                 }
             if first_repeat is None:
-                first_repeat = (i, j)
+                first_repeat = (oi.iteration, oj.iteration)
 
     if first_repeat is not None:
         return "no_loop", {

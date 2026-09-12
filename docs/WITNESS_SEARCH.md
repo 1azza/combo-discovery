@@ -114,45 +114,68 @@ and `witness_results(id, run_id, candidate_kind, candidate_key, card_names_json,
 TUI Candidate/Lab badge/action; `pool.map_witness`. Do not mutate
 `combo_hypotheses.status` (append-only; `adjudications` is the existing bridge).
 
-## Known false-positive class: cast-conditional and landfall triggers
+## Solved false-positive class: baseline-pair and cross-turn recurrence
 
-The verifier reports `loops` for some pairs that cannot legitimately loop.
-Verified examples (Kiki-Jiki + partner, live harness):
+The verifier used to report `loops` for pairs that cannot loop. Live examples
+(Kiki-Jiki + partner): Keldon Overseer, Elven Raft-Steerer, and — notably —
+**Firbolg Flutist**, which had been recorded as a genuine discovery before this
+bug was found.
 
-| pair | card's relevant trigger | why it is a false positive |
-|---|---|---|
-| Kiki-Jiki + **Keldon Overseer** | `ChangesZone | ValidCard$ Card.Self+**kicked**` | scenario injection places the card *without casting*, so a kicked ETB cannot fire |
-| Kiki-Jiki + **Elven Raft-Steerer** | `ChangesZone | ValidCard$ **Land.YouCtrl**` (landfall) | no land enters per iteration, so the untap never happens |
+Root cause (from live runs, 2026-09-12; `combo-witness --json` + a driver that
+dumps per-observation `turn` and resources). Two independent traps:
 
-Diagnosis (from a live run of Keldon Overseer): `link_hits=[0, 4]` — the
-mechanism's untap link **never executed**, while the copy link fired once per
-turn as Kiki untapped in the untap step. The detector still certified a loop
-because the state structure recurs and a tracked resource grew, and — for these
-cards — the growth is partly the injection itself and partly cross-turn
-activity.
+1. **Baseline pair.** Observation 0 is sampled *before* the first iteration
+   completes. When the engine has not acted yet, observations 0 and 1 are
+   bit-identical, and `detect_loop`'s degenerate branch certified `loops` from
+   that pair alone. This fired on *every* candidate whose policy made no
+   immediate progress, whether or not a loop existed. The earlier `turn` guard
+   did not help because that pair is trivially in the same turn.
+2. **Cross-turn recurrence.** Kiki untaps in the untap step, so a card whose
+   copy does not untap Kiki produces a structural signature that recurs *across
+   turns* while tokens/permanents grow and the opponent loses life. That is a
+   beatdown line, not an infinite loop.
 
-Guards added so far:
-- Observation carries the engine `turn`, and `detect_loop` rejects a recurrence
-  whose two observations are in *different known turns* (an infinite combo
-  iterates within one turn).
-- `WitnessPolicy` is choice-aware (untap over tap, target the engine card).
+The earlier hypothesis in this document — that cast-conditional / landfall
+triggers were the cause — was **wrong**. Those cards were false-positive, but
+the verdict came from the baseline pair, before their missing trigger was ever
+relevant.
 
-**Still required (not done):** the same-turn guard only rejects when the
-observation turns are known *and* differ; for these false positives the turns
-do not discriminate, so the verdict is still `loops`. The principled fix is to
-require the *mechanism* to execute within a turn — options:
-1. verify the observation `turn` advances across a multi-turn run and
-   re-tighten the same-turn recurrence (e.g. require ≥2 completed iterations in
-   one turn, with growth between them);
-2. treat a mechanism link that never fires as disqualifying — but note that a
-   genuine loop can have a *passive* link (FOMO's attack trigger never appears
-   as a priority option), so this needs a per-link "expected to surface" flag;
-3. add a cast-faithful staging mode (cast the card with the required kicker
-   etc. instead of placing it) or return `inconclusive` with reason
-   `unverifiable_staging` for cast-conditional abilities.
+Fix (in `detect_loop`):
+- ignore the pre-iteration baseline: a verdict needs >= 2 **post-baseline**
+  observations;
+- require both endpoints of any recurrence (and the degenerate identical-hash
+  check) to share a **known same turn**; an unknown turn (0) stays permissive.
 
-Until then, treat `loops` verdicts for cards whose ability depends on *how they
-were cast* or on *another card type entering* as unverified.
+Live acceptance (fresh standalone harness on 50051):
+
+| pair | before | after | truth |
+|---|---|---|---|
+| Kiki + Keldon Overseer | loops | refuted | false positive |
+| Kiki + Elven Raft-Steerer | loops | no_loop | false positive |
+| Kiki + Firbolg Flutist | loops | refuted | false positive |
+| Kiki + Deceiver Exarch | loops | loops | genuine |
+| Kiki + Pestermite | loops | loops | genuine |
+| Kiki + Reptilian Recruiter | loops | loops | genuine |
+
+The discriminators are now explicit: a genuine loop keeps `turn` constant across
+iterations (Pestermite/Deceiver/Reptilian stay in turn 1 while tokens grow),
+whereas the false positives advance `turn` (1 -> 3 -> 5 -> 7) as Kiki untaps
+normally.
+
+Consequence for the discovery claim: **Firbolg Flutist was a false positive.**
+The only engine-verified in-turn loop that survives the fix is
+**Reptilian Recruiter + Kiki-Jiki**, still pending the Tier-B second source
+before it may be called novel.
+
+Residual limitations:
+- `link_hits` is **not** a valid mechanism gate: a genuine untap that resolves
+  automatically (Deceiver Exarch) never appears as a policy action, so a real
+  loop still reports `link_hits=[0, 6]`. Mechanism execution must be judged from
+  events/state, not from policy link counters.
+- A loop that genuinely spans turns (e.g. an extra-turn chain) is rejected by
+  the same-turn rule. That is a known, documented false-negative class.
+- One completed iteration cannot certify a loop; runs with `--max-iterations 1`
+  now return `inconclusive`.
 
 ## Remote optional triggers & tap/untap semantics
 
