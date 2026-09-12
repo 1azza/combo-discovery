@@ -1283,6 +1283,7 @@ def detect_loop(
 
     first_repeat: tuple[int, int] | None = None
     counter_only_repeat: tuple[int, int] | None = None
+    mana_draining_repeat: tuple[int, int] | None = None
     cross_turn_repeat: tuple[int, int] | None = None
     for j in range(1, len(samples)):
         for i in range(j):
@@ -1297,6 +1298,15 @@ def detect_loop(
             grown = _grown_between(oi.resources, oj.resources)
             game_grown = [k for k in grown if k in GAME_STATE_GROWTH_KEYS]
             if game_grown:
+                if int(oj.resources.get("mana", 0)) < int(oi.resources.get("mana", 0)):
+                    # The loop strictly consumes mana every pass and nothing in
+                    # the pair replenishes it, so it is bounded by the starting
+                    # pool, not infinite (Orthion / Jolly Balloon Man-style copy
+                    # engines whose activation costs mana while the untapper
+                    # untaps the engine, not the lands).
+                    if mana_draining_repeat is None:
+                        mana_draining_repeat = (oi.iteration, oj.iteration)
+                    continue
                 return "loops", {
                     "kind": "recurrence",
                     "pair": [oi.iteration, oj.iteration],
@@ -1323,6 +1333,12 @@ def detect_loop(
             "reason": "signature recurred but only policy-driven event counters grew "
             "(no game-state resource); cannot confirm a loop",
             "pair": list(counter_only_repeat),
+        }
+    if mana_draining_repeat is not None:
+        return "inconclusive", {
+            "reason": "recurrence consumes mana each pass (bounded by the pool, "
+            "not an infinite loop)",
+            "pair": list(mana_draining_repeat),
         }
     if cross_turn_repeat is not None:
         return "no_loop", {

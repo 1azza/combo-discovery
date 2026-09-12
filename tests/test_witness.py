@@ -713,6 +713,20 @@ class TestDetectLoop:
         assert verdict == "no_loop"
         assert "across turns" in evidence["reason"]
 
+    def test_mana_consuming_recurrence_is_not_infinite(self):
+        # Orthion / Jolly Balloon Man shape: the copy ability costs mana every
+        # pass and the untapper untaps the engine, not the lands, so the loop is
+        # bounded by the starting pool, not infinite.
+        observations = [
+            Observation(iteration=0, signature="s0", resources={"mana": 40, "tokens": 0}, turn=1),
+            Observation(iteration=1, signature="same", resources={"mana": 40, "tokens": 1}, turn=1),
+            Observation(iteration=2, signature="same", resources={"mana": 39, "tokens": 2}, turn=1),
+            Observation(iteration=3, signature="same", resources={"mana": 38, "tokens": 3}, turn=1),
+        ]
+        verdict, evidence = detect_loop(observations)
+        assert verdict == "inconclusive"
+        assert "mana" in evidence["reason"]
+
     def test_counter_only_growth_is_not_a_loop(self):
         # Live combat false positive (Aurelia/Genji Glove/Hexplate Wallbreaker):
         # once-per-turn extra-combat cards leave the board static while the

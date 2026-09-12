@@ -330,3 +330,27 @@ Spellbook lags most.
 Takeaway: the method reliably produces uncatalogued pairs (4/49), but most are
 known in another form or documented in community threads. Genuine *novel
 mechanics* still require the search/player work.
+
+## Fourth false-positive class: mana-consuming recurrences
+
+Found by widening the engines in the analogue run. `Orthion, Hero of
+Lavabrink` (`{1}{R}, {T}: Create a token that's a copy of another target
+creature you control`) with any ETB untapper recurs in-turn with tokens growing,
+so the judge certified `loops`. But the untapper untaps **Orthion**, not the
+lands: every pass costs mana, so the "loop" is bounded by the starting pool
+(observed mana 40 -> 39 -> 38 ...).
+
+Fix: a same-turn recurrence may only certify `loops` when **mana is
+non-decreasing** across it. A recurrence that strictly consumes mana is bounded
+by the pool and returns `inconclusive` with reason "recurrence consumes mana each
+pass".
+
+Live: `Orthion + Pestermite` `loops` -> `inconclusive`; the genuine loops
+(Kiki/Pestermite, Splinter Twin, Combat Celebrant, Reptilian) and the
+false-positive matrix are unchanged.
+
+**Open question:** `The Jolly Balloon Man` also costs `{1}` to activate, yet its
+runs report mana constant at 40 and still verify as `loops`. Either its
+activation is not being charged (a possible harness mana-accounting gap) or the
+mana resource read is wrong. Its `loops` verdicts should be treated as
+unverified until that is resolved.

@@ -13,7 +13,7 @@ places Spellbook lags (recent sets).
 
 Usage:
     uv run python scripts/analogue_transfer.py
-    uv run python scripts/analogue_transfer.py --engines "Kiki-Jiki, Mirror Breaker,Splinter Twin"
+    uv run python scripts/analogue_transfer.py --engines "Kiki-Jiki, Mirror Breaker;Splinter Twin"
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from combo_discovery.env import ForgeEnvClient
 from combo_discovery.ontology.builder import _load_vintage
 from combo_discovery.store import ExperimentStore
 
-DEFAULT_ENGINES = "Kiki-Jiki, Mirror Breaker,Splinter Twin"
+DEFAULT_ENGINES = "Kiki-Jiki, Mirror Breaker;Splinter Twin"
 DEFAULT_DECKS = ["A=decks/goldfish_A.dck", "B=decks/goldfish_B.dck"]
 
 #: The functional ETB-untap shapes that can untap the copy engine: untap a
@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         partners.append(name)
     partners = sorted(set(partners))
 
-    engines = [e.strip() for e in args.engines.split(",") if e.strip()]
+    engines = [e.strip() for e in args.engines.split(";") if e.strip()]
     pairs, seen = [], set()
     for engine in engines:
         en = normalize_card_name(engine)
