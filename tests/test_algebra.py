@@ -728,3 +728,35 @@ class TestPhaseTriggerHandling:
         link = link_re_trigger(engine, self._etb_listener())
         assert link is not None
         assert link.subkind == "reanimate"
+
+    def test_triggered_copy_engine_is_not_a_retrigger(self):
+        # An attack/ETB/loyalty copy engine cannot be driven by the witness
+        # policy (it only acts on offered decisions); measured recall on such
+        # engines is ~3%, so they are not composed into copy loops.
+        engine = _sig(
+            1, "Ghired, Conclave Exile", "a", kind="trigger",
+            trigger=Port("attacks", {"predicate": "ATTACKS"}),
+            produces=(_copy_port("Creature"),),
+        )
+        listener = _sig(
+            2, "Deceiver Exarch", "b", kind="trigger",
+            trigger=Port("enters_battlefield", {"self": True,
+                                                "predicate": "ETB_TRIGGER"}),
+            produces=(_untap_port("Creature"),),
+        )
+        assert link_re_trigger(engine, listener) is None
+
+    def test_activated_copy_engine_still_composes(self):
+        # Kiki-Jiki's copy is an activated ability: it must keep composing.
+        engine = _sig(
+            1, "Kiki-Jiki, Mirror Breaker", "a", type_line="Legendary Creature Goblin",
+            consumes=(Port("tap", {"self": True, "predicate": "TAPS_COST"}),),
+            produces=(_copy_port("Creature.nonLegendary+YouCtrl"),),
+        )
+        listener = _sig(
+            2, "Deceiver Exarch", "b", kind="trigger",
+            trigger=Port("enters_battlefield", {"self": True,
+                                                "predicate": "ETB_TRIGGER"}),
+            produces=(_untap_port("Creature"),),
+        )
+        assert link_re_trigger(engine, listener) is not None

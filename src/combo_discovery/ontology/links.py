@@ -232,6 +232,13 @@ def link_re_trigger(engine: AbilitySig, listener: AbilitySig) -> Link | None:
 
     for produced in engine.produces:
         if produced.kind == "copy_permanent" and trigger.kind in _COPY_RE_TRIGGER_KINDS:
+            if engine.triggers_on is not None:
+                # A *triggered* copy engine (attack / ETB / loyalty) is not
+                # drivable by the witness policy, which only acts on decisions
+                # the engine offers. Measured recall on such engines is ~3%, so
+                # do not compose them into copy loops. Activated and static
+                # engines (Kiki-Jiki, Splinter Twin) are kept.
+                continue
             if copy_accepts(produced, listener):
                 return Link(
                     "re_trigger", "copy", engine, listener,
