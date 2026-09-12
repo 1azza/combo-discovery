@@ -619,6 +619,12 @@ class TestWitnessSignature:
         changed.battlefield_cards[0].tapped = True
         assert witness_signature(changed) != base
 
+    def test_life_is_not_in_the_structural_signature(self):
+        # Life is a monotonic scalar: a combat loop damages the opponent every
+        # iteration, so life must not gate structural recurrence (regression for
+        # the Combat Celebrant + Kiki-Jiki false negative).
+        assert "life" not in witness_signature(make_state())
+
 
 class TestDetectLoop:
     def test_accepts_growing_resource_cycle(self):

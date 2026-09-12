@@ -1095,19 +1095,22 @@ def witness_signature(state: pb.FullState) -> dict[str, Any]:
     """The structural projection that must recur for a loop.
 
     Captures *non-token* battlefield names/tapped/counters, phase, active
-    player, per-player life, zone counts and the stack shape.  Monotonic
-    *scalars* (mana pool, total damage, cast counts, **token count**) are
-    deliberately excluded so they can accumulate across iterations without
-    changing the signature; they are tracked as growing resources by
-    :func:`resource_totals`.  A token-growing loop therefore shows a recurring
-    structure + a strictly growing ``tokens`` resource.  ``turn`` is also
+    player, zone counts and the stack shape.  Monotonic *scalars* (mana pool,
+    **life totals**, total damage, cast counts, **token count**) are deliberately
+    excluded so they can accumulate across iterations without changing the
+    signature; they are tracked as growing resources by :func:`resource_totals`.
+    A token-growing loop therefore shows a recurring structure + a strictly
+    growing ``tokens`` resource.
+
+    Life is excluded for a concrete reason: a combat loop damages the opponent
+    every iteration, so including life would stop the structure from recurring
+    and reject a genuine loop (Combat Celebrant + Kiki-Jiki).  ``turn`` is also
     excluded (a turn-cycling loop should recur).  Library order is not exposed
     by FullState v2 and is represented only as a count.
     """
     return {
         "phase": state.phase,
         "active_player": state.active_player,
-        "life": [int(v) for v in state.life],
         "battlefield": _battlefield_entries(state),
         "zone_counts": {
             "hand": [_zone_count(z) for z in state.hand],
