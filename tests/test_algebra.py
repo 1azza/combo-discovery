@@ -669,3 +669,40 @@ class TestPhaseTriggerHandling:
         assert link_re_trigger(engine, exarch) is not None
         combos = find_combos([engine, exarch], max_len=3)
         assert combos
+
+    @staticmethod
+    def _zone_move(origin: str) -> AbilitySig:
+        return _sig(
+            1, "Zone Engine", "a", kind="spell",
+            produces=(Port("zone_move", {
+                "from": origin, "to": "Battlefield", "predicate": "MOVES_ZONE",
+            }),),
+        )
+
+    @staticmethod
+    def _etb_listener() -> AbilitySig:
+        return _sig(
+            2, "A Killer Among Us", "b", kind="trigger",
+            trigger=Port("enters_battlefield", {"self": True,
+                                                "predicate": "ETB_TRIGGER"}),
+        )
+
+    def test_put_onto_battlefield_from_library_is_not_a_retrigger(self):
+        # Ramp/tutor ("search your library ... put onto the battlefield") creates
+        # a fresh object; it does not re-fire an existing permanent's ETB. This
+        # was the source of the A Killer Among Us noise class.
+        assert link_re_trigger(self._zone_move("Library"), self._etb_listener()) is None
+
+    def test_put_onto_battlefield_from_hand_is_not_a_retrigger(self):
+        # Cheat-into-play (e.g. Flash) is not a flicker either.
+        assert link_re_trigger(self._zone_move("Hand"), self._etb_listener()) is None
+
+    def test_graveyard_to_battlefield_is_reanimate(self):
+        link = link_re_trigger(self._zone_move("Graveyard"), self._etb_listener())
+        assert link is not None
+        assert link.subkind == "reanimate"
+
+    def test_exile_to_battlefield_is_flicker(self):
+        link = link_re_trigger(self._zone_move("Exile"), self._etb_listener())
+        assert link is not None
+        assert link.subkind == "flicker"

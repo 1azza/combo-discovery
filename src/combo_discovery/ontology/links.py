@@ -237,7 +237,19 @@ def link_re_trigger(engine: AbilitySig, listener: AbilitySig) -> Link | None:
             if destination != "battlefield":
                 continue
             origin = str(produced.params.get("from") or "").lower()
-            subkind = "reanimate" if "graveyard" in origin else "flicker"
+            # A re-trigger requires the *same* permanent to leave and return, so
+            # only graveyard recursion or a flicker round-trip qualifies.
+            # "Put onto the battlefield" from a library or hand is a tutor /
+            # cheat-into-play that creates a fresh object: it does not re-fire an
+            # existing permanent's ETB. Treating those as re-triggers turned
+            # every ramp spell into a bogus "flicker" engine (the
+            # A Killer Among Us / Balduvian Trading Post noise class).
+            if "graveyard" in origin:
+                subkind = "reanimate"
+            elif origin in ("exile", "battlefield"):
+                subkind = "flicker"
+            else:
+                continue
             return Link(
                 "re_trigger", subkind, engine, listener,
                 matched=[(produced, trigger)],
