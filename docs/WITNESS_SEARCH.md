@@ -273,19 +273,26 @@ copy/untap class (a copy engine plus an untapper):
 
 | engine | n | loops | refuted/no_loop | inconclusive | recall |
 |---|---|---|---|---|---|
-| all | 133 | 43 | 21 | 69 | **32%** |
-| activated (`{T}`-cost copy) | 90 | 39 | 13 | 38 | **43%** |
-| triggered (attack/ETB/loyalty) | 33 | 1 | 7 | 25 | **3%** |
+| all | 133 | 47 | 17 | 69 | **35%** |
+| activated (`{T}`-cost copy) | 99 | 46 | 10 | 43 | **46%** |
+| triggered (attack/ETB/loyalty) | 34 | 1 | 7 | 26 | **3%** |
+
+(The first run, before the recall fixes, was 43/133 = 32% overall and 43%
+activated. Requiring activated/static copy engines and removing life from the
+structural signature recovered 4 known combos — e.g. `Combat Celebrant +
+Kiki-Jiki`, a genuine infinite-combat loop — cutting refuted/no_loop from 21 to
+17.)
 
 Readings:
 
-- On its single best class the verifier confirms **under half of known combos**.
+- On its single best class the verifier confirms **about half of known combos**.
 - **Triggered engines are effectively undriveable** (3%): the policy only acts on
   offered decisions, so attack/ETB/loyalty copy engines stall. Generator output
-  should avoid proposing them until the policy can drive them.
-- **21 known combos are actively `refuted`/`no_loop`** — real false negatives,
-  each a concrete, diagnosable target. (`Combat Celebrant + Kiki-Jiki` is a
-  genuine extra-combat loop that the same-turn / counter-only rules reject.)
+  now refuses to compose copy loops around them.
+- **17 known combos are still actively `refuted`/`no_loop`** — real false
+  negatives, each a concrete, diagnosable target. Most reduce to engines that
+  cannot be driven (triggered) or loops with no net resource growth (e.g.
+  `Palinchron + Molten Echoes`).
 - The largest single cluster is **staging, not logic**: 22 `Ghired, Mirror of the
   Wilds` pairs return `inconclusive` with exactly 2 executed actions because
   Ghired's granted ability needs "target token you control that entered this
