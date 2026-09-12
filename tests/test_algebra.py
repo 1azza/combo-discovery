@@ -706,3 +706,25 @@ class TestPhaseTriggerHandling:
         link = link_re_trigger(self._zone_move("Exile"), self._etb_listener())
         assert link is not None
         assert link.subkind == "flicker"
+
+    def test_one_shot_engine_is_not_a_retrigger(self):
+        # Danse Macabre (sorcery) reanimates once and is gone: it cannot re-fire
+        # an ETB repeatedly. This was the dominant sacrifice-pool noise.
+        engine = _sig(
+            1, "Danse Macabre", "a", kind="spell", type_line="Sorcery",
+            produces=(Port("zone_move", {
+                "from": "Graveyard", "to": "Battlefield", "predicate": "MOVES_ZONE",
+            }),),
+        )
+        assert link_re_trigger(engine, self._etb_listener()) is None
+
+    def test_permanent_engine_reanimates(self):
+        engine = _sig(
+            1, "Krovikan Vampire", "a", type_line="Creature Vampire",
+            produces=(Port("zone_move", {
+                "from": "Graveyard", "to": "Battlefield", "predicate": "MOVES_ZONE",
+            }),),
+        )
+        link = link_re_trigger(engine, self._etb_listener())
+        assert link is not None
+        assert link.subkind == "reanimate"

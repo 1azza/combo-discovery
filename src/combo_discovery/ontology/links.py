@@ -204,6 +204,13 @@ def _evidence(sig: AbilitySig, port: Port) -> dict[str, Any]:
             "ability_ref": sig.ability_ref, "port": port.to_dict()}
 
 
+def _is_one_shot(sig: AbilitySig) -> bool:
+    """True for an instant/sorcery: it resolves once and cannot re-trigger."""
+    context = sig.card_context()
+    type_line = (getattr(context, "type_line", "") or "").lower()
+    return any(word in type_line for word in ("instant", "sorcery"))
+
+
 def link_re_trigger(engine: AbilitySig, listener: AbilitySig) -> Link | None:
     """A fresh copy/phase/reanimation that fires ``listener``'s trigger again.
 
@@ -211,6 +218,13 @@ def link_re_trigger(engine: AbilitySig, listener: AbilitySig) -> Link | None:
     engine; ``phase`` triggers are intentionally absent (see the constant).
     """
     if engine.card_id == listener.card_id:
+        return None
+    # A one-shot (instant/sorcery) resolves once and goes to the graveyard, so it
+    # cannot re-fire a listener repeatedly. Modelling it as a re-entrant engine
+    # produced the one-shot-reanimation noise (Danse Macabre, Living Death,
+    # Lich-Knights' Conquest, ...). A cycle that recurs the spell would need an
+    # explicit recursion link, which this model does not assume.
+    if _is_one_shot(engine):
         return None
     trigger = listener.triggers_on
     if trigger is None:
