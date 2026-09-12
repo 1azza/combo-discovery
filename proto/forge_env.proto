@@ -434,6 +434,8 @@ message CardSpec {
   map<string, int32> counters = 5;    // e.g. {"+1/+1": 2}
   int32 damage = 6;
   bool no_etb_triggers = 7;           // suppress enters-the-battlefield triggers
+  int32 id = 8;                       // scenario-assigned id (0 = unspecified)
+  int32 attached_to = 9;              // host card id (0 = unattached)
 }
 
 // One player's injected state. Repeated CardSpec lists preserve order; for

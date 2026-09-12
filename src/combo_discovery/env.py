@@ -266,6 +266,8 @@ def _card_spec_to_proto(spec: Any) -> pb.CardSpec:
         counters={str(k): int(v) for k, v in spec.counters.items()},
         damage=int(spec.damage),
         no_etb_triggers=bool(spec.no_etb_triggers),
+        id=int(getattr(spec, "id", 0)),
+        attached_to=int(getattr(spec, "attached_to", 0)),
     )
 
 

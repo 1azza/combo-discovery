@@ -513,7 +513,7 @@ class RestoreRequest(_message.Message):
     def __init__(self, game_id: _Optional[int] = ..., token: _Optional[bytes] = ...) -> None: ...
 
 class CardSpec(_message.Message):
-    __slots__ = ("name", "set", "tapped", "summoning_sick", "counters", "damage", "no_etb_triggers")
+    __slots__ = ("name", "set", "tapped", "summoning_sick", "counters", "damage", "no_etb_triggers", "id", "attached_to")
     class CountersEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -528,6 +528,8 @@ class CardSpec(_message.Message):
     COUNTERS_FIELD_NUMBER: _ClassVar[int]
     DAMAGE_FIELD_NUMBER: _ClassVar[int]
     NO_ETB_TRIGGERS_FIELD_NUMBER: _ClassVar[int]
+    ID_FIELD_NUMBER: _ClassVar[int]
+    ATTACHED_TO_FIELD_NUMBER: _ClassVar[int]
     name: str
     set: str
     tapped: bool
@@ -535,7 +537,9 @@ class CardSpec(_message.Message):
     counters: _containers.ScalarMap[str, int]
     damage: int
     no_etb_triggers: bool
-    def __init__(self, name: _Optional[str] = ..., set: _Optional[str] = ..., tapped: _Optional[bool] = ..., summoning_sick: _Optional[bool] = ..., counters: _Optional[_Mapping[str, int]] = ..., damage: _Optional[int] = ..., no_etb_triggers: _Optional[bool] = ...) -> None: ...
+    id: int
+    attached_to: int
+    def __init__(self, name: _Optional[str] = ..., set: _Optional[str] = ..., tapped: _Optional[bool] = ..., summoning_sick: _Optional[bool] = ..., counters: _Optional[_Mapping[str, int]] = ..., damage: _Optional[int] = ..., no_etb_triggers: _Optional[bool] = ..., id: _Optional[int] = ..., attached_to: _Optional[int] = ...) -> None: ...
 
 class PlayerScenario(_message.Message):
     __slots__ = ("player", "life", "mana", "battlefield", "hand", "graveyard", "library", "exile")

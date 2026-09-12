@@ -12,6 +12,7 @@ from combo_discovery.generated import forge_env_pb2 as pb
 from combo_discovery.runner import DecisionContext
 from combo_discovery.witness import (
     CardSpec,
+    Candidate,
     LinkPlan,
     MAX_PREGAME_DECISIONS,
     Observation,
@@ -194,6 +195,35 @@ class TestBuildScenario:
         scenario = build_scenario(("A", "B"))
         assert [c.name for c in scenario.players[0].battlefield] == ["A", "B"]
 
+    def test_aura_attaches_to_non_aura_partner(self):
+        candidate = Candidate(
+            cards=("Splinter Twin", "Deceiver Exarch"),
+            type_lines=("Enchantment — Aura", "Creature — Efreet"),
+        )
+        scenario = build_scenario(candidate)
+        battlefield = scenario.players[0].battlefield
+        assert [c.name for c in battlefield] == ["Splinter Twin", "Deceiver Exarch"]
+        # Deterministic ids in emission order, starting at 1.
+        assert [c.id for c in battlefield] == [1, 2]
+        assert battlefield[0].attached_to == 2  # Aura -> first non-Aura
+        assert battlefield[1].attached_to == 0
+
+    def test_aura_without_host_still_assigns_ids(self):
+        candidate = Candidate(
+            cards=("Splinter Twin",),
+            type_lines=("Enchantment — Aura",),
+        )
+        scenario = build_scenario(candidate)
+        battlefield = scenario.players[0].battlefield
+        assert [c.id for c in battlefield] == [1]
+        assert battlefield[0].attached_to == 0  # no non-Aura host: left unattached
+
+    def test_no_type_lines_leaves_ids_and_attachments_unset(self):
+        scenario = build_scenario(combo_ab())
+        battlefield = scenario.players[0].battlefield
+        assert battlefield
+        assert all(c.id == 0 and c.attached_to == 0 for c in battlefield)
+
     def test_empty_combo_rejected(self):
         with pytest.raises(ValueError, match="at least one"):
             build_scenario(None)
@@ -237,6 +267,27 @@ class TestCanonical:
         spec = CardSpec("X", counters={"+1/+1": 2, "loyalty": 1})
         assert spec.canonical()["counters"] == {"+1/+1": 2, "loyalty": 1}
 
+    def test_card_spec_canonical_includes_id_and_attachment(self):
+        spec = CardSpec("X", id=3, attached_to=1)
+        canon = spec.canonical()
+        assert canon["id"] == 3
+        assert canon["attached_to"] == 1
+        # Round-trips: equal fields produce an equal canonical form.
+        assert CardSpec("X", id=3, attached_to=1).canonical() == canon
+        # Defaults stay unset.
+        assert CardSpec("X").canonical()["id"] == 0
+        assert CardSpec("X").canonical()["attached_to"] == 0
+
+    def test_attachment_changes_scenario_hash(self):
+        unattached = Scenario(
+            players=[PlayerScenario(player=0, battlefield=[CardSpec("X", id=1)])]
+        )
+        attached = Scenario(
+            players=[PlayerScenario(player=0, battlefield=[CardSpec("X", id=1)])]
+        )
+        attached.players[0].battlefield[0].attached_to = 1
+        assert unattached.scenario_hash() != attached.scenario_hash()
+
 
 # ---------------------------------------------------------------------------
 # Policy
@@ -264,6 +315,41 @@ class TestWitnessPolicy:
         assert answer == ("option_id", 0)
         assert policy.cursor == 0  # B was the last link, so it wrapped
         assert policy.iterations == 1
+
+    def test_match_link_falls_back_to_dst(self):
+        # An Aura's granted ability is offered under the host creature's name.
+        combo = Candidate(
+            cards=("Splinter Twin", "Deceiver Exarch"),
+            type_lines=("Enchantment — Aura", "Creature — Efreet"),
+        )
+        link = LinkPlan("Splinter Twin", "Deceiver Exarch")
+        policy = WitnessPolicy(combo=combo, links=[link], player=0)
+        options = [pb.Option(id=0, kind="activate", card_name="Deceiver Exarch")]
+        hit = policy._match_link(options, link)
+        assert hit is not None
+        assert hit.card_name == "Deceiver Exarch"
+
+    def test_match_link_does_not_fall_back_for_non_aura_src(self):
+        policy = WitnessPolicy(links=[LinkPlan("Hippo", "Kiki")], player=0)
+        options = [pb.Option(id=0, kind="activate", card_name="Kiki")]
+        assert policy._match_link(options, policy.links[0]) is None
+
+    def test_ordered_preferences_prefers_host_for_aura_source(self):
+        # The loop-closing target of an Aura's granted ability is the tapped host
+        # creature, not the Aura itself (live: Splinter Twin + Deceiver Exarch,
+        # where targeting the Aura left the host tapped and broke the loop).
+        combo = Candidate(
+            cards=("Splinter Twin", "Deceiver Exarch"),
+            type_lines=("Enchantment — Aura", "Creature — Efreet"),
+        )
+        link = LinkPlan("Splinter Twin", "Deceiver Exarch")
+        policy = WitnessPolicy(combo=combo, links=[link], player=0)
+        assert policy._ordered_preferences(link)[0] == "Deceiver Exarch"
+
+    def test_ordered_preferences_keeps_source_first_without_aura(self):
+        link = LinkPlan("Hippo", "Kiki")
+        policy = WitnessPolicy(links=[link], player=0)
+        assert policy._ordered_preferences(link)[0] == "Hippo"
 
     def test_non_priority_uses_active_link_params(self):
         link = LinkPlan("A", "B", params={"targets": ["A"]})

@@ -155,6 +155,8 @@ class CardSpec:
     counters: dict[str, int] = field(default_factory=dict)
     damage: int = 0
     no_etb_triggers: bool = False
+    id: int = 0
+    attached_to: int = 0
 
     def canonical(self) -> dict[str, Any]:
         return {
@@ -165,6 +167,8 @@ class CardSpec:
             "counters": {str(k): int(v) for k, v in sorted(self.counters.items())},
             "damage": int(self.damage),
             "no_etb_triggers": self.no_etb_triggers,
+            "id": int(self.id),
+            "attached_to": int(self.attached_to),
         }
 
 
@@ -358,6 +362,63 @@ def _must_be_cast(combo: Any, name: str) -> bool:
     return any(word in kind for word in ("spell", "sorcery", "instant"))
 
 
+def _is_aura(type_line: str) -> bool:
+    """True when ``type_line`` names the Aura subtype (word-boundary)."""
+    return bool(
+        re.search(r"(?<![A-Za-z0-9])aura(?![A-Za-z0-9])", type_line or "", re.IGNORECASE)
+    )
+
+
+def _type_line_for(combo: Any, name: str) -> str:
+    """Best-effort type line for ``name`` from a combo/candidate.
+
+    Candidates carry ``type_lines`` aligned with ``cards``; ontology combos and
+    test fakes expose it through their abilities' ``card_context()``.  Returns
+    ``""`` when no information is available.
+    """
+    cards: Any = getattr(combo, "cards", None) or ()
+    type_lines: Any = getattr(combo, "type_lines", None) or ()
+    if type_lines:
+        try:
+            index = list(cards).index(name)
+        except ValueError:
+            index = -1
+        if 0 <= index < len(type_lines):
+            candidate_line = str(type_lines[index] or "").strip()
+            if candidate_line:
+                return candidate_line
+    ability = _ability_for(combo, name)
+    if ability is not None:
+        get_context = getattr(ability, "card_context", None)
+        context = get_context() if callable(get_context) else None
+        line = str(getattr(context, "type_line", "") or "").strip()
+        if line:
+            return line
+    return ""
+
+
+def _assign_battlefield_ids(
+    battlefield: Sequence[CardSpec], type_lines: dict[str, str]
+) -> None:
+    """Assign deterministic battlefield ids and attach Auras to a host.
+
+    Ids are a single incrementing counter in emission order, starting at 1.
+    Each Aura is attached to the first non-Aura battlefield card (same player);
+    when there is none the Aura is left unattached.
+    """
+    for index, spec in enumerate(battlefield, start=1):
+        spec.id = index
+    host_id = 0
+    for spec in battlefield:
+        if not _is_aura(type_lines.get(spec.name, "")):
+            host_id = spec.id
+            break
+    if host_id:
+        for spec in battlefield:
+            if spec.id != host_id and _is_aura(type_lines.get(spec.name, "")):
+                spec.attached_to = host_id
+
+
 def _default_library() -> list[CardSpec]:
     """A small basic-land library so non-loop witness runs end naturally."""
     return [CardSpec(name=DEFAULT_LIBRARY_LAND) for _ in range(DEFAULT_LIBRARY_SIZE)]
@@ -406,6 +467,12 @@ def build_scenario(
             starting_hand.append(spec)
         else:
             battlefield.append(spec)
+
+    # Attachments are only emitted when the combo actually knows its type lines;
+    # otherwise the scenario is unchanged (no ids, no attachments).
+    type_lines = {name: _type_line_for(combo, name) for name in names}
+    if any(type_lines.values()):
+        _assign_battlefield_ids(battlefield, type_lines)
 
     mana_map = (
         {str(k): int(v) for k, v in mana.items()}
@@ -485,6 +552,14 @@ class WitnessPolicy:
     ):
         self.player = player
         self.links = list(links) if links is not None else link_plans(combo)
+        # Aura source names: an Aura's granted activated ability is offered
+        # under the *host* creature's name, so only these links may fall back
+        # to matching their ``dst`` (see :meth:`_match_link`).
+        self._aura_sources = {
+            link.src
+            for link in self.links
+            if link.src and _is_aura(_type_line_for(combo, link.src))
+        }
         self._fallback = fallback or default_policy
         self.max_stall = max(1, int(max_stall))
         self.max_decisions_per_iteration = max(0, int(max_decisions_per_iteration))
@@ -566,7 +641,12 @@ class WitnessPolicy:
     def _match_link(
         self, options: Sequence[pb.Option], link: LinkPlan
     ) -> pb.Option | None:
-        return self._match_option(options, link.src, link.kind)
+        hit = self._match_option(options, link.src, link.kind)
+        if hit is None and link.dst and link.src in self._aura_sources:
+            # An Aura's granted activated ability is offered under the host
+            # creature's name, not the Aura's; fall back to the link's target.
+            hit = self._match_option(options, link.dst, link.kind)
+        return hit
 
     @staticmethod
     def _candidate_id(ctx: DecisionContext, name: str) -> int | None:
@@ -653,8 +733,15 @@ class WitnessPolicy:
                 seen.add(low)
                 preferred.append(text)
 
-        add(link.src)
-        add(link.dst)
+        if link.src in self._aura_sources:
+            # An Aura's granted ability is offered under the *host creature's*
+            # name, and the loop-closing target is the tapped host (link.dst),
+            # not the Aura itself. Prefer the host.
+            add(link.dst)
+            add(link.src)
+        else:
+            add(link.src)
+            add(link.dst)
         for name in self._combo_card_order():
             add(name)
         return preferred
@@ -1711,6 +1798,7 @@ class Candidate:
     pattern: str = ""
     mechanism: str = ""
     infinite: bool = False
+    type_lines: tuple[str, ...] = ()
 
     @property
     def links(self) -> list[LinkPlan]:
@@ -1781,6 +1869,7 @@ def load_candidate(
 
     ids = _parse_card_ids(row["card_ids_json"])
     names = _names_for_ids(conn, import_id, ids)
+    type_lines = _type_lines_for_ids(conn, import_id, ids)
     return Candidate(
         cards=tuple(names),
         card_ids=tuple(ids),
@@ -1788,6 +1877,7 @@ def load_candidate(
         key=str(row["id"]),
         pattern=str(row["pattern"] or ""),
         mechanism=str(row["mechanism"] or ""),
+        type_lines=tuple(type_lines),
     )
 
 
@@ -1804,6 +1894,25 @@ def _names_for_ids(conn: Any, import_id: str | None, ids: Sequence[int]) -> list
         params.append(import_id)
     rows = conn.execute(sql, params).fetchall()
     by_id = {int(r["id"]): str(r["name"]) for r in rows}
+    return [by_id[i] for i in ids if i in by_id]
+
+
+def _type_lines_for_ids(
+    conn: Any, import_id: str | None, ids: Sequence[int]
+) -> list[str]:
+    """Type lines for ``ids`` in the same order/filter as :func:`_names_for_ids`."""
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    sql = (
+        f"SELECT id, type_line FROM cards WHERE id IN ({placeholders}) "  # noqa: S608
+    )
+    params: list[Any] = [int(i) for i in ids]
+    if import_id is not None:
+        sql += "AND import_id = ?"
+        params.append(import_id)
+    rows = conn.execute(sql, params).fetchall()
+    by_id = {int(r["id"]): str(r["type_line"] or "") for r in rows}
     return [by_id[i] for i in ids if i in by_id]
 
 
