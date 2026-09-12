@@ -1021,10 +1021,24 @@ class StoreBinding:
         LEFT JOIN patterns p ON p.id = h.pattern_id
     """
 
+    @staticmethod
+    def _latest_build_clause(alias: str = "h") -> str:
+        """Scope a hypotheses query to the newest ontology build.
+
+        The store is append-only and one build writes every row with the same
+        ``created_at``, so an in-place rebuild appends a second build. Views scope
+        to the newest one so stale/duplicate rows are not shown; the history stays
+        in the store for provenance.
+        """
+        return (
+            f"{alias}.created_at ="
+            " (SELECT MAX(created_at) FROM combo_hypotheses)"
+        )
+
     def _hypothesis_filter(
         self, pattern_id: int | None, search: str
     ) -> tuple[str, list[Any]]:
-        clauses: list[str] = []
+        clauses: list[str] = [self._latest_build_clause()]
         params: list[Any] = []
         if pattern_id:
             clauses.append("h.pattern_id = ?")
@@ -1087,6 +1101,7 @@ class StoreBinding:
         if not self.has_table("combo_hypotheses"):
             return []
         clauses = [
+            self._latest_build_clause(),
             "h.status != 'refuted'",
             "EXISTS (SELECT 1 FROM json_each(h.card_ids_json) je"
             " WHERE CAST(je.value AS INTEGER) = ?)",

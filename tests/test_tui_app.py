@@ -629,6 +629,7 @@ async def test_live_card_lab_read_only(monkeypatch):
         ).fetchone()[0]
         expected_proposals = conn.execute(
             "SELECT COUNT(*) FROM combo_hypotheses h WHERE h.status != 'refuted'"
+            " AND h.created_at = (SELECT MAX(created_at) FROM combo_hypotheses)"
             " AND EXISTS (SELECT 1 FROM json_each(h.card_ids_json) je"
             " WHERE CAST(je.value AS INTEGER) = ?)",
             (kiki_id,),
