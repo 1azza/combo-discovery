@@ -301,3 +301,32 @@ Readings:
 Implication: the recall ceiling is the **player + scenario staging**, not the
 loop judge. Fixing the false negatives and the staging gaps raises trustworthy
 yield without any search/ML work.
+
+## Analogue transfer (Lever 1)
+
+Instrument: `uv run python scripts/analogue_transfer.py`. It takes known
+activated copy engines (Kiki-Jiki, Splinter Twin), enumerates cards with the same
+*functional* ETB-untap shape as the known combo partners, drops pairs already in
+Spellbook, and witness-verifies the rest. It deliberately leans on where
+Spellbook lags: functional near-reprints and recent sets.
+
+Result (2026-09-12): 2 engines x 39 partners = **49 uncatalogued analogue pairs,
+4 verified `loops`**.
+
+| candidate | Spellbook | independent source | status |
+|---|---|---|---|
+| Kiki-Jiki + Reptilian Recruiter | absent | Reddit / MTG Salvation (2024-07-15) | documented — not novel |
+| Splinter Twin + Giant-Sized Flying Ant | absent | not found | **uncatalogued** |
+| Splinter Twin + Janjeet Sentry | absent | TappedOut (2018) | documented — not novel |
+| Splinter Twin + Reptilian Recruiter | absent | same card as above | documented |
+
+The one surviving candidate, `Splinter Twin + Giant-Sized Flying Ant`, is legal
+(black-bordered, Vintage/Commander) and the loop holds (the token's modal ETB
+untaps the original). It is a **database gap, not a new mechanism**: the same
+interaction is already catalogued as `Kiki-Jiki + Giant-Sized Flying Ant`. The
+card is from Marvel Super Heroes (2026-06-26) — a very recent set, which is where
+Spellbook lags most.
+
+Takeaway: the method reliably produces uncatalogued pairs (4/49), but most are
+known in another form or documented in community threads. Genuine *novel
+mechanics* still require the search/player work.
