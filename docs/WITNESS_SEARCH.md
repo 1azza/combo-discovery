@@ -349,8 +349,12 @@ Live: `Orthion + Pestermite` `loops` -> `inconclusive`; the genuine loops
 (Kiki/Pestermite, Splinter Twin, Combat Celebrant, Reptilian) and the
 false-positive matrix are unchanged.
 
-**Open question:** `The Jolly Balloon Man` also costs `{1}` to activate, yet its
-runs report mana constant at 40 and still verify as `loops`. Either its
-activation is not being charged (a possible harness mana-accounting gap) or the
-mana resource read is wrong. Its `loops` verdicts should be treated as
-unverified until that is resolved.
+**Open question:** `The Jolly Balloon Man` also costs `{1}` to activate
+(`Cost$ 1 T` in its Forge script, versus `Cost$ 1 R T` for Orthion) yet its runs
+report mana constant at 40 and still verify as `loops`, while Orthion's pool
+drains cleanly. The cost is correctly encoded in the card data, so the
+discrepancy is engine/harness-side — the ability's mana is not being charged, or
+the pool read does not reflect the payment — not a data problem. Its `loops`
+verdicts are **unverified** until a Java-level trace resolves it. This matters
+because it would produce false `loops` for an entire family of mana-costing copy
+engines.
