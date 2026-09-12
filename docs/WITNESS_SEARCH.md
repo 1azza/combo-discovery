@@ -349,12 +349,13 @@ Live: `Orthion + Pestermite` `loops` -> `inconclusive`; the genuine loops
 (Kiki/Pestermite, Splinter Twin, Combat Celebrant, Reptilian) and the
 false-positive matrix are unchanged.
 
-**Open question:** `The Jolly Balloon Man` also costs `{1}` to activate
+**Resolved:** `The Jolly Balloon Man` also costs `{1}` to activate
 (`Cost$ 1 T` in its Forge script, versus `Cost$ 1 R T` for Orthion) yet its runs
-report mana constant at 40 and still verify as `loops`, while Orthion's pool
-drains cleanly. The cost is correctly encoded in the card data, so the
-discrepancy is engine/harness-side — the ability's mana is not being charged, or
-the pool read does not reflect the payment — not a data problem. Its `loops`
-verdicts are **unverified** until a Java-level trace resolves it. This matters
-because it would produce false `loops` for an entire family of mana-costing copy
-engines.
+reported mana constant at 40 and verified as `loops`, while Orthion's pool
+drained. Root cause found: the harness's FullState mana reader used
+`MagicColor.COLORLESS` (0) while the engine stores colorless mana at
+`ManaAtom.COLORLESS` (32), so the 8 injected colorless mana were invisible
+(reported 40 instead of 48). The AI prefers to spend that invisible mana on
+generic shards, so a pure-generic cost looked free. Fixed in the harness by
+summing both keys. `The Jolly Balloon Man` now reports 48 and drains per pass ->
+`inconclusive`, as does Orthion; the genuine loops are unchanged.
