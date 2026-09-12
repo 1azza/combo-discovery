@@ -114,6 +114,34 @@ and `witness_results(id, run_id, candidate_kind, candidate_key, card_names_json,
 TUI Candidate/Lab badge/action; `pool.map_witness`. Do not mutate
 `combo_hypotheses.status` (append-only; `adjudications` is the existing bridge).
 
+## Remote optional triggers & tap/untap semantics
+
+No new proto/decision type is needed for a combo trigger that is both
+**optional** (`OptionalDecider$ You`) and contains a **tap-or-untap** choice
+(e.g. Pestermite / Deceiver Exarch / Breaching Hippocamp under Kiki-Jiki):
+
+- **Optional trigger.** The engine asks the *decider's* controller at
+  resolution (`WrappedAbility.resolve` → `confirmTrigger`). `RemoteController`
+  answers `true` for a remote player, so the witness player always takes its own
+  "you may" trigger. There is no CONFIRM decision type in protocol v7 and none
+  is required — the policy cannot decline a confirmation, which is the correct
+  conservative default for a loop-closing ETB.
+- **Trigger targeting.** `RemoteController.orderAndPlaySimultaneousSa` /
+  `playTrigger` route a remote trigger whose ability chain uses targeting
+  through `prepareRemoteTrigger` → `setupTargets()` → `chooseTargetsFor`, i.e.
+  the target is surfaced as `DECISION_TYPE_CHOOSE_TARGETS` and answered by the
+  policy's link-aware selection (never the AI heuristic).
+- **Tap or untap.** `TapOrUntapEffect` calls the *tapper's* controller
+  `chooseBinary(..., BinaryChoiceType.TapOrUntap, default)`. The inherited AI
+  hardcodes `tap`; `RemoteController.chooseBinary` instead surfaces a
+  `DECISION_TYPE_CHOOSE_MODE` with descriptions `Tap` (id 0) / `Untap` (id 1).
+  `WitnessPolicy._choice_mode` answers `Untap` whenever `_loop_needs_untap()`,
+  so the token copy untaps Kiki and the cycle closes.
+
+The pair must be built from the current sources; a harness jar older than the
+`RemoteController` trigger overrides silently falls back to the AI (decline +
+tap) and refutes every such combo.
+
 ## Effort & risks
 
 **v1 ≈ 5–6 half-days:** proto+stubs 0.5; sync apply + marker/hash 0.5–1;
