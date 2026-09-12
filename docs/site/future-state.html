@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Where this is going — combo discovery</title>
+<meta name="description" content="The path from candidate pool to a confirmed, publishable set of novel combos, with roadmap, blockers and risks.">
+<style>
+  /* ---------- tokens ---------- */
+  :root{
+    color-scheme: dark;
+    --bg:#0b1016;
+    --panel:#121a24;
+    --panel-2:#18222e;
+    --panel-3:#0e151d;
+    --line:#293747;
+    --line-2:#1c2733;
+    --line-strong:#435569;
+    --ink:#e9eff6;
+    --ink-2:#b0bdcb;
+    --ink-3:#8b99a9;
+    --accent:#e3a24a;
+    --accent-2:#f0bd76;
+    --teal:#5cc9bb;
+    --good:#66cd91;
+    --bad:#e5807f;
+    --mono:ui-monospace,"SFMono-Regular","SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+    --maxw:960px;
+
+    --dg-panel:#16202b;
+    --dg-panel-soft:#101923;
+    --dg-panel-2:#1b2735;
+    --dg-chip:#1b2735;
+    --dg-line:#33445a;
+    --dg-line-strong:#4d6178;
+    --dg-ink:#e9eff6;
+    --dg-ink-2:#b0bdcb;
+    --dg-muted:#8b99a9;
+    --dg-accent:#e3a24a;
+    --dg-teal:#5cc9bb;
+    --dg-good:#66cd91;
+    --dg-bad:#e5807f;
+    --dg-accent-tint:rgba(227,162,74,.14);
+    --dg-teal-tint:rgba(92,201,187,.13);
+    --dg-good-tint:rgba(102,205,145,.13);
+    --dg-planned-tint:rgba(139,153,169,.10);
+  }
+
+  /* ---------- reset ---------- */
+  *,*::before,*::after{box-sizing:border-box}
+  html{margin:0;padding:0}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font-family:var(--sans);font-size:16px;line-height:1.66;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+  }
+  svg{display:block;width:100%;height:auto}
+  a{color:var(--accent-2);text-decoration:none}
+  a:hover{text-decoration:underline;text-underline-offset:3px}
+  a:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}
+  ::selection{background:rgba(227,162,74,.28)}
+  p{margin:0 0 1em}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+
+  /* ---------- top nav ---------- */
+  .top{position:sticky;top:0;z-index:20;background:var(--panel-3);border-bottom:1px solid var(--line-2)}
+  .top-in{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:54px}
+  .brand{font-family:var(--serif);font-size:1.06rem;color:var(--ink);display:inline-flex;align-items:center;gap:9px}
+  .brand:hover{text-decoration:none}
+  .brand .dot{width:8px;height:8px;border-radius:50%;background:var(--teal);display:inline-block}
+  .top nav{display:flex;gap:4px}
+  .top nav a{
+    font-family:var(--mono);font-size:.7rem;letter-spacing:.11em;text-transform:uppercase;
+    color:var(--ink-3);padding:8px 10px;border-radius:6px;border:1px solid transparent;
+  }
+  .top nav a:hover{color:var(--ink);text-decoration:none;background:var(--panel-2)}
+  .top nav a.active{color:var(--teal);border-color:var(--line);background:var(--panel-2)}
+
+  /* ---------- hero ---------- */
+  .hero{padding:64px 0 44px;border-bottom:1px solid var(--line-2)}
+  .eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--teal);margin:0 0 16px}
+  h1{font-family:var(--serif);font-weight:600;font-size:clamp(2rem,5.4vw,3.15rem);line-height:1.08;letter-spacing:-.01em;margin:0 0 20px;max-width:16ch}
+  .lede{font-size:1.13rem;color:var(--ink-2);max-width:66ch;margin:0 0 26px}
+  .stamp{display:flex;flex-wrap:wrap;gap:8px;margin:0}
+  .stamp .chip{font-family:var(--mono);font-size:.7rem;color:var(--ink-2);border:1px solid var(--line);background:var(--panel);padding:4px 9px;border-radius:6px}
+  .stamp .chip b{color:var(--teal);font-weight:600;letter-spacing:.04em}
+
+  /* ---------- layout ---------- */
+  main{display:block}
+  .sec{padding:52px 0;border-bottom:1px solid var(--line-2)}
+  .sec:last-of-type{border-bottom:0}
+  .sec-head{display:flex;align-items:baseline;gap:16px;margin:0 0 8px}
+  .sec-no{font-family:var(--mono);font-size:.78rem;color:var(--teal);letter-spacing:.1em}
+  h2{font-family:var(--serif);font-weight:600;font-size:clamp(1.45rem,3.2vw,1.85rem);line-height:1.18;margin:0;letter-spacing:-.005em}
+  .sec-sub{color:var(--ink-3);font-size:.95rem;max-width:70ch;margin:0 0 26px}
+  h3{font-family:var(--sans);font-weight:650;font-size:1.02rem;margin:0 0 10px;letter-spacing:.005em}
+  .small{font-size:.85rem;color:var(--ink-3)}
+  ul.plain{margin:0 0 1em;padding:0;list-style:none}
+  ul.plain li{position:relative;padding-left:20px;margin:0 0 7px}
+  ul.plain li::before{content:"";position:absolute;left:3px;top:.62em;width:6px;height:6px;background:var(--teal);border-radius:1px}
+  code.ic{font-family:var(--mono);font-size:.82rem;background:var(--panel-3);border:1px solid var(--line-2);border-radius:5px;padding:1px 6px;color:var(--accent-2);white-space:normal;overflow-wrap:anywhere}
+
+  /* ---------- split cards ---------- */
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:6px 0 4px}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:14px 22px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:17px 18px}
+  .card .k{font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;color:var(--teal);margin:0 0 6px}
+  .card h3{margin:0 0 6px}
+  .card p{margin:0;font-size:.92rem;color:var(--ink-2)}
+
+  /* ---------- figures ---------- */
+  figure{margin:30px 0 8px}
+  .fig-frame{background:var(--dg-panel-soft);border:1px solid var(--dg-line);border-radius:14px;padding:20px 20px 16px}
+  figcaption{font-size:.84rem;color:var(--ink-3);max-width:76ch;margin:13px 2px 0;line-height:1.55}
+  figcaption b{color:var(--ink-2);font-weight:600}
+  figcaption .em{color:var(--teal)}
+
+  /* ---------- notes ---------- */
+  .note{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:9px;padding:15px 17px;margin:0 0 12px}
+  .note p:last-child{margin-bottom:0}
+
+  /* ---------- legend ---------- */
+  .legend{display:flex;flex-wrap:wrap;gap:6px;margin:14px 2px 0}
+  .pill{display:inline-block;font-family:var(--mono);font-size:.7rem;color:var(--ink-2);border:1px solid var(--line);border-radius:999px;padding:2px 9px}
+  .pill.done{color:var(--good);border-color:#2f5442}
+  .pill.partial{color:var(--accent);border-color:#5a4526}
+  .pill.planned{color:var(--ink-3);border-color:var(--line)}
+  .pill.bad{color:var(--bad);border-color:#5a3a2e}
+
+  /* ---------- closing ---------- */
+  .closing{margin:8px 0 0;padding:22px 24px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--teal);border-radius:10px}
+  .closing p{margin:0;font-family:var(--serif);font-size:clamp(1.08rem,2.4vw,1.3rem);line-height:1.5;color:var(--ink);max-width:60ch}
+
+  footer{border-top:1px solid var(--line);padding:38px 0 60px;color:var(--ink-3);font-size:.84rem}
+  footer a{color:var(--ink-2)}
+  .foot-stamp{font-family:var(--mono);font-size:.7rem;letter-spacing:.03em;margin-top:12px;color:var(--ink-3)}
+
+  /* ---------- svg diagram base ---------- */
+  .defs{position:absolute;width:0;height:0;overflow:hidden}
+  .sv-panel{fill:var(--dg-panel);stroke:var(--dg-line);stroke-width:1.2}
+  .sv-panel-soft{fill:var(--dg-panel-soft);stroke:var(--dg-line);stroke-width:1.2}
+  .sv-panel-2{fill:var(--dg-panel-2);stroke:var(--dg-line);stroke-width:1.2}
+  .sv-node-accent{fill:var(--dg-accent-tint);stroke:var(--dg-accent);stroke-width:1.4}
+  .sv-node-teal{fill:var(--dg-teal-tint);stroke:var(--dg-teal);stroke-width:1.4}
+  .sv-gate-current{fill:var(--dg-accent-tint);stroke:var(--dg-accent);stroke-width:1.6;stroke-dasharray:5 4}
+  .sv-badge{fill:var(--dg-accent-tint);stroke:var(--dg-accent);stroke-width:1.2}
+  .sv-badge-teal{fill:var(--dg-teal-tint);stroke:var(--dg-teal);stroke-width:1.2}
+  .sv-chip{fill:var(--dg-chip);stroke:var(--dg-line);stroke-width:1}
+  .sv-chip-accent{fill:var(--dg-accent-tint);stroke:var(--dg-accent);stroke-width:1}
+  .sv-chip-teal{fill:var(--dg-teal-tint);stroke:var(--dg-teal);stroke-width:1}
+  .sv-chip-done{fill:var(--dg-good-tint);stroke:#3a6b52}
+  .sv-chip-part{fill:var(--dg-accent-tint);stroke:var(--dg-accent)}
+  .sv-chip-plan{fill:var(--dg-planned-tint);stroke:var(--dg-line)}
+  .sv-line{stroke:var(--dg-line);stroke-width:1.3;fill:none}
+  .sv-line-strong{stroke:var(--dg-line-strong);stroke-width:1.6;fill:none}
+  .sv-stroke-accent{stroke:var(--dg-accent);stroke-width:1.7;fill:none}
+  .sv-arr{fill:var(--dg-line-strong)}
+  .sv-arr-accent{fill:var(--dg-accent)}
+  .sv-arr-teal{fill:var(--dg-teal)}
+  .t-title{font-family:var(--sans);font-size:15px;font-weight:600;fill:var(--dg-ink)}
+  .t-head{font-family:var(--sans);font-size:12.5px;font-weight:600;fill:var(--dg-ink)}
+  .t-sub{font-family:var(--sans);font-size:12px;font-weight:400;fill:var(--dg-ink-2)}
+  .t-small{font-family:var(--sans);font-size:11px;font-weight:400;fill:var(--dg-ink-2)}
+  .t-cmd{font-family:var(--mono);font-size:11px;font-weight:400;fill:var(--dg-teal)}
+  .t-label{font-family:var(--mono);font-size:10px;font-weight:500;fill:var(--dg-muted);letter-spacing:.09em}
+  .t-desc{font-family:var(--sans);font-size:10.5px;font-weight:400;fill:var(--dg-ink-2)}
+  .t-num{font-family:var(--mono);font-size:12px;font-weight:600;fill:var(--dg-accent)}
+  .t-num-teal{font-family:var(--mono);font-size:12px;font-weight:600;fill:var(--dg-teal)}
+  .t-chip{font-family:var(--mono);font-size:10px;font-weight:500;fill:var(--dg-ink-2)}
+  .t-chip-a{font-family:var(--mono);font-size:10px;font-weight:600;fill:var(--dg-accent)}
+  .t-chip-t{font-family:var(--mono);font-size:10px;font-weight:600;fill:var(--dg-teal)}
+  .t-chip-done{font-family:var(--mono);font-size:9.5px;font-weight:600;fill:var(--dg-good)}
+  .t-chip-plan{font-family:var(--mono);font-size:9.5px;font-weight:600;fill:var(--dg-muted)}
+  .t-ink{fill:var(--dg-ink)}
+  .t-accent{fill:var(--dg-accent)}
+  .t-teal{fill:var(--dg-teal)}
+  .t-muted{fill:var(--dg-muted)}
+
+  /* ---------- responsive ---------- */
+  @media (max-width:760px){
+    .split,.grid-2{grid-template-columns:1fr}
+    .hero{padding:46px 0 34px}
+  }
+  @media (max-width:520px){
+    .wrap{padding:0 15px}
+    .sec{padding:40px 0}
+    .fig-frame{padding:13px 12px 10px;border-radius:11px}
+    .top nav a{padding:8px 7px;font-size:.64rem}
+    h1{max-width:none}
+  }
+  @media (max-width:430px){
+    .top-in{min-height:48px;gap:10px}
+    .brand{font-size:.95rem;gap:7px}
+    .top nav a{font-size:.58rem;letter-spacing:.05em;padding:6px 6px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+  }
+
+  /* ---------- print ---------- */
+  @media print{
+    @page{margin:14mm}
+    :root{
+      color-scheme: light;
+      --bg:#ffffff;--panel:#f5f7fa;--panel-2:#eef2f6;--panel-3:#f5f7fa;
+      --line:#c4cfdb;--line-2:#dde4ec;--line-strong:#8fa0b3;
+      --ink:#0e141b;--ink-2:#3c4a59;--ink-3:#55636f;
+      --accent:#8a5e0e;--accent-2:#6f4a08;--teal:#0e6f66;--good:#1c7a45;--bad:#a33232;
+      --dg-panel:#f3f6f9;--dg-panel-soft:#eef2f6;--dg-panel-2:#e9eef4;--dg-chip:#eef2f6;
+      --dg-line:#b9c5d2;--dg-line-strong:#7d8ea1;
+      --dg-ink:#0e141b;--dg-ink-2:#3c4a59;--dg-muted:#55636f;
+      --dg-accent:#8a5e0e;--dg-teal:#0e6f66;--dg-good:#1c7a45;--dg-bad:#a33232;
+      --dg-accent-tint:rgba(160,110,20,.10);--dg-teal-tint:rgba(14,111,102,.08);
+      --dg-good-tint:rgba(28,122,69,.08);--dg-planned-tint:rgba(85,99,111,.07);
+    }
+    html,body{background:#fff}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .top{position:static}
+    figure,.note,.card,.closing,.grid-2{break-inside:avoid}
+    figure svg{max-width:120mm;margin:0 auto}
+    .fig-frame{padding:6mm}
+    h2,h3{break-after:avoid}
+    figcaption{break-before:avoid}
+    a{color:inherit;text-decoration:none}
+    .hero{padding-top:0}
+  }
+</style>
+</head>
+<body>
+
+<svg class="defs" aria-hidden="true" focusable="false">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto"><path class="sv-arr" d="M0,0 L10,5 L0,10 Z"/></marker>
+    <marker id="ar-a" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto"><path class="sv-arr-accent" d="M0,0 L10,5 L0,10 Z"/></marker>
+    <marker id="ar-t" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto"><path class="sv-arr-teal" d="M0,0 L10,5 L0,10 Z"/></marker>
+  </defs>
+</svg>
+
+<header class="top">
+  <div class="wrap top-in">
+    <a class="brand" href="current-state.html"><span class="dot" aria-hidden="true"></span>combo discovery</a>
+    <nav aria-label="Site">
+      <a href="current-state.html">Current state</a>
+      <a href="future-state.html" class="active" aria-current="page">Future state</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero wrap" aria-labelledby="page-title">
+    <p class="eyebrow">Direction &amp; plan</p>
+    <h1 id="page-title">Where this is going</h1>
+    <p class="lede">From a candidate pool to a <strong>confirmed, publishable</strong> set of novel combos — with a trustworthy verifier, an independent second source, ranked search at scale, and a reproducible public artifact.</p>
+    <p class="stamp">
+      <span class="chip"><b>commit</b> 2b5918d</span>
+      <span class="chip"><b>protocol</b> v7</span>
+      <span class="chip"><b>store schema</b> v6</span>
+      <span class="chip"><b>verified</b> 2026-09-12</span>
+    </p>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-e">
+    <div class="sec-head"><span class="sec-no">01</span><h2 id="s-e">From candidate to confirmed combo</h2></div>
+    <p class="sec-sub">Two gates stand between a proposal and the word "novel". Both have to pass. A candidate that clears one and fails the other stays a candidate.</p>
+
+    <figure>
+      <div class="fig-frame">
+        <svg viewBox="0 0 560 730" role="img" aria-labelledby="figE-t">
+          <title id="figE-t">Goal pipeline from candidate to confirmed combo: mechanism audit, then two AND-ed gates (in-engine witness verification and an independent second source), then confirmed novel, human review and publishing. The verifier-hardening step is marked as the current position.</title>
+
+          <!-- candidate -->
+          <rect class="sv-panel" x="40" y="44" width="420" height="64" rx="9"/>
+          <text class="t-title" x="58" y="70">candidate (from algebra)</text>
+          <text class="t-sub" x="58" y="91">ranked proposal · known_pair vs unmatched</text>
+
+          <line class="sv-line-strong" x1="150" y1="108" x2="150" y2="126" marker-end="url(#ar)"/>
+
+          <!-- mechanism audit -->
+          <rect class="sv-panel" x="40" y="130" width="420" height="64" rx="9"/>
+          <text class="t-title" x="58" y="156">mechanism audit</text>
+          <text class="t-sub" x="58" y="177">does the link chain imply an infinite resource?</text>
+
+          <line class="sv-line-strong" x1="150" y1="194" x2="150" y2="212" marker-end="url(#ar)"/>
+
+          <!-- gates -->
+          <rect class="sv-panel-soft" x="40" y="216" width="420" height="170" rx="10"/>
+          <text class="t-head" x="250" y="244" text-anchor="middle">BOTH GATES MUST PASS</text>
+
+          <rect class="sv-gate-current" x="56" y="258" width="184" height="116" rx="8"/>
+          <text class="t-label t-accent" x="68" y="282">GATE 1</text>
+          <text class="t-head" x="68" y="303">in-engine witness</text>
+          <text class="t-small" x="68" y="321">SetupScenario + loop detection</text>
+          <text class="t-small" x="68" y="339">must return loops</text>
+          <text class="t-label t-accent" x="68" y="362">CURRENT · HARDENING</text>
+
+          <rect class="sv-panel" x="256" y="258" width="184" height="116" rx="8"/>
+          <text class="t-label" x="268" y="282">GATE 2</text>
+          <text class="t-head" x="268" y="303">independent source</text>
+          <text class="t-small" x="268" y="321">Tier B · Archidekt / MTGTop8</text>
+          <text class="t-small" x="268" y="339">must corroborate the pair</text>
+          <text class="t-label" x="268" y="362">FILLS OBSERVED_DECKS / PAIRS</text>
+
+          <!-- fail note -->
+          <rect class="sv-panel-2" x="250" y="398" width="230" height="64" rx="8"/>
+          <text class="t-small" x="264" y="418">gate fail → stays candidate</text>
+          <text class="t-cmd" x="264" y="438">unverifiable_staging</text>
+          <text class="t-cmd" x="264" y="454">needs_second_source</text>
+
+          <!-- main flow arrow -->
+          <line class="sv-line-strong" x1="150" y1="386" x2="150" y2="468" marker-end="url(#ar)"/>
+
+          <!-- confirmed -->
+          <rect class="sv-node-teal" x="40" y="470" width="420" height="64" rx="9"/>
+          <text class="t-title t-teal" x="58" y="496">confirmed novel</text>
+          <text class="t-sub" x="58" y="517">engine-verified AND independently sourced</text>
+
+          <line class="sv-line-strong" x1="150" y1="534" x2="150" y2="552" marker-end="url(#ar)"/>
+
+          <!-- human review -->
+          <rect class="sv-panel" x="40" y="556" width="420" height="64" rx="9"/>
+          <text class="t-title" x="58" y="582">human review</text>
+          <text class="t-sub" x="58" y="603">~50 candidates, manually judged</text>
+
+          <line class="sv-line-strong" x1="150" y1="620" x2="150" y2="638" marker-end="url(#ar)"/>
+
+          <!-- publish -->
+          <rect class="sv-node-accent" x="40" y="642" width="420" height="64" rx="9"/>
+          <text class="t-title t-accent" x="58" y="668">publish</text>
+          <text class="t-sub" x="58" y="689">public, reproducible artifact</text>
+        </svg>
+      </div>
+      <figcaption><b>Diagram E — candidate to confirmed.</b> The two gates are joined by an implicit AND: engine verification alone is not enough, and an independent source that cannot be exercised in-engine is not enough either. The system currently sits at <span class="em">Gate 1</span>, hardening the verifier.</figcaption>
+    </figure>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-f">
+    <div class="sec-head"><span class="sec-no">02</span><h2 id="s-f">Roadmap</h2></div>
+    <p class="sec-sub">The project's own phases, tagged by where they actually stand. Phase 5 is the active frontier.</p>
+
+    <figure>
+      <div class="fig-frame">
+        <svg viewBox="0 0 560 850" role="img" aria-labelledby="figF-t">
+          <title id="figF-t">Roadmap phases zero through nine, tagged done, in progress, or planned.</title>
+
+          <!-- 0-1 -->
+          <rect class="sv-panel" x="20" y="48" width="520" height="64" rx="9"/>
+          <text class="t-label t-accent" x="36" y="70">PHASE 0–1</text>
+          <text class="t-head" x="118" y="70">Foundation &amp; harness</text>
+          <rect class="sv-chip-done" x="420" y="56" width="104" height="22" rx="11"/><text class="t-chip-done" x="472" y="71" text-anchor="middle">DONE</text>
+          <text class="t-desc" x="36" y="96">protocol v1→v7 · determinism · snapshots · event taxonomy</text>
+
+          <!-- 2-3 -->
+          <rect class="sv-panel" x="20" y="128" width="520" height="64" rx="9"/>
+          <text class="t-label" x="36" y="150">PHASE 2–3</text>
+          <text class="t-head" x="118" y="150">Python execution &amp; experiment infra</text>
+          <rect class="sv-chip-part" x="420" y="136" width="104" height="22" rx="11"/><text class="t-chip-a" x="472" y="151" text-anchor="middle">IN PROGRESS</text>
+          <text class="t-desc" x="36" y="176">typed gRPC client · goldfish · worker pool; reproducible manifests pending</text>
+
+          <!-- 4 -->
+          <rect class="sv-panel" x="20" y="208" width="520" height="64" rx="9"/>
+          <text class="t-label t-accent" x="36" y="230">PHASE 4</text>
+          <text class="t-head" x="118" y="230">Corpus &amp; ontology</text>
+          <rect class="sv-chip-done" x="420" y="216" width="104" height="22" rx="11"/><text class="t-chip-done" x="472" y="231" text-anchor="middle">DONE</text>
+          <text class="t-desc" x="36" y="256">corpus · predicates · edges · patterns (Tier 0)</text>
+
+          <!-- 5 -->
+          <rect class="sv-panel" x="20" y="288" width="520" height="64" rx="9"/>
+          <text class="t-label" x="36" y="310">PHASE 5</text>
+          <text class="t-head" x="118" y="310">Candidate discovery</text>
+          <rect class="sv-chip-part" x="420" y="296" width="104" height="22" rx="11"/><text class="t-chip-a" x="472" y="311" text-anchor="middle">IN PROGRESS</text>
+          <text class="t-desc" x="36" y="336">algebra + witness; verifier hardening in progress at Tier 1</text>
+
+          <!-- 6 -->
+          <rect class="sv-panel" x="20" y="368" width="520" height="82" rx="9"/>
+          <text class="t-label" x="36" y="390">PHASE 6</text>
+          <text class="t-head" x="118" y="390">Learned search (Tier 2/3)</text>
+          <rect class="sv-chip-plan" x="420" y="376" width="104" height="22" rx="11"/><text class="t-chip-plan" x="472" y="391" text-anchor="middle">PLANNED</text>
+          <text class="t-desc" x="36" y="416">card/state-action encodings · candidate ranker · action-prior policy · active learning</text>
+          <text class="t-desc" x="36" y="434">novelty archive · Go-Explore · self-play only after deterministic snapshots</text>
+
+          <!-- 7 -->
+          <rect class="sv-panel" x="20" y="466" width="520" height="100" rx="9"/>
+          <text class="t-label" x="36" y="488">PHASE 7</text>
+          <text class="t-head" x="118" y="488">Model integration</text>
+          <rect class="sv-chip-plan" x="420" y="474" width="104" height="22" rx="11"/><text class="t-chip-plan" x="472" y="489" text-anchor="middle">PLANNED</text>
+          <text class="t-desc" x="36" y="514">GLM-5.3-flash provider · request/response caching · prompt manifests · oracle-text baseline</text>
+          <text class="t-desc" x="36" y="532">ontology-grounded ablation · refinement from failed witness searches</text>
+          <text class="t-desc" x="36" y="550">LLM adjudication of verified novel candidates · token/cost tracking · publish prompts</text>
+
+          <!-- 8 -->
+          <rect class="sv-panel" x="20" y="582" width="520" height="118" rx="9"/>
+          <text class="t-label" x="36" y="604">PHASE 8</text>
+          <text class="t-head" x="118" y="604">Evaluation &amp; novelty</text>
+          <rect class="sv-chip-plan" x="420" y="590" width="104" height="22" rx="11"/><text class="t-chip-plan" x="472" y="605" text-anchor="middle">PLANNED</text>
+          <text class="t-desc" x="36" y="630">random-pair baseline · embedding baseline · pure-LLM baseline · ontology-grounded LLM baseline</text>
+          <text class="t-desc" x="36" y="648">tuned vs held-out split · precision@k and efficiency · compare search at fixed budgets</text>
+          <text class="t-desc" x="36" y="666">validate vs Forge AI · seed robustness · audit engine/script bugs</text>
+          <text class="t-desc" x="36" y="684">human review of ~50 candidates · Spellbook novelty check · final human-confirmed list</text>
+
+          <!-- 9 -->
+          <rect class="sv-panel" x="20" y="716" width="520" height="100" rx="9"/>
+          <text class="t-label" x="36" y="738">PHASE 9</text>
+          <text class="t-head" x="118" y="738">Public artifact</text>
+          <rect class="sv-chip-plan" x="420" y="724" width="104" height="22" rx="11"/><text class="t-chip-plan" x="472" y="739" text-anchor="middle">PLANNED</text>
+          <text class="t-desc" x="36" y="764">architecture/protocol docs · build/launch docs · reproducible demo · replayable seeds/decks</text>
+          <text class="t-desc" x="36" y="782">benchmark data + schemas · limitations · diagrams (incl. these pages)</text>
+          <text class="t-desc" x="36" y="800">blog post · tagged release</text>
+        </svg>
+      </div>
+      <div class="legend">
+        <span class="pill done">done</span>
+        <span class="pill partial">in progress</span>
+        <span class="pill planned">planned</span>
+      </div>
+      <figcaption><b>Diagram F — roadmap.</b> Phases 0–4 are foundation; phase 5 is where the work is. Everything from phase 6 on is planned and depends on a verifier that can be trusted.</figcaption>
+    </figure>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-g">
+    <div class="sec-head"><span class="sec-no">03</span><h2 id="s-g">The three-blocker fix path</h2></div>
+    <p class="sec-sub">Concrete, in order. Until blocker 1 closes, everything downstream is built on sand.</p>
+
+    <figure>
+      <div class="fig-frame">
+        <svg viewBox="0 0 560 500" role="img" aria-labelledby="figG-t">
+          <title id="figG-t">Three blockers to fix: trustworthy verifier, second source Tier B, and scale plus rank, each with its concrete plan and acceptance condition.</title>
+
+          <!-- 1 -->
+          <rect class="sv-panel" x="20" y="44" width="520" height="170" rx="9"/>
+          <circle class="sv-badge" cx="44" cy="70" r="13"/>
+          <text class="t-num" x="44" y="74" text-anchor="middle">1</text>
+          <text class="t-title" x="68" y="75">Trustworthy verifier</text>
+          <text class="t-sub" x="36" y="104">cast-faithful staging (cast the card with the correct conditions), or</text>
+          <text class="t-sub" x="36" y="122">per-link "expected to surface" gates, or a stricter same-turn rule;</text>
+          <text class="t-sub" x="36" y="140">fallback verdict inconclusive · reason unverifiable_staging.</text>
+          <rect class="sv-node-accent" x="30" y="152" width="500" height="48" rx="6"/>
+          <text class="t-small t-accent" x="42" y="172">acceptance · Keldon Overseer &amp; Elven Raft-Steerer must NOT be loops;</text>
+          <text class="t-small t-accent" x="42" y="190">FOMO &amp; Firbolg Flutist must stay loops.</text>
+
+          <!-- 2 -->
+          <rect class="sv-panel" x="20" y="232" width="520" height="110" rx="9"/>
+          <circle class="sv-badge" cx="44" cy="258" r="13"/>
+          <text class="t-num" x="44" y="262" text-anchor="middle">2</text>
+          <text class="t-title" x="68" y="263">Second source (Tier B)</text>
+          <text class="t-sub" x="36" y="292">independent deck/corpus evidence (Archidekt / MTGTop8)</text>
+          <text class="t-sub" x="36" y="310">populating observed_decks / observed_pairs;</text>
+          <text class="t-sub" x="36" y="328">then needs_second_source → confirmed.</text>
+
+          <!-- 3 -->
+          <rect class="sv-panel" x="20" y="360" width="520" height="96" rx="9"/>
+          <circle class="sv-badge" cx="44" cy="386" r="13"/>
+          <text class="t-num" x="44" y="390" text-anchor="middle">3</text>
+          <text class="t-title" x="68" y="391">Scale + rank</text>
+          <text class="t-sub" x="36" y="420">rebuild the pool post-fix;</text>
+          <text class="t-sub" x="36" y="438">run ranked top-N discovery using the algebra's precision@10 ordering.</text>
+        </svg>
+      </div>
+      <figcaption><b>Diagram G — the fix path.</b> Blocker 1 changes what the verifier is allowed to call a loop. Blockers 2 and 3 only become meaningful once blocker 1 holds.</figcaption>
+    </figure>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-h">
+    <div class="sec-head"><span class="sec-no">04</span><h2 id="s-h">Milestones</h2></div>
+    <p class="sec-sub">The order milestones have to land in, from a verifier you can trust to a tagged public release.</p>
+
+    <figure>
+      <div class="fig-frame">
+        <svg viewBox="0 0 560 300" role="img" aria-labelledby="figH-t">
+          <title id="figH-t">Milestone strip: verifier trustworthy, pool rebuilt, ranked batch at scale, Tier-B source live, about fifty candidates human-reviewed, blog and tagged release.</title>
+
+          <!-- row 1 -->
+          <rect class="sv-panel" x="20" y="56" width="160" height="72" rx="9"/>
+          <circle class="sv-badge-teal" cx="40" cy="78" r="11"/><text class="t-num-teal" x="40" y="82" text-anchor="middle">1</text>
+          <text class="t-sub" x="100" y="92" text-anchor="middle">Verifier</text>
+          <text class="t-sub" x="100" y="108" text-anchor="middle">trustworthy</text>
+
+          <rect class="sv-panel" x="200" y="56" width="160" height="72" rx="9"/>
+          <circle class="sv-badge" cx="220" cy="78" r="11"/><text class="t-num" x="220" y="82" text-anchor="middle">2</text>
+          <text class="t-sub" x="280" y="92" text-anchor="middle">Pool</text>
+          <text class="t-sub" x="280" y="108" text-anchor="middle">rebuilt</text>
+
+          <rect class="sv-panel" x="380" y="56" width="160" height="72" rx="9"/>
+          <circle class="sv-badge" cx="400" cy="78" r="11"/><text class="t-num" x="400" y="82" text-anchor="middle">3</text>
+          <text class="t-sub" x="460" y="92" text-anchor="middle">Ranked batch</text>
+          <text class="t-sub" x="460" y="108" text-anchor="middle">at scale</text>
+
+          <line class="sv-line-strong" x1="180" y1="92" x2="198" y2="92" marker-end="url(#ar)"/>
+          <line class="sv-line-strong" x1="360" y1="92" x2="378" y2="92" marker-end="url(#ar)"/>
+          <line class="sv-line-strong" x1="460" y1="130" x2="460" y2="194" marker-end="url(#ar)"/>
+
+          <!-- row 2 (right to left) -->
+          <rect class="sv-panel" x="380" y="196" width="160" height="72" rx="9"/>
+          <circle class="sv-badge" cx="400" cy="218" r="11"/><text class="t-num" x="400" y="222" text-anchor="middle">4</text>
+          <text class="t-sub" x="460" y="232" text-anchor="middle">Tier-B</text>
+          <text class="t-sub" x="460" y="248" text-anchor="middle">source live</text>
+
+          <rect class="sv-panel" x="200" y="196" width="160" height="72" rx="9"/>
+          <circle class="sv-badge" cx="220" cy="218" r="11"/><text class="t-num" x="220" y="222" text-anchor="middle">5</text>
+          <text class="t-sub" x="280" y="232" text-anchor="middle">~50 candidates</text>
+          <text class="t-sub" x="280" y="248" text-anchor="middle">human-reviewed</text>
+
+          <rect class="sv-panel" x="20" y="196" width="160" height="72" rx="9"/>
+          <circle class="sv-badge" cx="40" cy="218" r="11"/><text class="t-num" x="40" y="222" text-anchor="middle">6</text>
+          <text class="t-sub" x="100" y="232" text-anchor="middle">Blog +</text>
+          <text class="t-sub" x="100" y="248" text-anchor="middle">tagged release</text>
+
+          <line class="sv-line-strong" x1="380" y1="232" x2="362" y2="232" marker-end="url(#ar)"/>
+          <line class="sv-line-strong" x1="200" y1="232" x2="182" y2="232" marker-end="url(#ar)"/>
+        </svg>
+      </div>
+      <figcaption><b>Diagram H — milestones.</b> The sequence matters: a trustworthy verifier unlocks the pool rebuild, which unlocks ranked search at scale and the second source, which together unlock human review and a release.</figcaption>
+    </figure>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-risks">
+    <div class="sec-head"><span class="sec-no">05</span><h2 id="s-risks">Risks</h2></div>
+    <p class="sec-sub">Known ways this plan can go wrong. None of them are hypothetical.</p>
+    <div class="grid-2">
+      <div class="card">
+        <p class="k">Risk 01</p>
+        <h3>Thread affinity</h3>
+        <p>The off-thread <code class="ic">GameAction.invoke</code> path is the number-one nondeterminism risk. Scenario injection must run on the game thread while parked.</p>
+      </div>
+      <div class="card">
+        <p class="k">Risk 02</p>
+        <h3>Engine / AI interference</h3>
+        <p>Mana payment, confirms, trigger ordering, and other non-overridden callbacks can drift a scripted line away from the intended one.</p>
+      </div>
+      <div class="card">
+        <p class="k">Risk 03</p>
+        <h3>Loop-detection fidelity</h3>
+        <p>Signatures may not recur bit-identically. This needs a deliberate signature definition and a bounded iteration budget.</p>
+      </div>
+      <div class="card">
+        <p class="k">Risk 04</p>
+        <h3>Scenario / state-hash collisions</h3>
+        <p>Library order, card ids, summoning sickness and attachments are excluded from <code class="ic">state_hash</code> today, so distinct scenarios can collide.</p>
+      </div>
+      <div class="card">
+        <p class="k">Risk 05</p>
+        <h3>One game per process</h3>
+        <p>A single active game per harness process constrains parallel witness search. Snapshots also cap at 32 live tokens.</p>
+      </div>
+      <div class="card">
+        <p class="k">Risk 06</p>
+        <h3>Card resolution ambiguity</h3>
+        <p>Names must resolve to exactly one <code class="ic">PaperCard</code>; double-faced, split, specialize and token faces need explicit handling.</p>
+      </div>
+      <div class="card">
+        <p class="k">Risk 07</p>
+        <h3>No structured Spellbook steps</h3>
+        <p>Only prose descriptions are imported. Combo lines must be driven from ontology links unless the steps are re-imported.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-close">
+    <div class="sec-head"><span class="sec-no">06</span><h2 id="s-close">The bar</h2></div>
+    <div class="closing">
+      <p>The bar for calling anything "novel" is deliberately high — engine-verified <strong>and</strong> independently sourced, or it stays a candidate.</p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p><a href="current-state.html">Current state</a> · <a href="future-state.html">Future state</a></p>
+    <p class="foot-stamp">commit 2b5918d · protocol v7 · store schema v6 · verified 2026-09-12</p>
+  </div>
+</footer>
+
+</body>
+</html>

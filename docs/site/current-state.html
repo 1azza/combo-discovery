@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How combo discovery works today — combo discovery</title>
+<meta name="description" content="Architecture and verified results of the combo-discovery system as of 2026-09-12.">
+<style>
+  /* ---------- tokens ---------- */
+  :root{
+    color-scheme: dark;
+    --bg:#0b1016;
+    --panel:#121a24;
+    --panel-2:#18222e;
+    --panel-3:#0e151d;
+    --line:#293747;
+    --line-2:#1c2733;
+    --line-strong:#435569;
+    --ink:#e9eff6;
+    --ink-2:#b0bdcb;
+    --ink-3:#8b99a9;
+    --accent:#e3a24a;
+    --accent-2:#f0bd76;
+    --teal:#5cc9bb;
+    --good:#66cd91;
+    --bad:#e5807f;
+    --mono:ui-monospace,"SFMono-Regular","SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+    --maxw:960px;
+
+    /* diagram-only tokens (kept separate so print can invert cleanly) */
+    --dg-panel:#16202b;
+    --dg-panel-soft:#101923;
+    --dg-panel-2:#1b2735;
+    --dg-chip:#1b2735;
+    --dg-line:#33445a;
+    --dg-line-strong:#4d6178;
+    --dg-ink:#e9eff6;
+    --dg-ink-2:#b0bdcb;
+    --dg-muted:#8b99a9;
+    --dg-accent:#e3a24a;
+    --dg-teal:#5cc9bb;
+    --dg-good:#66cd91;
+    --dg-bad:#e5807f;
+    --dg-accent-tint:rgba(227,162,74,.14);
+    --dg-teal-tint:rgba(92,201,187,.13);
+  }
+
+  /* ---------- reset ---------- */
+  *,*::before,*::after{box-sizing:border-box}
+  html{margin:0;padding:0}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font-family:var(--sans);font-size:16px;line-height:1.66;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+  }
+  svg{display:block;width:100%;height:auto}
+  a{color:var(--accent-2);text-decoration:none}
+  a:hover{text-decoration:underline;text-underline-offset:3px}
+  a:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}
+  ::selection{background:rgba(227,162,74,.28)}
+  p{margin:0 0 1em}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+
+  /* ---------- top nav ---------- */
+  .top{position:sticky;top:0;z-index:20;background:var(--panel-3);border-bottom:1px solid var(--line-2)}
+  .top-in{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:54px}
+  .brand{font-family:var(--serif);font-size:1.06rem;color:var(--ink);display:inline-flex;align-items:center;gap:9px}
+  .brand:hover{text-decoration:none}
+  .brand .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);display:inline-block}
+  .top nav{display:flex;gap:4px}
+  .top nav a{
+    font-family:var(--mono);font-size:.7rem;letter-spacing:.11em;text-transform:uppercase;
+    color:var(--ink-3);padding:8px 10px;border-radius:6px;border:1px solid transparent;
+  }
+  .top nav a:hover{color:var(--ink);text-decoration:none;background:var(--panel-2)}
+  .top nav a.active{color:var(--accent);border-color:var(--line);background:var(--panel-2)}
+
+  /* ---------- hero ---------- */
+  .hero{padding:64px 0 44px;border-bottom:1px solid var(--line-2)}
+  .eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin:0 0 16px}
+  h1{font-family:var(--serif);font-weight:600;font-size:clamp(2rem,5.4vw,3.15rem);line-height:1.08;letter-spacing:-.01em;margin:0 0 20px;max-width:18ch}
+  .lede{font-size:1.13rem;color:var(--ink-2);max-width:66ch;margin:0 0 26px}
+  .stamp{display:flex;flex-wrap:wrap;gap:8px;margin:0}
+  .stamp .chip{font-family:var(--mono);font-size:.7rem;color:var(--ink-2);border:1px solid var(--line);background:var(--panel);padding:4px 9px;border-radius:6px}
+  .stamp .chip b{color:var(--accent);font-weight:600;letter-spacing:.04em}
+
+  /* ---------- layout ---------- */
+  main{display:block}
+  .sec{padding:52px 0;border-bottom:1px solid var(--line-2)}
+  .sec:last-of-type{border-bottom:0}
+  .sec-head{display:flex;align-items:baseline;gap:16px;margin:0 0 8px}
+  .sec-no{font-family:var(--mono);font-size:.78rem;color:var(--accent);letter-spacing:.1em}
+  h2{font-family:var(--serif);font-weight:600;font-size:clamp(1.45rem,3.2vw,1.85rem);line-height:1.18;margin:0;letter-spacing:-.005em}
+  .sec-sub{color:var(--ink-3);font-size:.95rem;max-width:70ch;margin:0 0 26px}
+  h3{font-family:var(--sans);font-weight:650;font-size:1.02rem;margin:0 0 10px;letter-spacing:.005em}
+  .small{font-size:.85rem;color:var(--ink-3)}
+  ul.plain{margin:0 0 1em;padding:0;list-style:none}
+  ul.plain li{position:relative;padding-left:20px;margin:0 0 7px}
+  ul.plain li::before{content:"";position:absolute;left:3px;top:.62em;width:6px;height:6px;background:var(--accent);border-radius:1px}
+  code.ic{font-family:var(--mono);font-size:.82rem;background:var(--panel-3);border:1px solid var(--line-2);border-radius:5px;padding:1px 6px;color:var(--accent-2);white-space:normal;overflow-wrap:anywhere}
+  pre.cmd{font-family:var(--mono);font-size:.79rem;line-height:1.7;background:var(--panel-3);border:1px solid var(--line-2);border-radius:9px;padding:13px 15px;overflow-x:auto;color:var(--ink-2);margin:0 0 18px}
+  pre.cmd .c{color:var(--teal)}
+
+  /* ---------- split cards ---------- */
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:6px 0 4px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:17px 18px}
+  .card .k{font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin:0 0 6px}
+  .card h3{margin:0 0 6px}
+  .card p{margin:0;font-size:.92rem;color:var(--ink-2)}
+
+  /* ---------- figures ---------- */
+  figure{margin:30px 0 8px}
+  .fig-frame{background:var(--dg-panel-soft);border:1px solid var(--dg-line);border-radius:14px;padding:20px 20px 16px}
+  figcaption{font-size:.84rem;color:var(--ink-3);max-width:76ch;margin:13px 2px 0;line-height:1.55}
+  figcaption b{color:var(--ink-2);font-weight:600}
+  figcaption .em{color:var(--accent)}
+
+  /* ---------- stats ---------- */
+  .statrow{margin:0 0 24px}
+  .statrow h3{font-family:var(--mono);font-size:.72rem;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);font-weight:500;margin:0 0 10px}
+  .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 14px}
+  .stat .n{display:block;font-family:var(--mono);font-size:1.36rem;color:var(--ink);letter-spacing:-.01em;line-height:1.1}
+  .stat .l{display:block;font-size:.73rem;color:var(--ink-3);margin-top:5px;letter-spacing:.02em}
+  .stat.warn{border-color:#5a3a2e;background:#1a1512}
+  .stat.warn .n{color:var(--bad)}
+  .stat.accent .n{color:var(--accent)}
+
+  /* ---------- tables ---------- */
+  .table-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:11px}
+  table{width:100%;border-collapse:collapse;font-size:.9rem;min-width:520px}
+  caption{caption-side:top;text-align:left;font-family:var(--mono);font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);padding:13px 15px 10px}
+  th,td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--line-2)}
+  thead th{font-family:var(--mono);font-size:.68rem;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);font-weight:500;background:var(--panel-3)}
+  tbody tr:last-child td{border-bottom:0}
+  td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink-2)}
+  th:first-child,td:first-child{color:var(--ink-2)}
+  .col-hi{background:rgba(227,162,74,.09);color:var(--accent-2)}
+  thead .col-hi{color:var(--accent);background:rgba(227,162,74,.12)}
+  tr.mark td{font-weight:650;color:var(--ink)}
+  tr.mark .col-hi{color:var(--accent)}
+  .table-note{font-size:.84rem;color:var(--ink-3);margin:12px 2px 0;max-width:78ch}
+
+  /* ---------- notes / callouts ---------- */
+  .note{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:9px;padding:15px 17px;margin:0 0 12px}
+  .note.danger{border-left-color:var(--bad)}
+  .note .tag{display:inline-block;font-family:var(--mono);font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--bad);margin:0 0 7px}
+  .note h3{margin:0 0 7px}
+  .note p:last-child{margin-bottom:0}
+  .note .why{font-family:var(--mono);font-size:.78rem;color:var(--ink-3);margin-top:9px}
+
+  ol.problems{counter-reset:p;list-style:none;margin:0;padding:0}
+  ol.problems > li{counter-increment:p;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--bad);border-radius:9px;padding:15px 17px 15px 54px;position:relative;margin:0 0 12px}
+  ol.problems > li::before{content:counter(p);position:absolute;left:16px;top:15px;font-family:var(--mono);font-size:.8rem;color:var(--bad);width:22px;height:22px;line-height:22px;text-align:center;border:1px solid var(--line);border-radius:6px}
+  ol.problems > li h3{margin:0 0 7px}
+  ol.problems > li p:last-child{margin-bottom:0}
+
+  /* ---------- steps ---------- */
+  ol.steps{list-style:none;counter-reset:s;margin:0 0 22px;padding:0;border-left:1px solid var(--line)}
+  ol.steps li{counter-increment:s;position:relative;padding:0 0 13px 34px}
+  ol.steps li::before{content:counter(s,decimal-leading-zero);position:absolute;left:-1px;top:2px;transform:translateX(-50%);background:var(--bg);font-family:var(--mono);font-size:.66rem;color:var(--accent);padding:2px 0}
+  ol.steps li:last-child{padding-bottom:0}
+
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:14px 22px}
+  .grid-2 h3{margin-bottom:6px}
+  .pill{display:inline-block;font-family:var(--mono);font-size:.7rem;color:var(--ink-2);border:1px solid var(--line);border-radius:999px;padding:2px 9px;margin:0 6px 6px 0}
+  .pill.ok{color:var(--good);border-color:#2f5442}
+  .pill.bad{color:var(--bad);border-color:#5a3a2e}
+
+  footer{border-top:1px solid var(--line);padding:38px 0 60px;color:var(--ink-3);font-size:.84rem}
+  footer a{color:var(--ink-2)}
+  .foot-stamp{font-family:var(--mono);font-size:.7rem;letter-spacing:.03em;margin-top:12px;color:var(--ink-3)}
+
+  /* ---------- svg diagram base ---------- */
+  .defs{position:absolute;width:0;height:0;overflow:hidden}
+  .sv-panel{fill:var(--dg-panel);stroke:var(--dg-line);stroke-width:1.2}
+  .sv-panel-soft{fill:var(--dg-panel-soft);stroke:var(--dg-line);stroke-width:1.2}
+  .sv-panel-2{fill:var(--dg-panel-2);stroke:var(--dg-line);stroke-width:1.2}
+  .sv-node-accent{fill:var(--dg-accent-tint);stroke:var(--dg-accent);stroke-width:1.4}
+  .sv-node-teal{fill:var(--dg-teal-tint);stroke:var(--dg-teal);stroke-width:1.4}
+  .sv-gate-current{fill:var(--dg-accent-tint);stroke:var(--dg-accent);stroke-width:1.6;stroke-dasharray:5 4}
+  .sv-badge{fill:var(--dg-accent-tint);stroke:var(--dg-accent);stroke-width:1.2}
+  .sv-chip{fill:var(--dg-chip);stroke:var(--dg-line);stroke-width:1}
+  .sv-chip-accent{fill:var(--dg-accent-tint);stroke:var(--dg-accent);stroke-width:1}
+  .sv-chip-teal{fill:var(--dg-teal-tint);stroke:var(--dg-teal);stroke-width:1}
+  .sv-line{stroke:var(--dg-line);stroke-width:1.3;fill:none}
+  .sv-line-strong{stroke:var(--dg-line-strong);stroke-width:1.6;fill:none}
+  .sv-stroke-accent{stroke:var(--dg-accent);stroke-width:1.7;fill:none}
+  .sv-arr{fill:var(--dg-line-strong)}
+  .sv-arr-accent{fill:var(--dg-accent)}
+  .sv-arr-teal{fill:var(--dg-teal)}
+  .t-title{font-family:var(--sans);font-size:15px;font-weight:600;fill:var(--dg-ink)}
+  .t-head{font-family:var(--sans);font-size:12.5px;font-weight:600;fill:var(--dg-ink)}
+  .t-sub{font-family:var(--sans);font-size:12px;font-weight:400;fill:var(--dg-ink-2)}
+  .t-small{font-family:var(--sans);font-size:11px;font-weight:400;fill:var(--dg-ink-2)}
+  .t-cmd{font-family:var(--mono);font-size:11px;font-weight:400;fill:var(--dg-teal)}
+  .t-label{font-family:var(--mono);font-size:10px;font-weight:500;fill:var(--dg-muted);letter-spacing:.09em}
+  .t-num{font-family:var(--mono);font-size:12px;font-weight:600;fill:var(--dg-accent)}
+  .t-chip{font-family:var(--mono);font-size:10px;font-weight:500;fill:var(--dg-ink-2)}
+  .t-chip-a{font-family:var(--mono);font-size:10px;font-weight:600;fill:var(--dg-accent)}
+  .t-chip-t{font-family:var(--mono);font-size:10px;font-weight:600;fill:var(--dg-teal)}
+  .t-ink{fill:var(--dg-ink)}
+  .t-accent{fill:var(--dg-accent)}
+  .t-teal{fill:var(--dg-teal)}
+  .t-muted{fill:var(--dg-muted)}
+
+  /* ---------- responsive ---------- */
+  @media (max-width:760px){
+    .split,.grid-2{grid-template-columns:1fr}
+    .hero{padding:46px 0 34px}
+  }
+  @media (max-width:520px){
+    .wrap{padding:0 15px}
+    .sec{padding:40px 0}
+    .fig-frame{padding:13px 12px 10px;border-radius:11px}
+    .stat-grid{grid-template-columns:repeat(auto-fit,minmax(126px,1fr))}
+    .top nav a{padding:8px 7px;font-size:.64rem}
+    h1{max-width:none}
+  }
+  @media (max-width:430px){
+    .top-in{min-height:48px;gap:10px}
+    .brand{font-size:.95rem;gap:7px}
+    .top nav a{font-size:.58rem;letter-spacing:.05em;padding:6px 6px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+  }
+
+  /* ---------- print ---------- */
+  @media print{
+    @page{margin:14mm}
+    :root{
+      color-scheme: light;
+      --bg:#ffffff;--panel:#f5f7fa;--panel-2:#eef2f6;--panel-3:#f5f7fa;
+      --line:#c4cfdb;--line-2:#dde4ec;--line-strong:#8fa0b3;
+      --ink:#0e141b;--ink-2:#3c4a59;--ink-3:#55636f;
+      --accent:#8a5e0e;--accent-2:#6f4a08;--teal:#0e6f66;--good:#1c7a45;--bad:#a33232;
+      --dg-panel:#f3f6f9;--dg-panel-soft:#eef2f6;--dg-panel-2:#e9eef4;--dg-chip:#eef2f6;
+      --dg-line:#b9c5d2;--dg-line-strong:#7d8ea1;
+      --dg-ink:#0e141b;--dg-ink-2:#3c4a59;--dg-muted:#55636f;
+      --dg-accent:#8a5e0e;--dg-teal:#0e6f66;--dg-good:#1c7a45;--dg-bad:#a33232;
+      --dg-accent-tint:rgba(160,110,20,.10);--dg-teal-tint:rgba(14,111,102,.08);
+    }
+    html,body{background:#fff}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .top{position:static}
+    figure,.note,.stat,table,ol.problems>li,.split,.grid-2{break-inside:avoid}
+    figure svg{max-width:120mm;margin:0 auto}
+    .fig-frame{padding:6mm}
+    h2,h3{break-after:avoid}
+    figcaption{break-before:avoid}
+    a{color:inherit;text-decoration:none}
+    .hero{padding-top:0}
+  }
+</style>
+</head>
+<body>
+
+<svg class="defs" aria-hidden="true" focusable="false">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto"><path class="sv-arr" d="M0,0 L10,5 L0,10 Z"/></marker>
+    <marker id="ar-a" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto"><path class="sv-arr-accent" d="M0,0 L10,5 L0,10 Z"/></marker>
+    <marker id="ar-t" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto"><path class="sv-arr-teal" d="M0,0 L10,5 L0,10 Z"/></marker>
+  </defs>
+</svg>
+
+<header class="top">
+  <div class="wrap top-in">
+    <a class="brand" href="current-state.html"><span class="dot" aria-hidden="true"></span>combo discovery</a>
+    <nav aria-label="Site">
+      <a href="current-state.html" class="active" aria-current="page">Current state</a>
+      <a href="future-state.html">Future state</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero wrap" aria-labelledby="page-title">
+    <p class="eyebrow">Architecture &amp; verified results</p>
+    <h1 id="page-title">How combo discovery works today</h1>
+    <p class="lede">The system searches the space of Magic: The Gathering card interactions for loops that produce unbounded value, verifies them inside the actual rules engine (Forge), and measures the result against the community's known-combo database (Commander Spellbook). It is two halves: a headless rules <strong>oracle</strong>, and a symbolic/statistical <strong>science</strong> layer on top of it.</p>
+    <p class="stamp">
+      <span class="chip"><b>commit</b> 2b5918d</span>
+      <span class="chip"><b>protocol</b> v7</span>
+      <span class="chip"><b>store schema</b> v6</span>
+      <span class="chip"><b>verified</b> 2026-09-12</span>
+    </p>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-split">
+    <div class="sec-head"><span class="sec-no">00</span><h2 id="s-split">Two halves</h2></div>
+    <p class="sec-sub">Everything below is one of these two layers, or the boundary between them.</p>
+    <div class="split">
+      <div class="card">
+        <p class="k">Oracle · Java</p>
+        <h3>Forge harness</h3>
+        <p>Runs legal games headlessly, exposes typed decisions, Snapshot/Restore, and deterministic scenario injection. It is the only thing that can certify that a loop actually happens.</p>
+      </div>
+      <div class="card">
+        <p class="k">Science · Python</p>
+        <h3>Corpus to candidates</h3>
+        <p>Imports the card corpus and ground truth, builds the predicate ontology and interaction algebra, evaluates proposals, analyses motifs, runs witness search, and presents results in the review TUI.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-a">
+    <div class="sec-head"><span class="sec-no">01</span><h2 id="s-a">Master pipeline</h2></div>
+    <p class="sec-sub">Eight stages, each labelled with what it consumes, what it produces, and the command that runs it. Every stage reads from and writes to the same append-only store.</p>
+
+    <figure>
+      <div class="fig-frame">
+        <svg viewBox="0 0 560 990" role="img" aria-labelledby="figA-t">
+          <title id="figA-t">Master pipeline: eight stages tapped into the research.db store bus, from the Forge harness through corpus, ground truth, ontology, evaluation, motifs, witness search and human review.</title>
+
+          <!-- store bus -->
+          <rect class="sv-panel-2" x="20" y="42" width="64" height="908" rx="10"/>
+          <text class="t-label" transform="rotate(-90 52 496)" x="52" y="496" text-anchor="middle">research.db · SQLITE · APPEND-ONLY</text>
+
+          <!-- 1 -->
+          <line class="sv-line" x1="84" y1="104" x2="108" y2="104"/>
+          <rect class="sv-panel" x="108" y="58" width="432" height="92" rx="9"/>
+          <circle class="sv-badge" cx="132" cy="84" r="13"/>
+          <text class="t-num" x="132" y="88" text-anchor="middle">1</text>
+          <text class="t-title" x="158" y="81">Forge harness</text>
+          <text class="t-label" x="528" y="81" text-anchor="end">JAVA · PROTOCOL V7</text>
+          <text class="t-sub" x="158" y="101">in · deck + scenario   →   out · decisions, snapshots, events</text>
+          <text class="t-cmd" x="158" y="133">java -Djava.awt.headless=true -jar forge-harness-*.jar \</text>
+          <text class="t-cmd" x="158" y="147">  --port 50051 --assets &lt;forge/forge-gui-desktop&gt;</text>
+          <line class="sv-line-strong" x1="324" y1="152" x2="324" y2="166" marker-end="url(#ar)"/>
+
+          <!-- 2 -->
+          <line class="sv-line" x1="84" y1="216" x2="108" y2="216"/>
+          <rect class="sv-panel" x="108" y="170" width="432" height="92" rx="9"/>
+          <circle class="sv-badge" cx="132" cy="196" r="13"/>
+          <text class="t-num" x="132" y="200" text-anchor="middle">2</text>
+          <text class="t-title" x="158" y="193">Corpus import</text>
+          <text class="t-label" x="528" y="193" text-anchor="end">IMPORT</text>
+          <text class="t-sub" x="158" y="213">in · Forge card scripts   →   out · typed effect rows</text>
+          <text class="t-cmd" x="158" y="245">combo-import-cards</text>
+          <line class="sv-line-strong" x1="324" y1="264" x2="324" y2="278" marker-end="url(#ar)"/>
+
+          <!-- 3 -->
+          <line class="sv-line" x1="84" y1="328" x2="108" y2="328"/>
+          <rect class="sv-panel" x="108" y="282" width="432" height="92" rx="9"/>
+          <circle class="sv-badge" cx="132" cy="308" r="13"/>
+          <text class="t-num" x="132" y="312" text-anchor="middle">3</text>
+          <text class="t-title" x="158" y="305">Ground truth</text>
+          <text class="t-label" x="528" y="305" text-anchor="end">TIER A · MEASUREMENT ONLY</text>
+          <text class="t-sub" x="158" y="325">in · Commander Spellbook bulk   →   out · known combos + pairs</text>
+          <text class="t-cmd" x="158" y="357">combo-import-spellbook --download</text>
+          <line class="sv-line-strong" x1="324" y1="376" x2="324" y2="390" marker-end="url(#ar)"/>
+
+          <!-- 4 -->
+          <line class="sv-line" x1="84" y1="440" x2="108" y2="440"/>
+          <rect class="sv-panel" x="108" y="394" width="432" height="92" rx="9"/>
+          <circle class="sv-badge" cx="132" cy="420" r="13"/>
+          <text class="t-num" x="132" y="424" text-anchor="middle">4</text>
+          <text class="t-title" x="158" y="417">Ontology + algebra</text>
+          <text class="t-label" x="528" y="417" text-anchor="end">ALGEBRA</text>
+          <text class="t-sub" x="158" y="437">in · predicates + edges   →   out · candidate combos</text>
+          <text class="t-cmd" x="158" y="469">combo-build-ontology</text>
+          <line class="sv-line-strong" x1="324" y1="488" x2="324" y2="502" marker-end="url(#ar)"/>
+
+          <!-- 5 -->
+          <line class="sv-line" x1="84" y1="552" x2="108" y2="552"/>
+          <rect class="sv-panel" x="108" y="506" width="432" height="92" rx="9"/>
+          <circle class="sv-badge" cx="132" cy="532" r="13"/>
+          <text class="t-num" x="132" y="536" text-anchor="middle">5</text>
+          <text class="t-title" x="158" y="529">Evaluation</text>
+          <text class="t-label" x="528" y="529" text-anchor="end">SCORING</text>
+          <text class="t-sub" x="158" y="549">in · proposals + known combos   →   out · precision / recall</text>
+          <text class="t-cmd" x="158" y="581">combo-evaluate</text>
+          <line class="sv-line-strong" x1="324" y1="600" x2="324" y2="614" marker-end="url(#ar)"/>
+
+          <!-- 6 -->
+          <line class="sv-line" x1="84" y1="664" x2="108" y2="664"/>
+          <rect class="sv-panel" x="108" y="618" width="432" height="92" rx="9"/>
+          <circle class="sv-badge" cx="132" cy="644" r="13"/>
+          <text class="t-num" x="132" y="648" text-anchor="middle">6</text>
+          <text class="t-title" x="158" y="641">Motif analysis</text>
+          <text class="t-label" x="528" y="641" text-anchor="end">DIAGNOSTIC ONLY</text>
+          <text class="t-sub" x="158" y="661">in · known + proposed pairs   →   out · enrichments</text>
+          <text class="t-cmd" x="158" y="693">combo-analyze-motifs</text>
+          <line class="sv-line-strong" x1="324" y1="712" x2="324" y2="726" marker-end="url(#ar)"/>
+
+          <!-- 7 -->
+          <line class="sv-line" x1="84" y1="776" x2="108" y2="776"/>
+          <rect class="sv-panel" x="108" y="730" width="432" height="92" rx="9"/>
+          <circle class="sv-badge" cx="132" cy="756" r="13"/>
+          <text class="t-num" x="132" y="760" text-anchor="middle">7</text>
+          <text class="t-title" x="158" y="753">Witness search</text>
+          <text class="t-label" x="528" y="753" text-anchor="end">VERIFICATION</text>
+          <text class="t-sub" x="158" y="773">in · candidate + scenario   →   out · in-engine loop verdict</text>
+          <text class="t-cmd" x="158" y="805">combo-witness --candidate &lt;id&gt;</text>
+          <line class="sv-line-strong" x1="324" y1="824" x2="324" y2="838" marker-end="url(#ar)"/>
+
+          <!-- 8 -->
+          <line class="sv-line" x1="84" y1="888" x2="108" y2="888"/>
+          <rect class="sv-panel" x="108" y="842" width="432" height="92" rx="9"/>
+          <circle class="sv-badge" cx="132" cy="868" r="13"/>
+          <text class="t-num" x="132" y="872" text-anchor="middle">8</text>
+          <text class="t-title" x="158" y="865">Human review (TUI)</text>
+          <text class="t-label" x="528" y="865" text-anchor="end">REVIEW</text>
+          <text class="t-sub" x="158" y="885">in · known vs proposed   →   out · adjudications</text>
+          <text class="t-cmd" x="158" y="917">combo-tui</text>
+        </svg>
+      </div>
+      <figcaption><b>Master pipeline.</b> The store <b>research.db</b> is the spine: a single append-only log that every stage taps. Stages run in this order, and each one can be re-run independently because nothing is mutated in place. Stage 7 is the only one that produces an engine-backed answer.</figcaption>
+    </figure>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-b">
+    <div class="sec-head"><span class="sec-no">02</span><h2 id="s-b">The gRPC boundary</h2></div>
+    <p class="sec-sub">A Python process drives a Java rules engine over gRPC. Everything the science layer can do to a game crosses this boundary and nothing else.</p>
+
+    <figure>
+      <div class="fig-frame">
+        <svg viewBox="0 0 560 610" role="img" aria-labelledby="figB-t">
+          <title id="figB-t">The gRPC boundary between the Python process and the Forge harness: the ForgeEnv service, its RPCs, the thirteen decision types, and the twenty-eight normalized event types.</title>
+
+          <!-- processes -->
+          <rect class="sv-panel" x="20" y="44" width="220" height="88" rx="9"/>
+          <text class="t-title" x="36" y="74">Python process</text>
+          <text class="t-sub" x="36" y="94">science layer + gRPC client</text>
+          <text class="t-sub" x="36" y="112">consumes the oracle</text>
+
+          <rect class="sv-panel" x="340" y="44" width="200" height="88" rx="9"/>
+          <text class="t-title" x="356" y="74">Forge harness</text>
+          <text class="t-sub" x="356" y="94">Java · headless rules engine</text>
+          <text class="t-sub" x="356" y="112">owns the game thread</text>
+
+          <!-- channel -->
+          <line class="sv-line-strong" x1="246" y1="78" x2="332" y2="78" marker-end="url(#ar-a)"/>
+          <line class="sv-line-strong" x1="334" y1="106" x2="248" y2="106" marker-end="url(#ar-t)"/>
+          <text class="t-label t-accent" x="290" y="66" text-anchor="middle">gRPC</text>
+          <text class="t-label t-accent" x="290" y="128" text-anchor="middle">PROTOCOL V7</text>
+
+          <!-- service banner -->
+          <rect class="sv-node-teal" x="20" y="150" width="520" height="40" rx="8"/>
+          <text class="t-head t-teal" x="280" y="175" text-anchor="middle">ForgeEnv service · protocol v7</text>
+
+          <!-- rpc surface -->
+          <rect class="sv-panel-soft" x="20" y="206" width="520" height="100" rx="9"/>
+          <text class="t-label" x="36" y="230">RPC SURFACE</text>
+          <rect class="sv-chip-teal" x="27" y="244" width="122" height="22" rx="4"/><text class="t-chip-t" x="88" y="259" text-anchor="middle">SetupScenario</text>
+          <rect class="sv-chip" x="155" y="244" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="259" text-anchor="middle">Snapshot</text>
+          <rect class="sv-chip" x="283" y="244" width="122" height="22" rx="4"/><text class="t-chip" x="344" y="259" text-anchor="middle">Restore</text>
+          <rect class="sv-chip" x="411" y="244" width="122" height="22" rx="4"/><text class="t-chip" x="472" y="259" text-anchor="middle">StartGame</text>
+          <rect class="sv-chip" x="27" y="274" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="289" text-anchor="middle">Answer</text>
+          <rect class="sv-chip" x="155" y="274" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="289" text-anchor="middle">PollEvents</text>
+          <rect class="sv-chip" x="283" y="274" width="122" height="22" rx="4"/><text class="t-chip" x="344" y="289" text-anchor="middle">Ping</text>
+
+          <!-- decision types -->
+          <rect class="sv-panel-soft" x="20" y="326" width="520" height="202" rx="9"/>
+          <text class="t-label" x="36" y="350">13 DECISION TYPES</text>
+          <rect class="sv-chip" x="30" y="364" width="162" height="24" rx="4"/><text class="t-chip" x="111" y="380" text-anchor="middle">PRIORITY</text>
+          <rect class="sv-chip" x="203" y="364" width="162" height="24" rx="4"/><text class="t-chip" x="284" y="380" text-anchor="middle">MULLIGAN_KEEP</text>
+          <rect class="sv-chip" x="376" y="364" width="162" height="24" rx="4"/><text class="t-chip" x="457" y="380" text-anchor="middle">MULLIGAN_TUCK</text>
+
+          <rect class="sv-chip" x="30" y="396" width="162" height="24" rx="4"/><text class="t-chip" x="111" y="412" text-anchor="middle">DECLARE_ATTACKERS</text>
+          <rect class="sv-chip" x="203" y="396" width="162" height="24" rx="4"/><text class="t-chip" x="284" y="412" text-anchor="middle">DECLARE_BLOCKERS</text>
+          <rect class="sv-chip" x="376" y="396" width="162" height="24" rx="4"/><text class="t-chip" x="457" y="412" text-anchor="middle">ASSIGN_COMBAT_DAMAGE</text>
+
+          <rect class="sv-chip" x="30" y="428" width="162" height="24" rx="4"/><text class="t-chip" x="111" y="444" text-anchor="middle">ORDER_BLOCKERS</text>
+          <rect class="sv-chip" x="203" y="428" width="162" height="24" rx="4"/><text class="t-chip" x="284" y="444" text-anchor="middle">CHOOSE_CARDS</text>
+          <rect class="sv-chip" x="376" y="428" width="162" height="24" rx="4"/><text class="t-chip" x="457" y="444" text-anchor="middle">ANNOUNCE</text>
+
+          <rect class="sv-chip" x="30" y="460" width="162" height="24" rx="4"/><text class="t-chip" x="111" y="476" text-anchor="middle">SCRY_ARRANGE</text>
+          <rect class="sv-chip" x="203" y="460" width="162" height="24" rx="4"/><text class="t-chip" x="284" y="476" text-anchor="middle">CHOOSE_TARGETS</text>
+          <rect class="sv-chip" x="376" y="460" width="162" height="24" rx="4"/><text class="t-chip" x="457" y="476" text-anchor="middle">CHOOSE_MODE</text>
+
+          <rect class="sv-chip" x="30" y="492" width="162" height="24" rx="4"/><text class="t-chip" x="111" y="508" text-anchor="middle">OPTIONAL_COSTS</text>
+
+          <!-- event vocabulary -->
+          <rect class="sv-panel-2" x="20" y="548" width="520" height="40" rx="8"/>
+          <text class="t-cmd" x="280" y="573" text-anchor="middle">engine vocabulary · 28 normalized event types</text>
+        </svg>
+      </div>
+      <figcaption><b>Diagram B — the gRPC boundary.</b> Requests carry decisions and answers one way; responses carry decision prompts, events and state the other. <b>Snapshot</b>, <b>Restore</b> and <b>SetupScenario</b> are the three RPCs that make witness search possible. The engine's raw log text is mapped onto a fixed vocabulary of <b>28 normalized event types</b>.</figcaption>
+    </figure>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-c">
+    <div class="sec-head"><span class="sec-no">03</span><h2 id="s-c">Witness search inner loop</h2></div>
+    <p class="sec-sub">This is the part that turns a hypothesis into an engine-backed answer. A candidate pair is injected into a live game, driven with a choice-aware policy, and watched for structural recurrence plus growth.</p>
+
+    <figure>
+      <div class="fig-frame">
+        <svg viewBox="0 0 560 800" role="img" aria-labelledby="figC-t">
+          <title id="figC-t">Witness search inner loop: candidate pair, scenario build, SetupScenario RPC, decision driving, event observation, loop detection, and the five possible verdicts, with an iteration arrow back to decision driving.</title>
+
+          <!-- 1 -->
+          <rect class="sv-panel" x="20" y="56" width="420" height="66" rx="9"/>
+          <text class="t-title" x="38" y="80">candidate pair</text>
+          <text class="t-sub" x="38" y="101">algebra links · kind / subkind / motif / src → dst</text>
+
+          <!-- 2 -->
+          <line class="sv-line-strong" x1="230" y1="122" x2="230" y2="142" marker-end="url(#ar)"/>
+          <rect class="sv-panel" x="20" y="144" width="420" height="72" rx="9"/>
+          <text class="t-title" x="38" y="168">build SetupScenario</text>
+          <text class="t-sub" x="38" y="189">expressed in Forge's own GameState text format</text>
+
+          <!-- 3 -->
+          <line class="sv-line-strong" x1="230" y1="216" x2="230" y2="236" marker-end="url(#ar)"/>
+          <rect class="sv-node-accent" x="20" y="238" width="420" height="126" rx="9"/>
+          <text class="t-title" x="38" y="262">SetupScenario RPC</text>
+          <text class="t-small" x="38" y="284">· requires a live outstanding decision</text>
+          <text class="t-small" x="38" y="302">· runs on the game thread (parked)</text>
+          <text class="t-small" x="38" y="320">· consumes no RNG</text>
+          <text class="t-small" x="38" y="338">· appends a ScenarioInjected marker</text>
+          <text class="t-small" x="38" y="356">· folds a scenario hash into state_hash</text>
+
+          <!-- 4 -->
+          <line class="sv-line-strong" x1="230" y1="364" x2="230" y2="376" marker-end="url(#ar)"/>
+          <rect class="sv-panel" x="20" y="378" width="420" height="66" rx="9"/>
+          <text class="t-title" x="38" y="402">drive decisions</text>
+          <text class="t-sub" x="38" y="423">choice-aware policy · WitnessPolicy</text>
+
+          <!-- 5 -->
+          <line class="sv-line-strong" x1="230" y1="444" x2="230" y2="464" marker-end="url(#ar)"/>
+          <rect class="sv-panel" x="20" y="466" width="420" height="66" rx="9"/>
+          <text class="t-title" x="38" y="490">observe events</text>
+          <text class="t-sub" x="38" y="511">28-type normalized vocabulary</text>
+
+          <!-- 6 -->
+          <line class="sv-line-strong" x1="230" y1="532" x2="230" y2="552" marker-end="url(#ar)"/>
+          <rect class="sv-panel" x="20" y="554" width="420" height="86" rx="9"/>
+          <text class="t-title" x="38" y="578">loop detection</text>
+          <text class="t-small" x="38" y="600">· structural witness_signature (tokens excluded)</text>
+          <text class="t-small" x="38" y="618">· plus a growing resource</text>
+          <text class="t-small" x="38" y="636">· plus same-turn recurrence guard</text>
+
+          <!-- 7 -->
+          <line class="sv-line-strong" x1="230" y1="640" x2="230" y2="660" marker-end="url(#ar)"/>
+          <rect class="sv-panel-2" x="20" y="662" width="420" height="96" rx="9"/>
+          <text class="t-title" x="38" y="688">verdict</text>
+          <rect class="sv-chip-teal" x="36" y="700" width="86" height="26" rx="5"/><text class="t-chip-t" x="79" y="717" text-anchor="middle">loops</text>
+          <rect class="sv-chip" x="130" y="700" width="86" height="26" rx="5"/><text class="t-chip" x="173" y="717" text-anchor="middle">no_loop</text>
+          <rect class="sv-chip-accent" x="224" y="700" width="112" height="26" rx="5"/><text class="t-chip-a" x="280" y="717" text-anchor="middle">inconclusive</text>
+          <rect class="sv-chip" x="36" y="730" width="86" height="26" rx="5"/><text class="t-chip" x="79" y="747" text-anchor="middle">refuted</text>
+          <rect class="sv-chip" x="130" y="730" width="86" height="26" rx="5"/><text class="t-chip" x="173" y="747" text-anchor="middle">error</text>
+
+          <!-- iterate arc -->
+          <path class="sv-stroke-accent" d="M440,597 C538,597 538,411 442,411" marker-end="url(#ar-a)"/>
+          <text class="t-label t-accent" transform="rotate(-90 520 504)" x="520" y="504" text-anchor="middle">ITERATE · ONE PASS = ONE LOOP ITERATION</text>
+        </svg>
+      </div>
+      <figcaption><b>Diagram C — witness search inner loop.</b> Injection <b>places</b> a scenario; it does not cast. That distinction is the source of the false positives in section 06. A loop is only certified when the structure recurs <em>and</em> a tracked resource grows <em>and</em> the recurrence survives the same-turn guard.</figcaption>
+    </figure>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-d">
+    <div class="sec-head"><span class="sec-no">04</span><h2 id="s-d">Store map</h2></div>
+    <p class="sec-sub">One database. 31 tables plus <code class="ic">schema_version</code>, grouped by what they are for. Nothing is ever updated or deleted.</p>
+
+    <figure>
+      <div class="fig-frame">
+        <svg viewBox="0 0 560 840" role="img" aria-labelledby="figD-t">
+          <title id="figD-t">Map of the research.db tables grouped into corpus, ground truth Tier A, Tier B, ontology and candidates, experiments and trajectory, evaluation, motif, and witness clusters.</title>
+
+          <!-- Corpus -->
+          <rect class="sv-panel" x="20" y="52" width="520" height="98" rx="9"/>
+          <text class="t-label" x="34" y="76">CORPUS</text>
+          <rect class="sv-chip" x="27" y="84" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="99" text-anchor="middle">import_runs</text>
+          <rect class="sv-chip" x="155" y="84" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="99" text-anchor="middle">cards</text>
+          <rect class="sv-chip" x="283" y="84" width="122" height="22" rx="4"/><text class="t-chip" x="344" y="99" text-anchor="middle">card_faces</text>
+          <rect class="sv-chip" x="411" y="84" width="122" height="22" rx="4"/><text class="t-chip" x="472" y="99" text-anchor="middle">card_aliases</text>
+          <rect class="sv-chip" x="27" y="112" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="127" text-anchor="middle">card_scripts</text>
+          <rect class="sv-chip" x="155" y="112" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="127" text-anchor="middle">card_effects</text>
+          <rect class="sv-chip" x="283" y="112" width="122" height="22" rx="4"/><text class="t-chip" x="344" y="127" text-anchor="middle">corpus_coverage</text>
+
+          <!-- Ground truth -->
+          <rect class="sv-panel" x="20" y="164" width="520" height="98" rx="9"/>
+          <text class="t-label" x="34" y="188">GROUND TRUTH · TIER A · MEASUREMENT ONLY</text>
+          <rect class="sv-chip" x="27" y="196" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="211" text-anchor="middle">card_oracle_ids</text>
+          <rect class="sv-chip" x="155" y="196" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="211" text-anchor="middle">known_combos</text>
+          <rect class="sv-chip" x="283" y="196" width="122" height="22" rx="4"/><text class="t-chip" x="344" y="211" text-anchor="middle">known_combo_cards</text>
+          <rect class="sv-chip" x="411" y="196" width="122" height="22" rx="4"/><text class="t-chip" x="472" y="211" text-anchor="middle">known_combo_pairs</text>
+          <rect class="sv-chip" x="27" y="224" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="239" text-anchor="middle">known_aliases</text>
+
+          <!-- Tier B -->
+          <rect class="sv-panel" x="20" y="276" width="520" height="70" rx="9"/>
+          <text class="t-label" x="34" y="300">TIER B · INDEPENDENT SECOND SOURCE · EMPTY</text>
+          <rect class="sv-chip" x="27" y="308" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="323" text-anchor="middle">observed_decks</text>
+          <rect class="sv-chip" x="155" y="308" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="323" text-anchor="middle">observed_deck_cards</text>
+          <rect class="sv-chip" x="283" y="308" width="122" height="22" rx="4"/><text class="t-chip" x="344" y="323" text-anchor="middle">observed_pairs</text>
+
+          <!-- Ontology -->
+          <rect class="sv-panel" x="20" y="360" width="520" height="70" rx="9"/>
+          <text class="t-label" x="34" y="384">ONTOLOGY / CANDIDATES</text>
+          <rect class="sv-chip" x="27" y="392" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="407" text-anchor="middle">patterns</text>
+          <rect class="sv-chip" x="155" y="392" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="407" text-anchor="middle">card_predicates</text>
+          <rect class="sv-chip" x="283" y="392" width="122" height="22" rx="4"/><text class="t-chip" x="344" y="407" text-anchor="middle">interactions</text>
+          <rect class="sv-chip" x="411" y="392" width="122" height="22" rx="4"/><text class="t-chip" x="472" y="407" text-anchor="middle">combo_hypotheses</text>
+
+          <!-- Experiments -->
+          <rect class="sv-panel" x="20" y="444" width="520" height="98" rx="9"/>
+          <text class="t-label" x="34" y="468">EXPERIMENTS / TRAJECTORY</text>
+          <rect class="sv-chip" x="27" y="476" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="491" text-anchor="middle">experiments</text>
+          <rect class="sv-chip" x="155" y="476" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="491" text-anchor="middle">games</text>
+          <rect class="sv-chip" x="283" y="476" width="122" height="22" rx="4"/><text class="t-chip" x="344" y="491" text-anchor="middle">decisions</text>
+          <rect class="sv-chip" x="411" y="476" width="122" height="22" rx="4"/><text class="t-chip" x="472" y="491" text-anchor="middle">events</text>
+          <rect class="sv-chip" x="27" y="504" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="519" text-anchor="middle">candidates</text>
+          <rect class="sv-chip" x="155" y="504" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="519" text-anchor="middle">adjudications</text>
+
+          <!-- Evaluation -->
+          <rect class="sv-panel" x="20" y="556" width="520" height="70" rx="9"/>
+          <text class="t-label" x="34" y="580">EVALUATION</text>
+          <rect class="sv-chip" x="27" y="588" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="603" text-anchor="middle">evaluation_runs</text>
+          <rect class="sv-chip" x="155" y="588" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="603" text-anchor="middle">evaluation_results</text>
+
+          <!-- Motif -->
+          <rect class="sv-panel" x="20" y="640" width="520" height="70" rx="9"/>
+          <text class="t-label" x="34" y="664">MOTIF</text>
+          <rect class="sv-chip" x="27" y="672" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="687" text-anchor="middle">motif_runs</text>
+          <rect class="sv-chip" x="155" y="672" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="687" text-anchor="middle">motif_enrichment</text>
+
+          <!-- Witness -->
+          <rect class="sv-panel" x="20" y="724" width="520" height="70" rx="9"/>
+          <text class="t-label" x="34" y="748">WITNESS</text>
+          <rect class="sv-chip" x="27" y="756" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="771" text-anchor="middle">witness_runs</text>
+          <rect class="sv-chip" x="155" y="756" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="771" text-anchor="middle">witness_results</text>
+
+          <text class="t-cmd" x="280" y="820" text-anchor="middle">schema v6 · append-only (WAL) · no UPDATE / DELETE</text>
+        </svg>
+      </div>
+      <figcaption><b>Diagram D — store map.</b> 31 tables grouped by role, plus <code class="ic">schema_version</code>. Tier A (Commander Spellbook) is used for measurement only and never to generate candidates. Tier B, the independent second source that would let the system say "novel", is present as a schema but <b>empty</b>.</figcaption>
+    </figure>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-results">
+    <div class="sec-head"><span class="sec-no">05</span><h2 id="s-results">Results</h2></div>
+    <p class="sec-sub">Every number below was read from the live database on 2026-09-12 (commit 2b5918d, protocol v7, store schema v6).</p>
+
+    <div class="statrow">
+      <h3>Corpus</h3>
+      <div class="stat-grid">
+        <div class="stat"><span class="n">33,688</span><span class="l">cards</span></div>
+        <div class="stat"><span class="n">84,190</span><span class="l">typed effects</span></div>
+        <div class="stat"><span class="n">12</span><span class="l">patterns</span></div>
+        <div class="stat"><span class="n">71,595</span><span class="l">card predicates</span></div>
+        <div class="stat"><span class="n">444,152</span><span class="l">interaction edges</span></div>
+      </div>
+    </div>
+
+    <div class="statrow">
+      <h3>Ground truth</h3>
+      <div class="stat-grid">
+        <div class="stat accent"><span class="n">107,325</span><span class="l">known combos</span></div>
+        <div class="stat accent"><span class="n">504,709</span><span class="l">known pairs</span></div>
+        <div class="stat"><span class="n">33,636</span><span class="l">Scryfall oracle-id links</span></div>
+        <div class="stat warn"><span class="n">0</span><span class="l">Tier-B rows (second source empty)</span></div>
+      </div>
+    </div>
+
+    <div class="statrow">
+      <h3>Stored candidates</h3>
+      <div class="stat-grid">
+        <div class="stat"><span class="n">447,171</span><span class="l">combo hypotheses</span></div>
+      </div>
+    </div>
+
+    <h3>Algebra vs legacy baseline</h3>
+    <p>Both columns come from the same evaluation run.</p>
+    <div class="table-scroll">
+      <table>
+        <caption>Proposal quality, same evaluation</caption>
+        <thead>
+          <tr><th scope="col">metric</th><th scope="col">legacy</th><th scope="col" class="col-hi">algebra</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>raw proposal rows</td><td class="num">437,463</td><td class="num col-hi">6,689</td></tr>
+          <tr><td>unique pairs</td><td class="num">437,209</td><td class="num col-hi">3,724</td></tr>
+          <tr><td>unmatched (false positives)</td><td class="num">436,172</td><td class="num col-hi">3,652</td></tr>
+          <tr><td>precision</td><td class="num">0.0001</td><td class="num col-hi">0.0059</td></tr>
+          <tr class="mark"><td>precision@10</td><td class="num">0.1000</td><td class="num col-hi">0.7000</td></tr>
+          <tr><td>recall</td><td class="num">0.0056</td><td class="num col-hi">0.0056</td></tr>
+          <tr><td>F1</td><td class="num">0.0001</td><td class="num col-hi">0.0057</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="table-note">The algebra cuts proposal volume roughly 65× while raising precision@10 from 0.10 to 0.70. Recall is unchanged and low — that is a known open problem, not a rounding artifact.</p>
+
+    <h3>Kiki-Jiki baseline case study</h3>
+    <div class="stat-grid">
+      <div class="stat"><span class="n">14</span><span class="l">proposals</span></div>
+      <div class="stat accent"><span class="n">12</span><span class="l">classified known_pair</span></div>
+      <div class="stat"><span class="n">2</span><span class="l">unmatched</span></div>
+      <div class="stat"><span class="n">0.857</span><span class="l">precision</span></div>
+      <div class="stat"><span class="n">0.900</span><span class="l">precision@10</span></div>
+      <div class="stat"><span class="n">0.154</span><span class="l">recall</span></div>
+    </div>
+    <p class="table-note">Context: 791 known combos for this card, 78 exact two-card variants. The two unmatched proposals are Eager Beaver and White Plume Adventurer.</p>
+
+    <h3>Motif enrichment</h3>
+    <p>Known pairs are strongly predicted by motifs: the copy/untap motif shows a lift of <b>328</b>, cross-motifs range from <b>18 to 1094</b>, with <b>p ≈ 0</b>. Crucially, false positives are also enriched. The problem is therefore the composition rules that combine motifs, not the motif vocabulary itself.</p>
+
+    <h3>Witness search, live</h3>
+    <div class="grid-2">
+      <div>
+        <p><span class="pill ok">loops</span> Genuine cycles verified this session, all with Kiki-Jiki:</p>
+        <ul class="plain">
+          <li>Deceiver Exarch</li>
+          <li>Pestermite</li>
+          <li>Zealous Conscripts</li>
+          <li>Breaching Hippocamp</li>
+          <li>Glamermite</li>
+          <li>Bounding Krasis</li>
+          <li>Hyrax Tower Scout</li>
+          <li>Felidar Guardian-style FOMO</li>
+        </ul>
+      </div>
+      <div>
+        <p><span class="pill">found absent</span> Engine-verified loops absent from Spellbook, first batch:</p>
+        <ul class="plain">
+          <li>Kiki-Jiki + Firbolg Flutist</li>
+          <li>Kiki-Jiki + Reptilian Recruiter</li>
+        </ul>
+        <p class="small">Both need a second source before anyone may call them novel. A no-interaction control pair correctly returns <code class="ic">no_loop</code>.</p>
+      </div>
+    </div>
+    <p class="table-note">Tests: <b>519 passed, 1 skipped</b> (Python) plus 20 Java JUnit conformance tests.</p>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-limits">
+    <div class="sec-head"><span class="sec-no">06</span><h2 id="s-limits">What does not work yet</h2></div>
+    <p class="sec-sub">Stated plainly, because a verifier you cannot trust is worse than no verifier.</p>
+
+    <ol class="problems">
+      <li>
+        <h3>Witness false positives (open)</h3>
+        <p>Kiki-Jiki + Keldon Overseer and Kiki-Jiki + Elven Raft-Steerer are reported <code class="ic">loops</code> but cannot legitimately loop. Scenario injection <em>places</em> the card without <em>casting</em> it, so cast-conditional (<code class="ic">Card.Self + kicked</code>) and landfall triggers fire wrongly.</p>
+        <p class="why">live diagnosis: link_hits=[0, 4] — the untap link never executed, yet state recurred and a traced resource grew. Until fixed, <code class="ic">loops</code> verdicts for cast-conditional or landfall cards are unverified.</p>
+      </li>
+      <li>
+        <h3>Tier-B second source is empty</h3>
+        <p>The system never reports "novel" — only <code class="ic">candidate</code> or <code class="ic">needs_second_source</code>. Commander Spellbook alone is not sufficient, and EDHREC would not count because it is Spellbook-powered.</p>
+      </li>
+      <li>
+        <h3>The candidate pool is stale</h3>
+        <p>It predates the Un-set / legality exclusion fix, so rows such as <code class="ic">eager beaver + …</code> remain. The pool must be rebuilt.</p>
+      </li>
+      <li>
+        <h3>No scale run yet</h3>
+        <p>Only a small discovery batch has been executed. Two witness runs are persisted in this database.</p>
+      </li>
+      <li>
+        <h3>Engine limits</h3>
+        <p>Snapshots cap at 32 live tokens; one game per process; <code class="ic">FullState</code> is partial.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="sec wrap" aria-labelledby="s-repro">
+    <div class="sec-head"><span class="sec-no">07</span><h2 id="s-repro">Reproduce</h2></div>
+    <p class="sec-sub">The pipeline in its real order. Each command is independent and idempotent against the append-only store.</p>
+
+    <h3>Pipeline</h3>
+    <ol class="steps">
+      <li><code class="ic">uv sync</code></li>
+      <li><code class="ic">bash scripts/gen_stubs.sh</code></li>
+      <li>Boot the harness:
+        <pre class="cmd"><span class="c">$</span> java -Djava.awt.headless=true -jar forge-harness-*.jar \
+    --port 50051 --assets &lt;forge/forge-gui-desktop&gt;</pre>
+      </li>
+      <li><code class="ic">uv run combo-import-cards</code></li>
+      <li><code class="ic">uv run combo-import-spellbook --download</code></li>
+      <li><code class="ic">uv run combo-build-ontology</code></li>
+      <li><code class="ic">uv run combo-evaluate</code></li>
+      <li><code class="ic">uv run combo-analyze-motifs</code></li>
+      <li><code class="ic">uv run combo-witness --candidate &lt;id&gt; --persist</code></li>
+      <li><code class="ic">uv run combo-tui</code></li>
+    </ol>
+
+    <h3>Gates</h3>
+    <pre class="cmd"><span class="c">$</span> uv run pytest
+<span class="c">$</span> bash scripts/check.sh
+<span class="c">$</span> uv run python scripts/compare_algebra.py --db research.db --top 10</pre>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p><a href="current-state.html">Current state</a> · <a href="future-state.html">Future state</a></p>
+    <p class="foot-stamp">commit 2b5918d · protocol v7 · store schema v6 · verified 2026-09-12</p>
+  </div>
+</footer>
+
+</body>
+</html>
