@@ -262,3 +262,35 @@ store + tests 1; TUI/CLI 0.5–1; plus debugging against real combos.
    wanted; v1 drives from ontology links.
 8. **Harness limits** — max 32 live snapshot tokens per game and one active
    game per process constrain parallel witness search.
+
+## Measured witness recall on KNOWN combos (Lever 0)
+
+Instrument: `uv run python scripts/known_recall.py --mode home`. It runs the real
+verifier on Commander Spellbook's **exact 2-card** combos and splits the outcome
+by engine type, so "we could not test it" is separated from "we tested it and
+said no". Measured 2026-09-12 over the 133 resolvable known combos in the
+copy/untap class (a copy engine plus an untapper):
+
+| engine | n | loops | refuted/no_loop | inconclusive | recall |
+|---|---|---|---|---|---|
+| all | 133 | 43 | 21 | 69 | **32%** |
+| activated (`{T}`-cost copy) | 90 | 39 | 13 | 38 | **43%** |
+| triggered (attack/ETB/loyalty) | 33 | 1 | 7 | 25 | **3%** |
+
+Readings:
+
+- On its single best class the verifier confirms **under half of known combos**.
+- **Triggered engines are effectively undriveable** (3%): the policy only acts on
+  offered decisions, so attack/ETB/loyalty copy engines stall. Generator output
+  should avoid proposing them until the policy can drive them.
+- **21 known combos are actively `refuted`/`no_loop`** — real false negatives,
+  each a concrete, diagnosable target. (`Combat Celebrant + Kiki-Jiki` is a
+  genuine extra-combat loop that the same-turn / counter-only rules reject.)
+- The largest single cluster is **staging, not logic**: 22 `Ghired, Mirror of the
+  Wilds` pairs return `inconclusive` with exactly 2 executed actions because
+  Ghired's granted ability needs "target token you control that entered this
+  turn" and the scenario stages no token.
+
+Implication: the recall ceiling is the **player + scenario staging**, not the
+loop judge. Fixing the false negatives and the staging gaps raises trustworthy
+yield without any search/ML work.
