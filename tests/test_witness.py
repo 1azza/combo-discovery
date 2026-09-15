@@ -953,6 +953,42 @@ class FakeEventClient(FakeWitnessClient):
         )
 
 
+class FakeRepeatingEventClient(FakeWitnessClient):
+    """Broadcasts a card event on every poll after the cursor-setup poll.
+
+    Models a trigger that fires on each decision (e.g. an upkeep/ETB trigger)
+    while the driven policy never completes a line iteration, so the driver
+    must advance observation boundaries off the trigger credit.
+    """
+
+    def __init__(
+        self, card_name: str = "TriggerCard", player: int = 0,
+        event_type: str = "SpellCast",
+    ):
+        super().__init__()
+        self.card_name = card_name
+        self.event_player = player
+        self.event_type = event_type
+        self._polls = 0
+
+    def poll_events(self, game_id, cursor=0):
+        self._polls += 1
+        if self._polls == 1:
+            return pb.EventBatch(next_cursor=cursor)
+        return pb.EventBatch(
+            events=[
+                pb.GameEvent(
+                    seq=cursor + 1,
+                    game_id=game_id,
+                    type=self.event_type,
+                    player=self.event_player,
+                    card_name=self.card_name,
+                )
+            ],
+            next_cursor=cursor + 1,
+        )
+
+
 class TestRunWitness:
     def _policy(self):
         return WitnessPolicy(links=[LinkPlan("A", "B"), LinkPlan("B", "A")], player=0)
@@ -1026,6 +1062,28 @@ class TestRunWitness:
         diagnostics = result.evidence["diagnostics"]
         assert diagnostics["trigger_hits"] == [0]
         assert diagnostics["executed_actions"] == 0
+
+    def test_repeated_trigger_yields_post_baseline_observations(self):
+        # A trigger-driven line whose policy never completes an iteration must
+        # still advance observation boundaries, so the judge is not left with a
+        # single baseline sample and the "need at least two post-baseline
+        # observations" reason.
+        client = FakeRepeatingEventClient(card_name="TriggerCard", player=0)
+        policy = WitnessPolicy(links=[LinkPlan("TriggerCard", "B")], player=0)
+        result = run_witness(
+            client, build_scenario(combo_ab()), policy, seeds=[1],
+            max_iterations=3, max_decisions=3,
+        )
+        # The policy never completed a line iteration; only trigger boundaries
+        # advanced the run.
+        assert policy.iterations == 0
+        assert result.iterations >= 2
+        assert len(result.observations) >= 2
+        assert (
+            "need at least two post-baseline observations"
+            not in result.evidence.get("reason", "")
+        )
+        assert result.evidence["diagnostics"]["trigger_hits"][0] >= 2
 
     def test_pregame_drive_answers_mulligans_then_injects_once(self):
         client = FakePregameClient(mulligans=3)

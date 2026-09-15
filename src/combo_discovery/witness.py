@@ -1623,21 +1623,30 @@ def _run_witness_seed(
         decisions = 0
         iterations_done = 0
         iteration_seen = 0  # watermark over policy.iterations
+        triggers_seen = 0  # watermark over the policy's total trigger credit
 
-        def capture_observation(label: int) -> None:
-            """Sample the (quiescent) state + new events into observations.
+        def _trigger_total() -> int:
+            """Current total trigger credit (0 for policies without the field)."""
+            hits = getattr(policy, "trigger_hits", None)
+            if hits is None:
+                return 0
+            try:
+                return int(sum(hits))
+            except (TypeError, ValueError):
+                return 0
 
-            Called once *before* the loop (baseline) and once per completed
-            iteration, so a single-iteration loop still records the "before"
-            and "after" samples the detector needs.  ``SpellCast`` and
-            ``SpellResolved`` events from the combo player are also credited to
-            the policy's links (``note_card_event``): automatic abilities and
-            triggers never pass through a PRIORITY decision, so this is the only
-            signal that they executed.
+        def credit_events() -> int:
+            """Poll new events, update counters, credit triggers; return total.
+
+            Split out of :func:`capture_observation` so the decision loop can
+            poll (and credit) triggers between observations without sampling the
+            game state.  Only ``SpellCast``/``SpellResolved`` events from the
+            combo player are credited via ``note_card_event``: automatic
+            abilities and triggers never pass through a PRIORITY decision, so
+            this is the only signal that they executed.
             """
             nonlocal event_cursor, cast_count, spells_resolved
             note_event = getattr(policy, "note_card_event", None)
-            state = client.get_state(game_id, view_as_player=view_as_player)
             batch = client.poll_events(game_id, event_cursor)
             for event in batch.events:
                 if event.type not in ("SpellCast", "SpellResolved"):
@@ -1649,6 +1658,19 @@ def _run_witness_seed(
                 if callable(note_event) and int(event.player) == player:
                     note_event(str(getattr(event, "card_name", "") or ""))
             event_cursor = int(batch.next_cursor)
+            return _trigger_total()
+
+        def capture_observation(label: int) -> None:
+            """Sample the (quiescent) state + new events into observations.
+
+            Called once *before* the loop (baseline), once per completed
+            iteration, and once per new-trigger boundary, so a trigger-driven
+            line still records the "before" and "after" samples the detector
+            needs.  Also advances the ``triggers_seen`` watermark.
+            """
+            nonlocal triggers_seen
+            state = client.get_state(game_id, view_as_player=view_as_player)
+            triggers_seen = credit_events()
             observations.append(
                 build_observation(
                     label,
@@ -1690,6 +1712,21 @@ def _run_witness_seed(
                 iteration_seen += 1
                 iterations_done += 1
                 capture_observation(iterations_done)
+
+            # Advance until trigger: a trigger-driven line rarely completes a
+            # policy iteration, so poll for newly credited triggers after every
+            # decision.  A trigger increase is an observation boundary (the
+            # ``capture_observation`` call polls nothing new; it only samples
+            # state), which keeps the judge supplied past the single baseline
+            # sample.  Only while the policy has completed no iteration:
+            # otherwise the extra mid-iteration samples would feed the detector
+            # non-quiescent states and reintroduce the degenerate/recurrence
+            # false positives the acceptance matrix pins.  Bounded by
+            # ``max_iterations``.
+            if iterations_done < max_iterations and iteration_seen == 0:
+                if credit_events() > triggers_seen:
+                    iterations_done += 1
+                    capture_observation(iterations_done)
 
         # Post-loop sample only when the loop recorded no completed iteration:
         # a zero-iteration run still carries two observations (best-effort: a
