@@ -218,6 +218,19 @@ class TestBuildScenario:
         assert [c.id for c in battlefield] == [1]
         assert battlefield[0].attached_to == 0  # no non-Aura host: left unattached
 
+    def test_equipment_attaches_to_non_attachment_partner(self):
+        # Equipment that grants an activated untap ability (Umbral Mantle,
+        # Thornbite Staff) is staged attached, like an Aura.
+        candidate = Candidate(
+            cards=("Umbral Mantle", "Fanatic of Rhonas"),
+            type_lines=("Artifact — Equipment", "Creature — Snake Druid"),
+        )
+        scenario = build_scenario(candidate)
+        battlefield = scenario.players[0].battlefield
+        assert [c.id for c in battlefield] == [1, 2]
+        assert battlefield[0].attached_to == 2  # Equipment -> first non-attachment
+        assert battlefield[1].attached_to == 0
+
     def test_no_type_lines_leaves_ids_and_attachments_unset(self):
         scenario = build_scenario(combo_ab())
         battlefield = scenario.players[0].battlefield

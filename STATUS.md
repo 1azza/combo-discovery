@@ -27,8 +27,9 @@ analogue transfer (`scripts/analogue_transfer.py`).
 - [x] Snapshot/restore (v5) with deterministic RNG reseed and a `state_hash`
       projection; scenario injection (v7) on the game thread with no RNG use.
 - [x] Scenario injection now supports **attachments**: `CardSpec.id` /
-      `attached_to` (proto fields 8/9) let an Aura be staged attached to its
-      host, so its granted ability is offered.
+      `attached_to` (proto fields 8/9) let an Aura **or Equipment** be staged
+      attached to its host, so the granted ability is offered and driven
+      (`Umbral Mantle`, `Thornbite Staff`, `Splinter Twin`).
 - [x] 28-type normalized event vocabulary (v6), structured GameEvent source.
 - [x] Harness mana read fixed: colorless mana is read from the engine's
       `ManaAtom.COLORLESS` key (was `MagicColor.COLORLESS`, which hid 8 injected

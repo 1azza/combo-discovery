@@ -362,10 +362,17 @@ def _must_be_cast(combo: Any, name: str) -> bool:
     return any(word in kind for word in ("spell", "sorcery", "instant"))
 
 
-def _is_aura(type_line: str) -> bool:
-    """True when ``type_line`` names the Aura subtype (word-boundary)."""
+def _is_attachment(type_line: str) -> bool:
+    """True when ``type_line`` names an Aura or Equipment subtype (word-boundary).
+
+    Both are staged *attached* to a host, because an attachment's granted ability
+    is offered under the host's name and its loop-closing target is the host
+    itself.  Equipment that grants an activated untap ability (Umbral Mantle,
+    Thornbite Staff) is the drivable shape.
+    """
     return bool(
-        re.search(r"(?<![A-Za-z0-9])aura(?![A-Za-z0-9])", type_line or "", re.IGNORECASE)
+        re.search(r"(?<![A-Za-z0-9])(aura|equipment)(?![A-Za-z0-9])",
+                  type_line or "", re.IGNORECASE)
     )
 
 
@@ -400,22 +407,22 @@ def _type_line_for(combo: Any, name: str) -> str:
 def _assign_battlefield_ids(
     battlefield: Sequence[CardSpec], type_lines: dict[str, str]
 ) -> None:
-    """Assign deterministic battlefield ids and attach Auras to a host.
+    """Assign deterministic battlefield ids and attach attachments to a host.
 
     Ids are a single incrementing counter in emission order, starting at 1.
-    Each Aura is attached to the first non-Aura battlefield card (same player);
-    when there is none the Aura is left unattached.
+    Each Aura/Equipment is attached to the first non-attachment battlefield card
+    (same player); when there is none it is left unattached.
     """
     for index, spec in enumerate(battlefield, start=1):
         spec.id = index
     host_id = 0
     for spec in battlefield:
-        if not _is_aura(type_lines.get(spec.name, "")):
+        if not _is_attachment(type_lines.get(spec.name, "")):
             host_id = spec.id
             break
     if host_id:
         for spec in battlefield:
-            if spec.id != host_id and _is_aura(type_lines.get(spec.name, "")):
+            if spec.id != host_id and _is_attachment(type_lines.get(spec.name, "")):
                 spec.attached_to = host_id
 
 
@@ -555,10 +562,10 @@ class WitnessPolicy:
         # Aura source names: an Aura's granted activated ability is offered
         # under the *host* creature's name, so only these links may fall back
         # to matching their ``dst`` (see :meth:`_match_link`).
-        self._aura_sources = {
+        self._attachment_sources = {
             link.src
             for link in self.links
-            if link.src and _is_aura(_type_line_for(combo, link.src))
+            if link.src and _is_attachment(_type_line_for(combo, link.src))
         }
         self._fallback = fallback or default_policy
         self.max_stall = max(1, int(max_stall))
@@ -642,7 +649,7 @@ class WitnessPolicy:
         self, options: Sequence[pb.Option], link: LinkPlan
     ) -> pb.Option | None:
         hit = self._match_option(options, link.src, link.kind)
-        if hit is None and link.dst and link.src in self._aura_sources:
+        if hit is None and link.dst and link.src in self._attachment_sources:
             # An Aura's granted activated ability is offered under the host
             # creature's name, not the Aura's; fall back to the link's target.
             hit = self._match_option(options, link.dst, link.kind)
@@ -733,7 +740,7 @@ class WitnessPolicy:
                 seen.add(low)
                 preferred.append(text)
 
-        if link.src in self._aura_sources:
+        if link.src in self._attachment_sources:
             # An Aura's granted ability is offered under the *host creature's*
             # name, and the loop-closing target is the tapped host (link.dst),
             # not the Aura itself. Prefer the host.
