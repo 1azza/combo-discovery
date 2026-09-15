@@ -273,15 +273,17 @@ copy/untap class (a copy engine plus an untapper):
 
 | engine | n | loops | refuted/no_loop | inconclusive | recall |
 |---|---|---|---|---|---|
-| all | 133 | 47 | 17 | 69 | **35%** |
-| activated (`{T}`-cost copy) | 99 | 46 | 10 | 43 | **46%** |
-| triggered (attack/ETB/loyalty) | 34 | 1 | 7 | 26 | **3%** |
+| all | 133 | 57 | 25 | 51 | **43%** |
+| activated (`{T}`-cost copy) | 99 | 54 | 12 | 33 | **55%** |
+| triggered (attack/ETB/loyalty) | 34 | 3 | 13 | 18 | **9%** |
 
-(The first run, before the recall fixes, was 43/133 = 32% overall and 43%
-activated. Requiring activated/static copy engines and removing life from the
-structural signature recovered 4 known combos — e.g. `Combat Celebrant +
-Kiki-Jiki`, a genuine infinite-combat loop — cutting refuted/no_loop from 21 to
-17.)
+Progression across the fixes: 32% -> 35% (activated/static copy engines, life out
+of the signature) -> **43%** (credit automatic trigger events to links, and sample
+per trigger so a trigger-driven run collects more than the baseline sample).
+Activated-engine recall is now 55%. Triggered engines rose 3% -> 9% but remain
+the weak spot: crediting a trigger is not enough, because a triggered line must
+be *repeated* by playing the game (upkeep after upkeep, combat after combat) —
+that is the goal-directed pilot's job.
 
 Readings:
 
