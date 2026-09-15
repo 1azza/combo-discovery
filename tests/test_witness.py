@@ -550,6 +550,49 @@ class TestWitnessPolicy:
         options = [pb.Option(id=0, kind="activate", card_name="", description="Activate")]
         assert WitnessPolicy._match_option(options, "a") is None
 
+    def test_note_card_event_credits_matching_link_src(self):
+        policy = WitnessPolicy(
+            links=[
+                LinkPlan("Krovikan Vampire", "B"),
+                LinkPlan("A Killer Among Us", "C"),
+            ],
+            player=0,
+        )
+        policy.new_game()
+        policy.note_card_event("Krovikan Vampire")
+        assert policy.trigger_hits == [1, 0]
+        diagnostics = policy.diagnostics()
+        assert diagnostics["trigger_hits"] == [1, 0]
+        assert diagnostics["link_hits"] == [0, 0]
+        # executed_actions sums trigger hits with (unchanged) link hits.
+        assert diagnostics["executed_actions"] == 1
+
+    def test_note_card_event_is_case_insensitive_and_word_bounded(self):
+        policy = WitnessPolicy(
+            links=[LinkPlan("Sheoldred, Whispering One", "B")], player=0
+        )
+        policy.new_game()
+        policy.note_card_event("sheoldred, whispering one")
+        policy.note_card_event("SHEOLDRED, WHISPERING ONE")
+        assert policy.trigger_hits == [2]
+
+    def test_note_card_event_ignores_unrelated_and_empty_names(self):
+        policy = WitnessPolicy(links=[LinkPlan("Altar", "Ghost")], player=0)
+        policy.new_game()
+        policy.note_card_event("Some Other Card")
+        policy.note_card_event("")
+        policy.note_card_event("   ")
+        assert policy.trigger_hits == [0]
+        assert policy.diagnostics()["executed_actions"] == 0
+
+    def test_note_card_event_word_boundary_rejects_substring(self):
+        # Same rule as ``_match_option``: a short source name must not match a
+        # longer event name that merely contains it inside a word.
+        policy = WitnessPolicy(links=[LinkPlan("Rat", "Ghost")], player=0)
+        policy.new_game()
+        policy.note_card_event("Rats of Rath")
+        assert policy.trigger_hits == [0]
+
     def test_per_iteration_decision_budget_is_bounded(self):
         policy = WitnessPolicy(
             links=[LinkPlan("Z", "Y")], player=0,
@@ -873,6 +916,43 @@ class FakeEndlessPregameClient(FakeWitnessClient):
         )
 
 
+class FakeEventClient(FakeWitnessClient):
+    """Broadcasts one card event (default a trigger's ``SpellCast``) once.
+
+    The driver's first ``poll_events`` only establishes the event cursor, so
+    the event is emitted on the second poll (the pre-loop baseline capture).
+    """
+
+    def __init__(
+        self, card_name: str = "TriggerCard", player: int = 0,
+        event_type: str = "SpellCast",
+    ):
+        super().__init__()
+        self.card_name = card_name
+        self.event_player = player
+        self.event_type = event_type
+        self._polls = 0
+        self._emitted = False
+
+    def poll_events(self, game_id, cursor=0):
+        self._polls += 1
+        if self._polls == 1 or self._emitted:
+            return pb.EventBatch(next_cursor=cursor)
+        self._emitted = True
+        return pb.EventBatch(
+            events=[
+                pb.GameEvent(
+                    seq=cursor + 1,
+                    game_id=game_id,
+                    type=self.event_type,
+                    player=self.event_player,
+                    card_name=self.card_name,
+                )
+            ],
+            next_cursor=cursor + 1,
+        )
+
+
 class TestRunWitness:
     def _policy(self):
         return WitnessPolicy(links=[LinkPlan("A", "B"), LinkPlan("B", "A")], player=0)
@@ -919,6 +999,33 @@ class TestRunWitness:
         assert result.verdict == "inconclusive"
         assert "never matched" in result.evidence["reason"]
         assert result.evidence["diagnostics"]["executed_actions"] == 0
+
+    def test_trigger_event_credits_executed_actions(self):
+        # A link source that is only ever broadcast as a trigger (never offered
+        # at PRIORITY) must still count as executed, so the "no loop action was
+        # executed" gate does not force ``inconclusive``.
+        client = FakeEventClient(card_name="TriggerCard", player=0)
+        policy = WitnessPolicy(links=[LinkPlan("TriggerCard", "B")], player=0)
+        result = run_witness(
+            client, build_scenario(combo_ab()), policy, seeds=[1],
+            max_iterations=1, max_decisions=2,
+        )
+        diagnostics = result.evidence["diagnostics"]
+        assert diagnostics["trigger_hits"] == [1]
+        assert diagnostics["link_hits"] == [0]
+        assert diagnostics["executed_actions"] > 0
+        assert "never matched" not in result.evidence.get("reason", "")
+
+    def test_opponent_trigger_event_does_not_credit(self):
+        client = FakeEventClient(card_name="TriggerCard", player=1)
+        policy = WitnessPolicy(links=[LinkPlan("TriggerCard", "B")], player=0)
+        result = run_witness(
+            client, build_scenario(combo_ab()), policy, seeds=[1],
+            max_iterations=1, max_decisions=2,
+        )
+        diagnostics = result.evidence["diagnostics"]
+        assert diagnostics["trigger_hits"] == [0]
+        assert diagnostics["executed_actions"] == 0
 
     def test_pregame_drive_answers_mulligans_then_injects_once(self):
         client = FakePregameClient(mulligans=3)

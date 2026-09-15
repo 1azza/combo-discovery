@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 #: named by the link, then the other combo cards, then the first legal
 #: candidate.  See :meth:`WitnessPolicy._choice_mode` /
 #: :meth:`WitnessPolicy._choice_targets`.
-WITNESS_POLICY_VERSION = "witness-v3"
+WITNESS_POLICY_VERSION = "witness-v4"
 
 #: Generous default starting pool: enough to begin most loops.  Callers that
 #: know the line's per-iteration cost should override it.
@@ -577,6 +577,12 @@ class WitnessPolicy:
         self.stall = 0
         self.answers: list[Answer] = []
         self.link_hits: list[int] = [0] * len(self.links)
+        # Automatic abilities/triggers never pass through a PRIORITY decision,
+        # so they cannot register as ``link_hits``.  The harness broadcasts
+        # every stack push (including triggers) as a ``SpellCast`` event whose
+        # ``card_name`` is the source card; ``note_card_event`` credits those
+        # here instead (see the driver's event capture).
+        self.trigger_hits: list[int] = [0] * len(self.links)
         self.link_misses: list[int] = [0] * len(self.links)
         self.skipped: list[str] = []
         self.notes: list[str] = []
@@ -591,6 +597,7 @@ class WitnessPolicy:
         self.stall = 0
         self.answers = []
         self.link_hits = [0] * len(self.links)
+        self.trigger_hits = [0] * len(self.links)
         self.link_misses = [0] * len(self.links)
         self.skipped = []
         self.notes = []
@@ -654,6 +661,32 @@ class WitnessPolicy:
             # creature's name, not the Aura's; fall back to the link's target.
             hit = self._match_option(options, link.dst, link.kind)
         return hit
+
+    def note_card_event(self, name: str) -> None:
+        """Credit an automatic ability/trigger to the link it belongs to.
+
+        The harness broadcasts every stack push — including triggered
+        abilities, which never pass through a PRIORITY decision — as a
+        ``SpellCast``/``SpellResolved`` event carrying the source card's name.
+        Such an event can never register as a ``link_hit``, so the driver calls
+        this to record it in ``trigger_hits`` instead.  A link is credited when
+        its ``src`` matches the event name case-insensitively, first exactly
+        and then on word boundaries (the same rule as :meth:`_match_option`).
+        Empty names are ignored.
+        """
+        target = (name or "").strip().lower()
+        if not target:
+            return
+        for index, link in enumerate(self.links):
+            src = (link.src or "").strip().lower()
+            if not src:
+                continue
+            if src == target:
+                self.trigger_hits[index] += 1
+                continue
+            edge = rf"(?<![A-Za-z0-9]){re.escape(src)}(?![A-Za-z0-9])"
+            if re.search(edge, target):
+                self.trigger_hits[index] += 1
 
     @staticmethod
     def _candidate_id(ctx: DecisionContext, name: str) -> int | None:
@@ -1007,19 +1040,24 @@ class WitnessPolicy:
     def diagnostics(self) -> dict[str, Any]:
         """Per-link execution/miss counts and notes, for run diagnostics.
 
-        ``executed_actions`` is the number of PRIORITY decisions the policy
-        matched to a link.  When it is zero the run never executed the line and
-        the verdict must be ``inconclusive`` with this diagnostic rather than a
-        silent empty result.
+        ``link_hits`` counts only PRIORITY decisions the policy matched to a
+        link.  ``trigger_hits`` counts automatic abilities/triggers credited to
+        a link from ``SpellCast``/``SpellResolved`` events (which never reach a
+        PRIORITY decision).  ``executed_actions`` is their sum: the number of
+        link actions the run actually executed, whether by a priority decision
+        or a broadcast trigger.  When it is zero the run never executed the
+        line and the verdict must be ``inconclusive`` with this diagnostic
+        rather than a silent empty result.
         """
         return {
             "policy_version": WITNESS_POLICY_VERSION,
             "links": [self._link_label(link) for link in self.links],
             "link_hits": list(self.link_hits),
+            "trigger_hits": list(self.trigger_hits),
             "link_misses": list(self.link_misses),
             "skipped": list(self.skipped),
             "notes": list(self.notes),
-            "executed_actions": int(sum(self.link_hits)),
+            "executed_actions": int(sum(self.link_hits) + sum(self.trigger_hits)),
             "iterations": int(self.iterations),
             "decisions": int(self.decisions),
         }
@@ -1591,16 +1629,25 @@ def _run_witness_seed(
 
             Called once *before* the loop (baseline) and once per completed
             iteration, so a single-iteration loop still records the "before"
-            and "after" samples the detector needs.
+            and "after" samples the detector needs.  ``SpellCast`` and
+            ``SpellResolved`` events from the combo player are also credited to
+            the policy's links (``note_card_event``): automatic abilities and
+            triggers never pass through a PRIORITY decision, so this is the only
+            signal that they executed.
             """
             nonlocal event_cursor, cast_count, spells_resolved
+            note_event = getattr(policy, "note_card_event", None)
             state = client.get_state(game_id, view_as_player=view_as_player)
             batch = client.poll_events(game_id, event_cursor)
             for event in batch.events:
+                if event.type not in ("SpellCast", "SpellResolved"):
+                    continue
                 if event.type == "SpellCast":
                     cast_count += 1
-                elif event.type == "SpellResolved":
+                else:
                     spells_resolved += 1
+                if callable(note_event) and int(event.player) == player:
+                    note_event(str(getattr(event, "card_name", "") or ""))
             event_cursor = int(batch.next_cursor)
             observations.append(
                 build_observation(
