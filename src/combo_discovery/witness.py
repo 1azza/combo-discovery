@@ -78,6 +78,20 @@ DEFAULT_OPPONENT_LIFE = 20
 DEFAULT_LIBRARY_SIZE = 20
 DEFAULT_LIBRARY_LAND = "Forest"
 
+#: Cards staged into the combo player's graveyard when the combo is gated on a
+#: graveyard condition (delirium and friends) and the caller did not supply one.
+#: Four distinct *primary* card types satisfy delirium's "four or more card
+#: types among cards in your graveyard": a land (Forest), a creature (Grizzly
+#: Bears), an instant (Lightning Bolt) and a sorcery (Divination).  Each name
+#: was verified against the corpus ``cards`` table (all four resolve with the
+#: expected type line), so Forge can load them.
+DEFAULT_GRAVEYARD: tuple[str, ...] = (
+    "Forest",
+    "Grizzly Bears",
+    "Lightning Bolt",
+    "Divination",
+)
+
 #: Decks used when the caller does not supply real ones (fakes/tests).  A live
 #: harness needs real ``.dck`` paths; the CLI requires ``--decks`` for live runs.
 DEFAULT_WITNESS_DECKS: list[tuple[str, str]] = [
@@ -404,6 +418,62 @@ def _type_line_for(combo: Any, name: str) -> str:
     return ""
 
 
+def _oracle_text_for(combo: Any, name: str) -> str:
+    """Best-effort oracle text for ``name`` from a combo/candidate.
+
+    Mirrors :func:`_type_line_for`: candidates carry ``oracle_texts`` aligned
+    with ``cards``; ontology combos and test fakes expose it through their
+    abilities' ``card_context()``.  Returns ``""`` when no information is
+    available, so combos without oracle text stay empty (best-effort).
+    """
+    cards: Any = getattr(combo, "cards", None) or ()
+    oracle_texts: Any = getattr(combo, "oracle_texts", None) or ()
+    if oracle_texts:
+        try:
+            index = list(cards).index(name)
+        except ValueError:
+            index = -1
+        if 0 <= index < len(oracle_texts):
+            candidate_text = str(oracle_texts[index] or "").strip()
+            if candidate_text:
+                return candidate_text
+    ability = _ability_for(combo, name)
+    if ability is not None:
+        get_context = getattr(ability, "card_context", None)
+        context = get_context() if callable(get_context) else None
+        text = str(getattr(context, "oracle_text", "") or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _combo_oracle_texts(combo: Any) -> tuple[str, ...]:
+    """Oracle texts of every combo card (empty entries included), best-effort."""
+    cards = _combo_cards(combo)
+    return tuple(_oracle_text_for(combo, name) for name in cards)
+
+
+def is_graveyard_gated(oracle_texts: Sequence[str]) -> bool:
+    """True when any oracle text is gated on a graveyard condition.
+
+    Delirium is the motivating case: *"if there are four or more card types
+    among cards in your graveyard"* can never hold against the default empty
+    graveyard, so :func:`build_scenario` stages a supporting graveyard for such
+    combos.  The match is case-insensitive and deliberately broad; an empty or
+    absent text never gates.
+    """
+    markers = (
+        "delirium",
+        "card types among cards in your graveyard",
+        "cards in your graveyard",
+    )
+    for text in oracle_texts or ():
+        low = str(text or "").lower()
+        if any(marker in low for marker in markers):
+            return True
+    return False
+
+
 def _assign_battlefield_ids(
     battlefield: Sequence[CardSpec], type_lines: dict[str, str]
 ) -> None:
@@ -486,13 +556,22 @@ def build_scenario(
         if mana is not None
         else {color: DEFAULT_MANA_PER_COLOR for color in DEFAULT_MANA_COLORS}
     )
+    # Graveyard-gated combos (delirium) need a supporting graveyard or their
+    # condition can never hold; only stage one when the caller did not supply
+    # ``graveyard`` at all (an explicit empty list still wins).
+    if graveyard is None and is_graveyard_gated(_combo_oracle_texts(combo)):
+        graveyard_specs: list[CardSpec] = [
+            CardSpec(name=name) for name in DEFAULT_GRAVEYARD
+        ]
+    else:
+        graveyard_specs = list(graveyard or [])
     combo_player = PlayerScenario(
         player=int(player),
         life=int(life),
         mana=mana_map,
         battlefield=battlefield,
         hand=starting_hand,
-        graveyard=list(graveyard or []),
+        graveyard=graveyard_specs,
         library=list(library) if library is not None else _default_library(),
     )
     harmless = PlayerScenario(
@@ -1909,6 +1988,7 @@ class Candidate:
     mechanism: str = ""
     infinite: bool = False
     type_lines: tuple[str, ...] = ()
+    oracle_texts: tuple[str, ...] = ()
 
     @property
     def links(self) -> list[LinkPlan]:
@@ -1980,6 +2060,7 @@ def load_candidate(
     ids = _parse_card_ids(row["card_ids_json"])
     names = _names_for_ids(conn, import_id, ids)
     type_lines = _type_lines_for_ids(conn, import_id, ids)
+    oracle_texts = _oracle_texts_for_ids(conn, import_id, ids)
     return Candidate(
         cards=tuple(names),
         card_ids=tuple(ids),
@@ -1988,6 +2069,7 @@ def load_candidate(
         pattern=str(row["pattern"] or ""),
         mechanism=str(row["mechanism"] or ""),
         type_lines=tuple(type_lines),
+        oracle_texts=tuple(oracle_texts),
     )
 
 
@@ -2023,6 +2105,25 @@ def _type_lines_for_ids(
         params.append(import_id)
     rows = conn.execute(sql, params).fetchall()
     by_id = {int(r["id"]): str(r["type_line"] or "") for r in rows}
+    return [by_id[i] for i in ids if i in by_id]
+
+
+def _oracle_texts_for_ids(
+    conn: Any, import_id: str | None, ids: Sequence[int]
+) -> list[str]:
+    """Oracle texts for ``ids`` in the same order/filter as :func:`_names_for_ids`."""
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    sql = (
+        f"SELECT id, oracle_text FROM cards WHERE id IN ({placeholders}) "  # noqa: S608
+    )
+    params: list[Any] = [int(i) for i in ids]
+    if import_id is not None:
+        sql += "AND import_id = ?"
+        params.append(import_id)
+    rows = conn.execute(sql, params).fetchall()
+    by_id = {int(r["id"]): str(r["oracle_text"] or "") for r in rows}
     return [by_id[i] for i in ids if i in by_id]
 
 
@@ -2150,6 +2251,7 @@ def main(argv: list[str] | None = None) -> int:
 __all__ = [
     "Candidate",
     "CardSpec",
+    "DEFAULT_GRAVEYARD",
     "DEFAULT_WITNESS_DECKS",
     "LinkPlan",
     "MAX_PREGAME_DECISIONS",
@@ -2162,6 +2264,7 @@ __all__ = [
     "build_observation",
     "build_scenario",
     "detect_loop",
+    "is_graveyard_gated",
     "link_plans",
     "load_candidate",
     "main",

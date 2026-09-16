@@ -13,6 +13,7 @@ from combo_discovery.runner import DecisionContext
 from combo_discovery.witness import (
     CardSpec,
     Candidate,
+    DEFAULT_GRAVEYARD,
     LinkPlan,
     MAX_PREGAME_DECISIONS,
     Observation,
@@ -23,6 +24,7 @@ from combo_discovery.witness import (
     build_observation,
     build_scenario,
     detect_loop,
+    is_graveyard_gated,
     link_plans,
     run_witness,
     synthetic_cycle,
@@ -256,6 +258,65 @@ class TestBuildScenario:
         assert scenario.players[0].mana == {"U": 2}
         assert scenario.active_player == 1
         assert (scenario.turn, scenario.phase) == (4, "Combat")
+
+
+class TestGraveyardGating:
+    DELIRIUM = (
+        "Delirium — Whenever this creature attacks for the first time each "
+        "turn, if there are four or more card types among cards in your "
+        "graveyard, untap target creature."
+    )
+
+    def test_detects_delirium_text(self):
+        assert is_graveyard_gated([self.DELIRIUM]) is True
+        assert is_graveyard_gated(["Delirium — draw a card."]) is True
+
+    def test_detects_generic_graveyard_marker(self):
+        assert is_graveyard_gated(["four or more card types among cards in your graveyard"]) is True
+        assert is_graveyard_gated(["Return two target cards in your graveyard to your hand."]) is True
+
+    def test_ordinary_text_is_not_gated(self):
+        assert is_graveyard_gated(["Flying, haste", "Whenever this attacks, untap it."]) is False
+
+    def test_empty_text_is_not_gated(self):
+        assert is_graveyard_gated([]) is False
+        assert is_graveyard_gated([""]) is False
+        assert is_graveyard_gated(()) is False
+
+    def test_gated_combo_stages_default_graveyard(self):
+        candidate = Candidate(
+            cards=("Fear of Missing Out", "Helm of the Host"),
+            oracle_texts=(self.DELIRIUM, ""),
+        )
+        scenario = build_scenario(candidate)
+        graveyard = scenario.players[0].graveyard
+        assert tuple(c.name for c in graveyard) == DEFAULT_GRAVEYARD
+        # Four distinct primary types satisfy delirium.
+        assert len(DEFAULT_GRAVEYARD) == 4
+
+    def test_ordinary_combo_still_stages_empty_graveyard(self):
+        candidate = Candidate(
+            cards=("Splinter Twin", "Deceiver Exarch"),
+            oracle_texts=("Enchant creature", "Flash"),
+        )
+        scenario = build_scenario(candidate)
+        assert scenario.players[0].graveyard == []
+
+    def test_explicit_graveyard_argument_wins(self):
+        candidate = Candidate(
+            cards=("Fear of Missing Out", "Helm of the Host"),
+            oracle_texts=(self.DELIRIUM, ""),
+        )
+        explicit = [CardSpec(name="Custom Graveyard Card")]
+        scenario = build_scenario(candidate, graveyard=explicit)
+        assert [c.name for c in scenario.players[0].graveyard] == ["Custom Graveyard Card"]
+        # Even an explicitly empty graveyard is honoured (caller said so).
+        empty = build_scenario(candidate, graveyard=[])
+        assert empty.players[0].graveyard == []
+
+    def test_no_oracle_text_is_not_gated(self):
+        combo = combo_ab()  # fakes carry no oracle text at all
+        assert build_scenario(combo).players[0].graveyard == []
 
 
 class TestCanonical:
