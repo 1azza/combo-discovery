@@ -84,6 +84,14 @@ analogue transfer (`scripts/analogue_transfer.py`).
       near-miss was either documented elsewhere (Reddit / TappedOut / MTG
       Salvation) or exposed as a verifier bug.
 
+### Search player (C)
+
+- [x] A goal-directed search lives in `src/combo_discovery/search.py`: bounded DFS
+      over PRIORITY decisions with snapshot/restore backtracking, replay-based
+      branching for non-priority decisions, and a verdict-directed mode that aims
+      at `detect_loop`'s verdict. Measured honestly: it changed no verdicts on the
+      known-combo slice — the limit is candidate quality and staging, not search.
+
 ### Tests
 
 - [x] Python: `546 passed, 1 skipped` (`uv run pytest -q`).
@@ -92,16 +100,27 @@ analogue transfer (`scripts/analogue_transfer.py`).
 
 ## Known Gaps
 
-- [ ] **Recall ceiling is the player.** The witness policy only acts on offered
-      decisions, so triggered engines (attack/ETB/loyalty) are effectively
-      undriveable (3% recall) and loops needing combat/phase navigation return
-      `inconclusive`. General search is the remaining large workstream.
+- [ ] **Recall ceiling is the candidate set / staging, not search.** The
+      scripted policy is trigger-blind (triggered-engine recall 9%), and a
+      goal-directed search player was built and measured — it changed no
+      verdicts, because those candidates do not loop on the injected board or
+      need conditions/objects the scenario does not provide.
+- [ ] **Search player (C) is built but pays nothing yet.** `search_for_repeat`
+      (bounded DFS over PRIORITY with snapshot/restore), `search_then_verify`,
+      `witness_with_search` (+ `known_recall --search`), `search_by_replay`
+      (hybrid replay branching for non-priority decisions) and `search_for_loops`
+      (verdict-directed) all live in `src/combo_discovery/search.py`. Measured:
+      the fallback changed 0 verdicts; replay branching flipped 0/7 triggered
+      `inconclusive` pairs; verdict-directed search found 0/7 loops. The harness
+      cannot rewind non-priority decisions (priority has an "ask me again"
+      contract, the others do not), which is why branching is replay-based.
 - [ ] **Net-neutral loops** (repeat forever with no surplus resource, e.g.
       `Palinchron + Molten Echoes`) are rejected, because the same "a resource
       must grow" rule is what removes the false positives.
 - [ ] **Staging gaps.** Combos needing a supporting object the scenario does not
-      provide stall, e.g. `Ghired, Mirror of the Wilds` needs a token that
-      "entered this turn" (22 known pairs).
+      provide stall: `Ghired, Mirror of the Wilds` needs a token that "entered
+      this turn" (22 known pairs); `Fear of Missing Out` needs delirium (four card
+      types in the graveyard); `Mirage Phalanx` needs soulbond pairing.
 - [ ] Build identity: an in-place ontology rebuild appends a second build, so the
       append-only store can hold duplicate rows that views show.
 - [ ] `scripts/known_recall.py` and `scripts/analogue_transfer.py` run one game
@@ -113,10 +132,14 @@ analogue transfer (`scripts/analogue_transfer.py`).
 
 ## Next Work
 
-1. Public artifact: write-up + this status + tagged release.
-2. Recall: net-neutral-loop handling and Ghired-style staging (both improve the
-   verifier's reach without reintroducing false positives).
-3. Candidate yield: new-card focus (recent sets, where Spellbook lags) and more
-   free/activated engine archetypes.
-4. Longer term: a goal-directed search player (the only route to genuinely new
-   mechanics) — see `docs/WITNESS_SEARCH.md`.
+1. **Staging**: supply required supporting objects — a varied graveyard
+   (delirium), soulbond pairing, the Ghired token — bounded, and it directly
+   changes verdicts.
+2. **Candidate quality**: new-card focus (recent sets, where Spellbook lags) and
+   more free/activated engine archetypes. The measurements say candidate quality,
+   not search power, is the limit.
+3. **Search correctness**: `SequentialPolicy` replays positionally, so after a
+   variant diverges a recorded answer can land on the wrong decision type
+   (`error`, ranked weakest); matching answers by decision type is a small fix.
+4. Net-neutral-loop handling (a loop that repeats with no surplus) — rejected
+   today by the same rule that removes the false positives.

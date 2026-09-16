@@ -141,9 +141,33 @@ uv run pytest -q      # 546 passed, 1 skipped
 - Novelty is only as good as the two sources; a combo can be real and simply
   undocumented anywhere we can search.
 
+## The search player, and what it taught us
+
+We then built the "goal-directed pilot": a bounded search over legal decisions
+that branches with snapshot/restore, replays a candidate sequence through the
+verifier, and can aim directly at the judge's verdict. It works — positive
+controls still return `loops` — but measured over the known-combo slice it
+**changed no verdicts**:
+
+- the search fallback flipped **0** verdicts;
+- replay-branching (to work around the harness's inability to rewind combat)
+  flipped **0 of 7** previously undecided pairs;
+- aiming the search straight at `loops` found **0 of 7**.
+
+The honest conclusion is not "search doesn't work" but **"search is not the
+bottleneck."** Those candidates do not loop on the injected board, or they need
+conditions the scenario does not provide (delirium wants a graveyard; soulbond
+wants pairing). The blocked recall comes from *what we ask the verifier to test*
+and *what the board provides* — not from search power.
+
 ## Future work
 
-1. **A goal-directed pilot.** Search legal actions across phases and turns toward
-   a recurring state. This is the only route to genuinely new mechanics.
-2. **Recent-set focus** — where the catalogue reliably lags.
-3. **Close the recall gaps** above without reopening the false-positive classes.
+1. **Staging** — supply the required supporting objects (a varied graveyard for
+   delirium, soulbond pairing, a token that "entered this turn"). Bounded, and it
+   directly changes verdicts.
+2. **Candidate quality** — new-card focus and more drivable engine archetypes.
+   The measurements say this, not search, is the limit.
+3. **Search correctness** — replay currently matches answers positionally; match
+   them by decision type instead.
+4. **Net-neutral loops** — a loop that repeats with no surplus resource is
+   rejected today by the same rule that removes the false positives.
