@@ -48,6 +48,7 @@ from .witness import (
 __all__ = [
     "SearchResult",
     "SequentialPolicy",
+    "search_by_replay",
     "search_for_repeat",
     "search_then_verify",
     "witness_with_search",
@@ -67,8 +68,9 @@ class SearchResult:
     """Outcome of one bounded search.
 
     ``depth`` is the length of the successful decision trace, or (on failure)
-    the deepest recursion level reached.  ``trace`` is the successful path of
-    ``(decision_id, decision_type, answer)`` tuples, empty on failure.
+    the deepest recursion level reached.  ``trace`` is the successful path:
+    ``(decision_id, decision_type, answer)`` for :func:`search_for_repeat`, and
+    ``(decision_type, answer)`` for :func:`search_by_replay`; empty on failure.
     """
 
     success: bool
@@ -612,3 +614,306 @@ def witness_with_search(
 
     result.evidence = {**result.evidence, "fallback": "search", **provenance}
     return result
+
+
+# ---------------------------------------------------------------------------
+# Replay-based branching over NON-priority decisions (M4a-prime)
+# ---------------------------------------------------------------------------
+
+
+def _variants_for(
+    ctx: DecisionContext, baseline: Answer, prefer_cards: Sequence[str] = ()
+) -> list[Answer]:
+    """Deterministic alternative answers for a non-PRIORITY decision.
+
+    The harness cannot rewind non-priority decisions, but it is fully
+    deterministic, so a variant is explored by replaying the game from the
+    start with that one answer changed.  Only the three types whose choice
+    materially changes these games get variants; every other non-priority type
+    has none (the safe default).
+    """
+    t = ctx.decision_type
+    variants: list[Answer] = []
+    if t == pb.DECISION_TYPE_DECLARE_ATTACKERS:
+        none: Answer = ("attackers", [])
+        if none != baseline:
+            variants.append(none)
+        defender = int(ctx.defender_players[0]) if ctx.defender_players else 0
+        all_attack: Answer = (
+            "attackers",
+            [(int(cid), defender) for cid in ctx.candidate_ids],
+        )
+        if all_attack != baseline and all_attack not in variants:
+            variants.append(all_attack)
+    elif t == pb.DECISION_TYPE_CHOOSE_TARGETS:
+        need = max(1, int(ctx.min_choices))
+        ids = [int(cid) for cid in ctx.candidate_ids]
+        prefers = [str(c) for c in (prefer_cards or ())]
+        if prefers and ids:
+            names = {int(c.card_id): (c.name or "") for c in ctx.candidates}
+            ids.sort(
+                key=lambda cid: 0
+                if any(_matches(names.get(cid, ""), p) for p in prefers)
+                else 1
+            )
+        if ids and not (0 < int(ctx.max_choices) < need):
+            alternate: Answer = ("targets", (ids[:need], []))
+            if alternate != baseline:
+                variants.append(alternate)
+    elif t == pb.DECISION_TYPE_CHOOSE_MODE:
+        if int(ctx.min_choices) <= 1:
+            chosen: set[int] = set()
+            if (
+                isinstance(baseline, tuple)
+                and baseline
+                and baseline[0] == "mode_selection"
+                and isinstance(baseline[1], (list, tuple))
+            ):
+                try:
+                    chosen = {int(x) for x in baseline[1]}
+                except (TypeError, ValueError):
+                    chosen = set()
+            for mode_id, _ in ctx.mode_options:
+                if int(mode_id) in chosen:
+                    continue
+                alternate = ("mode_selection", [int(mode_id)])
+                if alternate != baseline and alternate not in variants:
+                    variants.append(alternate)
+                if len(variants) >= 2:
+                    break
+    return variants
+
+
+def _replay_answer(
+    index: int,
+    ctx: DecisionContext,
+    recorded: Sequence[tuple[int, Answer, list[Answer]]],
+    variant_index: int,
+    variant_answer: Answer | None,
+    policy: Callable[[DecisionContext], Answer],
+) -> Answer:
+    """Answer for the replay's ``index``-th submission.
+
+    The prefix before the variant is byte-identical to the baseline, so its
+    recorded answers apply directly.  At the variant index the substitute is
+    used; after it, a recorded answer is reused only when its decision type
+    still matches (the state may have diverged), otherwise the policy drives.
+    """
+    if index == variant_index:
+        return variant_answer if variant_answer is not None else policy(ctx)
+    if index < len(recorded):
+        decision_type, answer, _ = recorded[index]
+        if index < variant_index or decision_type == ctx.decision_type:
+            return answer
+    return policy(ctx)
+
+
+def _play_replay(
+    client: Any,
+    game_id: int,
+    scenario: Scenario,
+    policy: Callable[[DecisionContext], Answer],
+    *,
+    target: str,
+    max_decisions: int,
+    prefer_cards: Sequence[str],
+    recorded: Sequence[tuple[int, Answer, list[Answer]]] | None = None,
+    variant_index: int = -1,
+    variant_answer: Answer | None = None,
+) -> tuple[int, int, list[tuple[int, Answer, list[Answer]]], bool]:
+    """Drive one game; return ``(fires, submissions, steps, success)``.
+
+    ``recorded is None`` is the baseline (the policy drives and variants are
+    collected); otherwise the game replays ``recorded`` with one answer
+    substituted at ``variant_index``.
+    """
+    _drive_pregame(client, game_id, default_policy)
+    client.setup_scenario(game_id, scenario)
+    cursor = int(client.poll_events(game_id, 0).next_cursor)
+    fires = 0
+    submissions = 0
+    steps: list[tuple[int, Answer, list[Answer]]] = []
+
+    def poll() -> None:
+        nonlocal cursor, fires
+        batch = client.poll_events(game_id, cursor)
+        for event in batch.events:
+            if (
+                event.type in _TRIGGER_EVENTS
+                and int(event.player) == 0
+                and _matches(str(event.card_name), target)
+            ):
+                fires += 1
+        cursor = int(batch.next_cursor)
+
+    index = 0
+    while submissions < max_decisions:
+        try:
+            req = client.get_decision(game_id)
+        except (GameNotActiveError, InvalidRequestError):
+            break
+        # Events from the engine advancing to this decision.
+        poll()
+        if fires >= _SUCCESS_TARGET:
+            return fires, submissions, steps, True
+        ctx = DecisionContext(request=req)
+        if recorded is None:
+            answer = policy(ctx)
+            variants = (
+                []
+                if ctx.decision_type == _PRIORITY
+                else _variants_for(ctx, answer, prefer_cards)
+            )
+        else:
+            answer = _replay_answer(
+                index, ctx, recorded, variant_index, variant_answer, policy
+            )
+            variants = []
+        try:
+            client.submit_decision(game_id, req.decision_id, answer)
+        except (GameNotActiveError, StaleDecisionError, InvalidRequestError):
+            break
+        submissions += 1
+        poll()
+        steps.append((ctx.decision_type, answer, variants))
+        if fires >= _SUCCESS_TARGET:
+            return fires, submissions, steps, True
+        index += 1
+    return fires, submissions, steps, False
+
+
+def search_by_replay(
+    client: Any,
+    scenario: Scenario,
+    combo: Any,
+    *,
+    target: str,
+    seeds: int | Sequence[int] = 1,
+    max_iterations: int = 6,
+    max_decisions: int = 256,
+    decks: Sequence[tuple[str, str]],
+    player_types: Sequence[int] | None = None,
+    max_variants: int = 12,
+    prefer_cards: Sequence[str] | None = None,
+) -> SearchResult:
+    """Branch over a non-PRIORITY decision by replaying the game from scratch.
+
+    The harness only rewinds PRIORITY decisions, but it is deterministic, so a
+    non-priority choice is explored by replaying the game from the start with
+    one recorded answer changed (see :func:`_variants_for`).  A baseline run
+    records every answer; then each recorded non-priority decision's variants
+    are replayed in order until the target fires twice or the bounds are hit.
+
+    ``max_iterations`` is accepted for API parity; the drive bound is
+    ``max_decisions`` per game.  Bounded by ``max_variants`` replays total;
+    every game is stopped in a ``finally``.  ``trace`` is the successful
+    ``(decision_type, answer)`` sequence (empty on failure).
+    """
+    seed_list = [int(seeds)] if isinstance(seeds, int) else [int(s) for s in seeds]
+    if not seed_list:
+        raise ValueError("search_by_replay needs at least one seed")
+    seed = seed_list[0]
+    deck_list = _absolute_deck_paths(
+        [(str(name), str(path)) for name, path in decks]
+    )
+    types = (
+        list(player_types)
+        if player_types is not None
+        else [pb.PLAYER_TYPE_REMOTE, pb.PLAYER_TYPE_GOLDFISH]
+    )
+    prefer = tuple(prefer_cards or ())
+    max_variants = max(0, int(max_variants))
+    max_decisions = max(0, int(max_decisions))
+    nodes = 0
+
+    def run(
+        recorded: Sequence[tuple[int, Answer, list[Answer]]] | None = None,
+        variant_index: int = -1,
+        variant_answer: Answer | None = None,
+    ) -> tuple[int, int, list[tuple[int, Answer, list[Answer]]], bool]:
+        game_id = client.start_game(deck_list, seed, player_types=list(types))
+        fires, submissions, steps, success = 0, 0, [], False
+        try:
+            fires, submissions, steps, success = _play_replay(
+                client,
+                game_id,
+                scenario,
+                WitnessPolicy(combo),
+                target=target,
+                max_decisions=max_decisions,
+                prefer_cards=prefer,
+                recorded=recorded,
+                variant_index=variant_index,
+                variant_answer=variant_answer,
+            )
+        except Exception:  # noqa: BLE001 - a dead game is a failed branch
+            pass
+        finally:
+            try:
+                client.stop_game(game_id)
+            except Exception:  # noqa: BLE001 - never mask the outcome
+                pass
+        return fires, submissions, steps, success
+
+    # -- Baseline ----------------------------------------------------------
+    fires, submissions, steps, success = run()
+    nodes += submissions
+    if success:
+        return SearchResult(
+            success=True,
+            target=str(target),
+            trigger_count=int(fires),
+            nodes=nodes,
+            depth=len(steps),
+            trace=[(dt, answer) for dt, answer, _ in steps],
+            reason=f"target fired {int(fires)} times in the baseline run",
+        )
+
+    recorded = steps
+    best_fires = int(fires)
+    best_depth = len(steps)
+
+    # -- Variant sweep -----------------------------------------------------
+    tried = 0
+    for index, (decision_type, _answer, variants) in enumerate(recorded):
+        if decision_type == _PRIORITY or not variants:
+            continue
+        for variant in variants:
+            if tried >= max_variants:
+                break
+            tried += 1
+            v_fires, v_submissions, v_steps, v_success = run(
+                recorded=recorded, variant_index=index, variant_answer=variant
+            )
+            nodes += v_submissions
+            best_fires = max(best_fires, int(v_fires))
+            best_depth = max(best_depth, len(v_steps))
+            if v_success:
+                return SearchResult(
+                    success=True,
+                    target=str(target),
+                    trigger_count=int(v_fires),
+                    nodes=nodes,
+                    depth=len(v_steps),
+                    trace=[(dt, answer) for dt, answer, _ in v_steps],
+                    reason=(
+                        f"target fired {int(v_fires)} times via replay variant "
+                        f"{variant!r} at decision {index}"
+                    ),
+                )
+        if tried >= max_variants:
+            break
+
+    return SearchResult(
+        success=False,
+        target=str(target),
+        trigger_count=int(best_fires),
+        nodes=nodes,
+        depth=int(best_depth),
+        trace=[],
+        reason=(
+            f"no replay variant made the target fire {_SUCCESS_TARGET} times "
+            f"within bounds (max_variants={max_variants}, "
+            f"max_decisions={max_decisions})"
+        ),
+    )

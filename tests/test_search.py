@@ -9,6 +9,7 @@ from combo_discovery.runner import DecisionContext
 from combo_discovery.search import (
     SearchResult,
     SequentialPolicy,
+    search_by_replay,
     search_for_repeat,
     search_then_verify,
     witness_with_search,
@@ -448,3 +449,146 @@ def test_witness_with_search_respects_search_false(monkeypatch):
 
     assert out is normal
     assert out.evidence["fallback"] == "none"
+
+
+# ---------------------------------------------------------------------------
+# search_by_replay (branching over non-priority decisions)
+# ---------------------------------------------------------------------------
+
+
+class FakeReplayClient:
+    """Scripted stream with a DECLARE_ATTACKERS decision.
+
+    The target ``SpellCast`` fires twice only when the *variant* answer
+    (declare no attackers) is submitted at decision index 3; the baseline's
+    "declare all" never fires it.  ``start_game`` resets the script so a replay
+    from the start is deterministic.
+    """
+
+    def __init__(self, emit_on_variant: bool = True, target: str = TARGET,
+                 game_over_at: int = 7):
+        self._next_gid = 100
+        self.game_id = 0
+        self.start_calls = 0
+        self.stopped: list[int] = []
+        self._idx = 0
+        self._events: list[pb.GameEvent] = []
+        self._seq = 0
+        self.submissions: list = []
+        self.emit_on_variant = bool(emit_on_variant)
+        self.target = target
+        self.game_over_at = int(game_over_at)
+
+    def start_game(self, decks, seed, player_types=None, **kwargs):
+        self.start_calls += 1
+        self._next_gid += 1
+        self.game_id = self._next_gid
+        self._idx = 0
+        self._events = []
+        self._seq = 0
+        return self.game_id
+
+    def stop_game(self, game_id):
+        self.stopped.append(game_id)
+
+    def is_game_over(self, game_id):
+        return pb.GameOver(over=False)
+
+    def setup_scenario(self, game_id, scenario):
+        return "H0", 1
+
+    def get_decision(self, game_id):
+        self._idx += 1
+        if self._idx >= self.game_over_at:
+            raise GameNotActiveError("game over")
+        if self._idx == 3:
+            return pb.DecisionRequest(
+                game_id=game_id,
+                decision_id=self._idx,
+                player=0,
+                turn=1,
+                phase="Combat",
+                decision_type=pb.DECISION_TYPE_DECLARE_ATTACKERS,
+                candidates=[
+                    pb.CardCandidate(card_id=10),
+                    pb.CardCandidate(card_id=11),
+                ],
+                defender_players=[1],
+                attacker_cards=[10, 11],
+            )
+        return pb.DecisionRequest(
+            game_id=game_id,
+            decision_id=self._idx,
+            player=0,
+            turn=1,
+            phase="Main1",
+            decision_type=pb.DECISION_TYPE_PRIORITY,
+            options=[pb.Option(id=0, kind="pass", card_name="")],
+        )
+
+    def submit_decision(self, game_id, decision_id, answer):
+        self.submissions.append(answer)
+        if self._idx == 3 and answer == ("attackers", []) and self.emit_on_variant:
+            self._emit(self.target)
+            self._emit(self.target)
+        return pb.StepResult()
+
+    def _emit(self, card_name):
+        self._seq += 1
+        self._events.append(
+            pb.GameEvent(
+                seq=self._seq,
+                game_id=self.game_id,
+                type="SpellCast",
+                player=0,
+                card_name=card_name,
+            )
+        )
+
+    def poll_events(self, game_id, cursor=0):
+        events = [e for e in self._events if int(e.seq) > int(cursor)]
+        next_cursor = max((int(e.seq) for e in self._events), default=int(cursor))
+        return pb.EventBatch(events=events, next_cursor=next_cursor)
+
+
+def _replay_combo_scenario():
+    combo = Candidate(cards=("A", "B"), type_lines=("Creature", "Enchantment"))
+    return build_scenario(combo), combo
+
+
+DECKS = [("A", "decks/goldfish_A.dck"), ("B", "decks/goldfish_B.dck")]
+
+
+def test_search_by_replay_finds_variant_that_fires_target():
+    client = FakeReplayClient(emit_on_variant=True)
+    scenario, combo = _replay_combo_scenario()
+
+    result = search_by_replay(
+        client, scenario, combo, target=TARGET, decks=DECKS,
+        max_decisions=20, max_variants=3,
+    )
+
+    assert result.success is True
+    assert result.trigger_count >= 2
+    # The successful trace carries the variant (declare no attackers).
+    assert any(entry[1] == ("attackers", []) for entry in result.trace)
+    # The baseline alone could never fire it, so a replay game was started.
+    assert client.start_calls > 1
+    assert result.nodes > 0
+    assert result.depth == len(result.trace)
+
+
+def test_search_by_replay_is_bounded_when_no_variant_fires():
+    client = FakeReplayClient(emit_on_variant=False)
+    scenario, combo = _replay_combo_scenario()
+
+    result = search_by_replay(
+        client, scenario, combo, target=TARGET, decks=DECKS,
+        max_decisions=20, max_variants=3,
+    )
+
+    assert result.success is False
+    assert result.trace == []
+    assert "no replay variant" in result.reason
+    assert client.start_calls <= 3 + 1
+    assert result.nodes <= 20 * (3 + 1)
