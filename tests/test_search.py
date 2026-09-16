@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from combo_discovery.env import GameNotActiveError
+from combo_discovery import search as search_mod
+from combo_discovery.env import GameNotActiveError, InvalidRequestError
 from combo_discovery.generated import forge_env_pb2 as pb
 from combo_discovery.runner import DecisionContext
 from combo_discovery.search import (
@@ -10,8 +11,15 @@ from combo_discovery.search import (
     SequentialPolicy,
     search_for_repeat,
     search_then_verify,
+    witness_with_search,
 )
-from combo_discovery.witness import Candidate, LinkPlan, WitnessPolicy, build_scenario
+from combo_discovery.witness import (
+    Candidate,
+    LinkPlan,
+    WitnessPolicy,
+    WitnessResult,
+    build_scenario,
+)
 
 TARGET = "TargetCard"
 
@@ -161,6 +169,33 @@ def test_search_reports_no_decision_when_game_not_active():
     assert "no outstanding decision" in result.reason
 
 
+class RaisingRestoreClient(FakeSearchClient):
+    """The harness drops tokens on game over; a restore then raises."""
+
+    def restore(self, game_id, token):
+        raise InvalidRequestError(
+            "INVALID_ARGUMENT: stale decision: unknown or expired snapshot token"
+        )
+
+
+def test_search_survives_expired_snapshot_token():
+    # A branch that reaches game over clears the harness's tokens, so the
+    # backtracking restore fails.  The search must fail cleanly, not raise.
+    client = RaisingRestoreClient(emit_target=False)
+    result = search_for_repeat(
+        client,
+        client.game_id,
+        target=TARGET,
+        policy=_policy_picks_alpha,
+        prefer_cards=(TARGET,),
+        max_nodes=50,
+        max_depth=2,
+    )
+    assert result.success is False
+    assert result.trace == []
+    assert result.nodes <= 50
+
+
 # ---------------------------------------------------------------------------
 # SequentialPolicy (replay) + search_then_verify
 # ---------------------------------------------------------------------------
@@ -283,3 +318,133 @@ def test_search_then_verify_search_failure_is_inconclusive():
     # Phase A started and stopped a game; Phase B never ran.
     assert len(client.start_calls) == 1
     assert client.stopped == [client.game_id]
+
+
+# ---------------------------------------------------------------------------
+# witness_with_search (ordinary run, search fallback)
+# ---------------------------------------------------------------------------
+
+
+def _witness_result(verdict, reason, evidence=None):
+    combo = Candidate(cards=("A", "B"))
+    return WitnessResult(
+        verdict=verdict,
+        scenario=build_scenario(combo),
+        iterations=0,
+        evidence={**(evidence or {}), "reason": reason},
+    )
+
+
+def _scenario_and_combo():
+    combo = Candidate(cards=("A", "B"), kind="pair", key="7")
+    return build_scenario(combo), combo
+
+
+def test_witness_with_search_returns_non_inconclusive_search_verdict(monkeypatch):
+    scenario, combo = _scenario_and_combo()
+    normal = _witness_result("inconclusive", "normal run")
+    searched = _witness_result(
+        "loops",
+        "judge verdict",
+        {
+            "search_nodes": 5,
+            "search_depth": 2,
+            "search_fires": 2,
+            "search_reason": "target fired 2 times (>= 2)",
+            "search_trace_len": 3,
+            "replayed_answers": 3,
+        },
+    )
+    calls = {"normal": 0, "search": 0}
+
+    def fake_normal(client, scenario, policy, **kwargs):
+        calls["normal"] += 1
+        return normal
+
+    def fake_search(client, scenario, combo_arg, **kwargs):
+        calls["search"] += 1
+        return searched
+
+    monkeypatch.setattr(search_mod, "run_witness", fake_normal)
+    monkeypatch.setattr(search_mod, "search_then_verify", fake_search)
+
+    out = witness_with_search(
+        object(), scenario, combo, target="A", decks=[("A", "a.dck"), ("B", "b.dck")]
+    )
+
+    assert out is searched
+    assert out.verdict == "loops"
+    assert out.evidence["fallback"] == "search"
+    assert out.evidence["search_nodes"] == 5
+    assert out.evidence["replayed_answers"] == 3
+    assert calls == {"normal": 1, "search": 1}
+
+
+def test_witness_with_search_keeps_original_when_both_inconclusive(monkeypatch):
+    scenario, combo = _scenario_and_combo()
+    normal = _witness_result("inconclusive", "normal run")
+    searched = _witness_result(
+        "inconclusive",
+        "no path",
+        {
+            "search_nodes": 1,
+            "search_depth": 0,
+            "search_fires": 0,
+            "search_reason": "no legal branch",
+            "search_trace_len": 0,
+        },
+    )
+    monkeypatch.setattr(search_mod, "run_witness", lambda *a, **k: normal)
+    monkeypatch.setattr(search_mod, "search_then_verify", lambda *a, **k: searched)
+
+    out = witness_with_search(
+        object(), scenario, combo, target="A", decks=[("A", "a.dck"), ("B", "b.dck")]
+    )
+
+    assert out is normal  # never invents a verdict
+    assert out.verdict == "inconclusive"
+    assert out.evidence["reason"] == "normal run"
+    assert out.evidence["fallback"] == "search"
+    assert out.evidence["search_nodes"] == 1
+
+
+def test_witness_with_search_skips_search_on_non_inconclusive(monkeypatch):
+    scenario, combo = _scenario_and_combo()
+    normal = _witness_result("loops", "already looped")
+
+    def boom(*args, **kwargs):
+        raise AssertionError("search must not run for a decided verdict")
+
+    monkeypatch.setattr(search_mod, "run_witness", lambda *a, **k: normal)
+    monkeypatch.setattr(search_mod, "search_then_verify", boom)
+
+    out = witness_with_search(
+        object(), scenario, combo, target="A", decks=[("A", "a.dck"), ("B", "b.dck")]
+    )
+
+    assert out is normal
+    assert out.evidence["fallback"] == "none"
+    assert "search_nodes" not in out.evidence
+
+
+def test_witness_with_search_respects_search_false(monkeypatch):
+    scenario, combo = _scenario_and_combo()
+    normal = _witness_result("inconclusive", "normal run")
+
+    def boom(*args, **kwargs):
+        raise AssertionError("search disabled")
+
+    monkeypatch.setattr(search_mod, "run_witness", lambda *a, **k: normal)
+    monkeypatch.setattr(search_mod, "search_then_verify", boom)
+
+    out = witness_with_search(
+        object(),
+        scenario,
+        combo,
+        target="A",
+        decks=[("A", "a.dck"), ("B", "b.dck")],
+        search=False,
+    )
+
+    assert out is normal
+    assert out.evidence["fallback"] == "none"

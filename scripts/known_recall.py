@@ -30,6 +30,7 @@ from pathlib import Path
 
 from combo_discovery import witness as W
 from combo_discovery.env import ForgeEnvClient
+from combo_discovery.search import witness_with_search
 from combo_discovery.store import ExperimentStore
 
 DEFAULT_DECKS = ["A=decks/goldfish_A.dck", "B=decks/goldfish_B.dck"]
@@ -87,6 +88,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--count", type=int, default=20)
     parser.add_argument("--decks", default=",".join(DEFAULT_DECKS))
     parser.add_argument("--out", default=None)
+    parser.add_argument(
+        "--search", action="store_true",
+        help="route inconclusive runs through the bounded search fallback",
+    )
     args = parser.parse_args(argv)
 
     decks = []
@@ -143,13 +148,22 @@ def main(argv: list[str] | None = None) -> int:
             policy = W.WitnessPolicy(combo)
             engine = _engine_kind(a, b, oracle)
             try:
-                res = W.run_witness(
-                    client, W.build_scenario(combo), policy,
-                    seeds=[1], max_iterations=6, max_decisions=256, decks=decks,
-                    candidate_kind=combo.kind, candidate_key=combo.key,
-                    card_names=combo.cards, infinite=combo.infinite,
-                )
-                diag = policy.diagnostics()
+                if args.search:
+                    res = witness_with_search(
+                        client, W.build_scenario(combo), combo,
+                        target=combo.cards[0], seeds=[1], max_iterations=6,
+                        max_decisions=256, decks=decks,
+                        search_nodes=200, search_depth=60,
+                    )
+                    diag = (res.evidence or {}).get("diagnostics", {})
+                else:
+                    res = W.run_witness(
+                        client, W.build_scenario(combo), policy,
+                        seeds=[1], max_iterations=6, max_decisions=256, decks=decks,
+                        candidate_kind=combo.kind, candidate_key=combo.key,
+                        card_names=combo.cards, infinite=combo.infinite,
+                    )
+                    diag = policy.diagnostics()
                 evidence = res.evidence or {}
                 record = {
                     "combo_id": combo_id,

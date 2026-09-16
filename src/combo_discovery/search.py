@@ -21,7 +21,9 @@ scenario injection / stop).  The existing witness driver is untouched.
 Known harness limitation: snapshot/restore only behaves as a real rewind at
 PRIORITY decisions (non-PRIORITY restores fall back to an abort NO-OP), so this
 search branches *only* at PRIORITY decisions and answers every other decision
-type deterministically with ``policy``.
+type deterministically with ``policy``.  The harness also clears every live
+snapshot token when a game ends, so once a branch reaches game over the search
+cannot backtrack and stops (``aborted``); it fails cleanly instead of raising.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from .env import Answer, GameNotActiveError, StaleDecisionError
+from .env import Answer, GameNotActiveError, InvalidRequestError, StaleDecisionError
 from .generated import forge_env_pb2 as pb
 from .runner import DecisionContext, default_policy
 from .witness import (
@@ -43,7 +45,13 @@ from .witness import (
     run_witness,
 )
 
-__all__ = ["SearchResult", "SequentialPolicy", "search_for_repeat", "search_then_verify"]
+__all__ = [
+    "SearchResult",
+    "SequentialPolicy",
+    "search_for_repeat",
+    "search_then_verify",
+    "witness_with_search",
+]
 
 _PRIORITY = pb.DECISION_TYPE_PRIORITY
 # One physical ability/trigger emits BOTH SpellCast and SpellResolved, so only
@@ -241,6 +249,11 @@ def search_for_repeat(
         "triggers": 0,
         "cursor": 0,
         "deepest": 0,
+        # Set once the engine stops offering decisions (game over).  The
+        # harness clears all snapshot tokens on game over, so backtracking is
+        # impossible after it: short-circuit rather than attempt a restore that
+        # will fail with "unknown or expired snapshot token".
+        "aborted": False,
     }
     path: list[tuple] = []
 
@@ -270,17 +283,22 @@ def search_for_repeat(
         try:
             return client.get_decision(game_id)
         except GameNotActiveError:
+            state["aborted"] = True
+            return None
+        except InvalidRequestError:
+            # Defensive: a non-retryable decision error also ends the search.
+            state["aborted"] = True
             return None
 
     def submit(req: pb.DecisionRequest, answer: Answer) -> bool:
         try:
             client.submit_decision(game_id, req.decision_id, answer)
-        except (GameNotActiveError, StaleDecisionError):
+        except (GameNotActiveError, StaleDecisionError, InvalidRequestError):
             return False
         return True
 
     def dfs(req: pb.DecisionRequest, depth: int) -> bool:
-        if depth > max_depth or state["nodes"] >= max_nodes:
+        if state["aborted"] or depth > max_depth or state["nodes"] >= max_nodes:
             return False
         state["deepest"] = max(int(state["deepest"]), depth)
         ctx = DecisionContext(request=req)
@@ -324,7 +342,7 @@ def search_for_repeat(
             # One snapshot per node, reused for every alternative candidate.
             try:
                 token, _ = client.snapshot(game_id)
-            except (GameNotActiveError, StaleDecisionError):
+            except (GameNotActiveError, StaleDecisionError, InvalidRequestError):
                 token = None
 
         base_triggers = int(state["triggers"])
@@ -332,14 +350,21 @@ def search_for_repeat(
         current = req
         try:
             for index, answer in enumerate(candidates):
-                if state["nodes"] >= max_nodes:
+                if state["aborted"] or state["nodes"] >= max_nodes:
                     break
                 if index > 0:
                     # Backtrack: rewind the game (state only), then refetch.
                     if token is not None:
                         try:
                             client.restore(game_id, token)
-                        except GameNotActiveError:
+                        except (
+                            GameNotActiveError,
+                            StaleDecisionError,
+                            InvalidRequestError,
+                        ):
+                            # The game ended (harness clears tokens on game
+                            # over) or the token was evicted: no rewinding.
+                            state["aborted"] = True
                             break
                     state["triggers"] = base_triggers
                     del path[base_path:]
@@ -518,4 +543,72 @@ def search_then_verify(
         infinite=bool(getattr(combo, "infinite", False)),
     )
     result.evidence = {**result.evidence, **provenance, "replayed_answers": len(answers)}
+    return result
+
+
+def witness_with_search(
+    client: Any,
+    scenario: Scenario,
+    combo: Any,
+    *,
+    target: str,
+    seeds: int | Sequence[int] = 1,
+    max_iterations: int = 6,
+    max_decisions: int = 256,
+    decks: Sequence[tuple[str, str]],
+    search_nodes: int = 200,
+    search_depth: int = 60,
+    search: bool = True,
+) -> WitnessResult:
+    """Ordinary witness run, with bounded search as an ``inconclusive`` fallback.
+
+    Runs :func:`witness.run_witness` exactly as search-then-verify's replay phase
+    would, but with the normal :class:`WitnessPolicy`.  If that run is
+    ``inconclusive`` and ``search`` is enabled, :func:`search_then_verify` is
+    tried; its verdict is returned only when it is **non-inconclusive**,
+    otherwise the original result is returned.  Every returned result carries a
+    ``"fallback"`` marker (``"search"`` or ``"none"``) and — when a search was
+    attempted — its provenance, so the path taken stays visible.
+    """
+    result = run_witness(
+        client,
+        scenario,
+        WitnessPolicy(combo),
+        seeds=seeds,
+        max_iterations=int(max_iterations),
+        max_decisions=int(max_decisions),
+        decks=decks,
+        candidate_kind=str(getattr(combo, "kind", "")),
+        candidate_key=str(getattr(combo, "key", "")),
+        card_names=tuple(getattr(combo, "cards", ())),
+        infinite=bool(getattr(combo, "infinite", False)),
+    )
+
+    if not search or result.verdict != "inconclusive":
+        result.evidence = {**result.evidence, "fallback": "none"}
+        return result
+
+    searched = search_then_verify(
+        client,
+        scenario,
+        combo,
+        target=target,
+        seeds=seeds,
+        max_iterations=int(max_iterations),
+        max_decisions=int(max_decisions),
+        decks=decks,
+        search_nodes=int(search_nodes),
+        search_depth=int(search_depth),
+    )
+    provenance = {
+        key: value
+        for key, value in (searched.evidence or {}).items()
+        if key.startswith("search_") or key == "replayed_answers"
+    }
+
+    if searched.verdict != "inconclusive":
+        searched.evidence = {**searched.evidence, "fallback": "search"}
+        return searched
+
+    result.evidence = {**result.evidence, "fallback": "search", **provenance}
     return result
