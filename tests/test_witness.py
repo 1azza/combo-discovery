@@ -15,9 +15,11 @@ from combo_discovery.witness import (
     Candidate,
     DEFAULT_GRAVEYARD,
     LinkPlan,
+    MAX_FORCED_PASSES,
     MAX_PREGAME_DECISIONS,
     Observation,
     PlayerScenario,
+    SPIN_THRESHOLD,
     Scenario,
     WitnessPolicy,
     _absolute_deck_paths,
@@ -1047,6 +1049,144 @@ class FakeRepeatingEventClient(FakeWitnessClient):
                 )
             ],
             next_cursor=cursor + 1,
+        )
+
+
+class FakeSpinClient(FakeWitnessClient):
+    """A no-op spin: stable structural signature, only event counters grow.
+
+    Every PRIORITY request offers a ``kind == "pass"`` option, so without the
+    spin guard the policy would keep taking the activate option forever.  The
+    ``state_hash`` varies per sample so the run is not a degenerate-loop false
+    positive; it is the *signature* + game-state resources that stay put.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._polls = 0
+        self._state_calls = 0
+        self.submitted: list = []
+
+    def get_decision(self, game_id):
+        self.decision_seq += 1
+        return pb.DecisionRequest(
+            game_id=game_id,
+            decision_id=self.decision_seq,
+            player=0,
+            turn=1,
+            phase="Main1",
+            decision_type=pb.DECISION_TYPE_PRIORITY,
+            options=[
+                pb.Option(id=0, kind="activate", card_name="A"),
+                pb.Option(id=1, kind="pass", description="Pass"),
+            ],
+        )
+
+    def get_state(self, game_id, view_as_player=0):
+        self.view_players.append(view_as_player)
+        self._state_calls += 1
+        # Same board/mana/tokens every sample; only ``casts`` (events) grows.
+        return make_state(mana=5, hash_=f"SPIN{self._state_calls}")
+
+    def poll_events(self, game_id, cursor=0):
+        self._polls += 1
+        if self._polls == 1:  # cursor-establishment poll
+            return pb.EventBatch(next_cursor=cursor)
+        return pb.EventBatch(
+            events=[
+                pb.GameEvent(
+                    seq=cursor + 1,
+                    game_id=game_id,
+                    type="SpellCast",
+                    player=0,
+                    card_name="Unrelated",
+                )
+            ],
+            next_cursor=cursor + 1,
+        )
+
+    def submit_decision(self, game_id, decision_id, answer):
+        self.submitted.append(answer)
+        return super().submit_decision(game_id, decision_id, answer)
+
+
+class FakeProgressClient(FakeWitnessClient):
+    """Genuine progress: a game-state resource (mana) grows every sample.
+
+    Pass options are offered on every request, so a test can assert the guard
+    does *not* take one when the run is really advancing.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.submitted: list = []
+
+    def get_decision(self, game_id):
+        self.decision_seq += 1
+        return pb.DecisionRequest(
+            game_id=game_id,
+            decision_id=self.decision_seq,
+            player=0,
+            turn=1,
+            phase="Main1",
+            decision_type=pb.DECISION_TYPE_PRIORITY,
+            options=[
+                pb.Option(id=0, kind="activate", card_name="A"),
+                pb.Option(id=1, kind="pass", description="Pass"),
+            ],
+        )
+
+    def submit_decision(self, game_id, decision_id, answer):
+        self.submitted.append(answer)
+        return super().submit_decision(game_id, decision_id, answer)
+
+
+class TestSpinGuard:
+    def _policy(self):
+        # One link whose action is always offered: every decision completes an
+        # iteration, so the driver samples an observation per decision.
+        return WitnessPolicy(links=[LinkPlan("A", "B")], player=0)
+
+    def test_spin_forces_bounded_pass(self):
+        client = FakeSpinClient()
+        result = run_witness(
+            client,
+            build_scenario(combo_ab()),
+            self._policy(),
+            seeds=[1],
+            max_iterations=40,
+            max_decisions=40,
+        )
+        # The policy itself always answers with option 0 ("A"); the guard must
+        # replace that with the pass option 1 once the spin threshold is hit.
+        assert ("option_id", 0) in client.submitted
+        assert ("option_id", 1) in client.submitted
+        # First forced pass comes after SPIN_THRESHOLD spinned samples (the
+        # baseline plus per-iteration samples), never earlier.
+        assert client.submitted.index(("option_id", 1)) >= SPIN_THRESHOLD
+        # Interventions are bounded, and the count is reported in the evidence.
+        assert result.evidence["forced_passes"] == MAX_FORCED_PASSES
+        assert (
+            sum(1 for answer in client.submitted if answer == ("option_id", 1))
+            == MAX_FORCED_PASSES
+        )
+
+    def test_real_progress_never_forces_pass(self):
+        client = FakeProgressClient()
+        result = run_witness(
+            client,
+            build_scenario(combo_ab()),
+            self._policy(),
+            seeds=[1],
+            max_iterations=6,
+            max_decisions=12,
+        )
+        # Mana grows between every pair of samples, so this is progress, not a
+        # spin: the guard must never take the offered pass option.
+        assert ("option_id", 1) not in client.submitted
+        assert result.evidence["forced_passes"] == 0
+        assert any(
+            delta.get("mana", 0) > 0 for delta in result.resource_deltas
         )
 
 

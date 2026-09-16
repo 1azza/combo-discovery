@@ -139,6 +139,19 @@ GROWTH_KEYS = (
 #: loop.  Only these keys count as a real, game-state resource.
 GAME_STATE_GROWTH_KEYS = ("mana", "tokens", "life", "damage", "permanents")
 
+#: Consecutive observations with an unchanged structural signature and no
+#: game-state resource growth before the driver forces a phase-advancing pass.
+#: A ``Kiki-Jiki + Pestermite`` loop also has a constant signature but grows
+#: ``tokens`` every iteration, so it never reaches this threshold; a pilot
+#: spinning on a no-op (e.g. repeatedly equipping inside turn 1) does and is
+#: nudged to the next phase, where its real trigger can fire.
+SPIN_THRESHOLD = 2
+
+#: Hard cap on forced passes per witness run: a line that cannot make progress
+#: still terminates instead of passing forever (after the cap the policy's own
+#: answers are used again, exactly as before this fix).
+MAX_FORCED_PASSES = 8
+
 #: Word-boundary matchers for the tap/untap modal choice.  The ``\b`` before
 #: ``tap`` is essential: "untap" must never be read as an occurrence of "tap"
 #: (otherwise a modal "Tap or untap target creature" could resolve to tap and
@@ -1340,6 +1353,28 @@ def _grown_between(before: dict[str, int], after: dict[str, int]) -> list[str]:
     return sorted(grown)
 
 
+def _game_state_grew(before: dict[str, int], after: dict[str, int]) -> bool:
+    """True when any *game-state* resource grew between two samples.
+
+    Restricted to :data:`GAME_STATE_GROWTH_KEYS` on purpose: the event counters
+    ``casts``/``spells_resolved`` are driven by the policy's own repeated
+    actions, so a static board the pilot keeps poking shows counter growth with
+    no real progress.  Such a pair is a *spin*, not a loop iteration.
+    """
+    return any(
+        int(after.get(key, 0)) > int(before.get(key, 0))
+        for key in GAME_STATE_GROWTH_KEYS
+    )
+
+
+def _pass_option(options: Sequence[pb.Option]) -> pb.Option | None:
+    """The first ``kind == "pass"`` option in a PRIORITY request, if any."""
+    for option in options:
+        if str(option.kind or "").strip().lower() == "pass":
+            return option
+    return None
+
+
 def detect_loop(
     observations: Sequence[Observation],
 ) -> tuple[str, dict[str, Any]]:
@@ -1703,6 +1738,8 @@ def _run_witness_seed(
         iterations_done = 0
         iteration_seen = 0  # watermark over policy.iterations
         triggers_seen = 0  # watermark over the policy's total trigger credit
+        spin_samples = 0  # consecutive no-progress observations
+        forced_passes = 0  # phase-advancing passes forced by the spin guard
 
         def _trigger_total() -> int:
             """Current total trigger credit (0 for policies without the field)."""
@@ -1745,20 +1782,33 @@ def _run_witness_seed(
             Called once *before* the loop (baseline), once per completed
             iteration, and once per new-trigger boundary, so a trigger-driven
             line still records the "before" and "after" samples the detector
-            needs.  Also advances the ``triggers_seen`` watermark.
+            needs.  Also advances the ``triggers_seen`` watermark and tracks
+            the run of no-progress samples that flags a pilot spin.
             """
-            nonlocal triggers_seen
+            nonlocal triggers_seen, spin_samples
             state = client.get_state(game_id, view_as_player=view_as_player)
             triggers_seen = credit_events()
-            observations.append(
-                build_observation(
-                    label,
-                    state,
-                    cast_count=cast_count,
-                    spells_resolved=spells_resolved,
-                    event_seq=event_cursor,
-                )
+            observation = build_observation(
+                label,
+                state,
+                cast_count=cast_count,
+                spells_resolved=spells_resolved,
+                event_seq=event_cursor,
             )
+            observations.append(observation)
+            # A spin is a consecutive pair with an unchanged (non-empty)
+            # structural signature and no game-state resource growth.  Only the
+            # event counters may grow; a genuine loop grows tokens/mana/life/...
+            if len(observations) >= 2:
+                previous = observations[-2]
+                if (
+                    observation.signature
+                    and observation.signature == previous.signature
+                    and not _game_state_grew(previous.resources, observation.resources)
+                ):
+                    spin_samples += 1
+                else:
+                    spin_samples = 0
 
         # Pre-loop baseline sample.
         capture_observation(0)
@@ -1776,6 +1826,31 @@ def _run_witness_seed(
                 continue
             ctx = DecisionContext(request=req)
             answer = policy(ctx)
+            # Spin guard: once the combo player's own priority decisions have
+            # produced ``SPIN_THRESHOLD`` consecutive no-progress samples, a
+            # no-op action is being repeated instead of advancing the phase.
+            # Take the engine's "pass" option instead of the policy's answer so
+            # the step/turn can progress (e.g. into combat, where a beginning-
+            # of-combat trigger can fire).  Bounded by ``MAX_FORCED_PASSES``.
+            force_pass = (
+                forced_passes < MAX_FORCED_PASSES
+                and spin_samples >= SPIN_THRESHOLD
+                and req.decision_type == pb.DECISION_TYPE_PRIORITY
+                and req.player == player
+            )
+            pass_option = _pass_option(req.options) if force_pass else None
+            if pass_option is not None:
+                answer = ("option_id", int(pass_option.id))
+                forced_passes += 1
+                spin_samples = 0  # fresh evidence needed for the next force
+                note = (
+                    f"forced pass {forced_passes}/{MAX_FORCED_PASSES} after "
+                    f"{SPIN_THRESHOLD} spinning samples "
+                    f"(turn {req.turn}, phase {req.phase or '?'})"
+                )
+                policy_notes = getattr(policy, "notes", None)
+                if isinstance(policy_notes, list):
+                    policy_notes.append(note)
             try:
                 client.submit_decision(game_id, req.decision_id, answer)
             except GameNotActiveError:
@@ -1822,7 +1897,11 @@ def _run_witness_seed(
         event_end_seq = int(client.poll_events(game_id, event_cursor).next_cursor)
         diagnostics = _policy_diagnostics(policy)
         verdict, evidence = detect_loop(observations)
-        evidence = {**evidence, "diagnostics": diagnostics}
+        evidence = {
+            **evidence,
+            "diagnostics": diagnostics,
+            "forced_passes": int(forced_passes),
+        }
         if int(diagnostics.get("executed_actions", 0)) == 0:
             # The policy never matched a single offered option to a link: report
             # the diagnostic instead of a silent zero-iteration result.
@@ -2254,10 +2333,12 @@ __all__ = [
     "DEFAULT_GRAVEYARD",
     "DEFAULT_WITNESS_DECKS",
     "LinkPlan",
+    "MAX_FORCED_PASSES",
     "MAX_PREGAME_DECISIONS",
     "Observation",
     "PlayerScenario",
     "Scenario",
+    "SPIN_THRESHOLD",
     "WITNESS_POLICY_VERSION",
     "WitnessPolicy",
     "WitnessResult",
