@@ -361,3 +361,38 @@ drained. Root cause found: the harness's FullState mana reader used
 generic shards, so a pure-generic cost looked free. Fixed in the harness by
 summing both keys. `The Jolly Balloon Man` now reports 48 and drains per pass ->
 `inconclusive`, as does Orthion; the genuine loops are unchanged.
+
+## Search player (C)
+
+Goal: a goal-directed player that finds a legal decision sequence producing a
+loop, since the scripted policy only follows a fixed recipe. Built additively in
+`src/combo_discovery/search.py`; the witness driver and the harness are untouched.
+
+| milestone | what | status |
+|---|---|---|
+| M1 | `search_for_repeat` — deterministic DFS over PRIORITY options with snapshot/restore backtracking, bounded by `max_nodes`/`max_depth`/`max_branch`, seeking a sequence where a named card fires twice | done |
+| M2 | `search_then_verify` — replay the found sequence through `run_witness` (`SequentialPolicy`) so `detect_loop` decides | done |
+| M3 | `witness_with_search` fallback + `known_recall --search` | done, **measured +0** |
+| M4a | harness snapshot/restore for *non-priority* decisions | **not bounded** — priority has an "ask me again" contract (empty list); the non-priority callbacks have none and fall back to an abort NO-OP, so a real fix needs engine-level re-entrancy |
+| M4a' | `search_by_replay` — hybrid replay branching: branch at a non-priority decision by replaying the game from the start with one substituted answer (the harness is deterministic) | done, **0/7 payoff** |
+| M4b | `search_for_loops` — make the judge's verdict the objective: verify the baseline, then one sequence per recorded variant; first `loops` wins, else the strongest verdict | done, **0/7 loops** |
+
+Measured findings (the 70-pair recall slice unless noted):
+
+- The search fallback changed **zero** verdicts (triggered 3/17 and activated
+  22/53 with and without `--search`), at ~1.8x wall-clock.
+- Replay branching flipped **0 of 7** triggered-inconclusive pairs, and the "fires
+  twice" objective was reached in the *baseline* by 2 of them — so the objective,
+  not the branching, was the problem.
+- M4b (verdict-directed) still found **0/7 loops**; the failures are
+  driver/observation reasons ("need at least two post-baseline observations",
+  counter-only growth, policy-never-matched), i.e. those pairs do not loop on the
+  injected board, or need conditions/objects the scenario does not provide.
+
+Conclusion: the search machinery is built and aimed at the judge, but it cannot
+manufacture a loop that is not there. The blocked recall on the triggered class is
+a property of the candidate set and of scenario staging, not of search power.
+
+Known limitation: `SequentialPolicy` replays positionally, so once a variant
+diverges the decision types can differ and a recorded answer lands on the wrong
+type; `run_witness` reports that as `error` (ranked weakest, never overriding).
