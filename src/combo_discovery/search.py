@@ -6,6 +6,11 @@ snapshot/restore backtracking, looking for a legal decision sequence in which
 a NAMED card's ``SpellCast`` event fires at least twice (one event per physical
 fire — ``SpellResolved`` is not counted, or a single trigger would score two).
 
+Second milestone: :func:`search_then_verify` turns a searched path into a real
+verdict by replaying the recorded answer sequence through the existing witness
+driver (:class:`SequentialPolicy`), so ``detect_loop`` — not the search's proxy
+— decides.  The search summary is preserved in the result evidence.
+
 This is deliberately tiny: no ML, no heuristic scoring.  The only ordering is
 the fixed, documented candidate order in :func:`_ordered_candidates`; the only
 pruning is ``max_nodes`` / ``max_depth`` / ``max_branch``.
@@ -28,9 +33,17 @@ from typing import Any
 
 from .env import Answer, GameNotActiveError, StaleDecisionError
 from .generated import forge_env_pb2 as pb
-from .runner import DecisionContext
+from .runner import DecisionContext, default_policy
+from .witness import (
+    Scenario,
+    WitnessPolicy,
+    WitnessResult,
+    _absolute_deck_paths,
+    _drive_pregame,
+    run_witness,
+)
 
-__all__ = ["SearchResult", "search_for_repeat"]
+__all__ = ["SearchResult", "SequentialPolicy", "search_for_repeat", "search_then_verify"]
 
 _PRIORITY = pb.DECISION_TYPE_PRIORITY
 # One physical ability/trigger emits BOTH SpellCast and SpellResolved, so only
@@ -143,6 +156,60 @@ def _ordered_candidates(
     add(pass_option)
 
     return [("option_id", int(o.id)) for o in ordered[: max(1, int(max_branch))]]
+
+
+class SequentialPolicy(WitnessPolicy):
+    """Replay recorded answers positionally, then delegate to ``base``.
+
+    A searched path (``SearchResult.trace``) is a sequence of answers, not a
+    board: replaying it through the witness driver is what lets ``detect_loop``
+    judge the line.  This policy consumes the recorded answers in order and,
+    once exhausted, hands every further decision to ``base`` (a
+    :class:`WitnessPolicy` by default).  Subclassing :class:`WitnessPolicy`
+    keeps the driver's ``new_game``/``iterations``/``link_hits``/
+    ``trigger_hits``/``note_card_event``/``diagnostics`` contract intact, so
+    trigger credit and per-link diagnostics still work during the replay.
+    """
+
+    def __init__(
+        self,
+        answers: Sequence[Answer],
+        *,
+        base: Callable[[DecisionContext], Answer] | None = None,
+        combo: Any = None,
+        **kwargs: Any,
+    ):
+        self._replay: list[Answer] = list(answers)
+        self._base = base
+        self._pos = 0
+        super().__init__(combo, **kwargs)
+
+    @property
+    def replayed(self) -> int:
+        """How many recorded answers have been consumed so far."""
+        return int(self._pos)
+
+    def new_game(self) -> None:
+        """Reset the replay position (called by the driver on a fresh game)."""
+        self._pos = 0
+        super().new_game()
+        if self._base is not None:
+            reset = getattr(self._base, "new_game", None)
+            if callable(reset):
+                reset()
+
+    def __call__(self, ctx: DecisionContext) -> Answer:
+        if self._pos < len(self._replay):
+            answer = self._replay[self._pos]
+            self._pos += 1
+            self.decisions += 1
+            self.answers.append(answer)
+            return answer
+        if self._base is not None:
+            answer = self._base(ctx)
+            self.answers.append(answer)
+            return answer
+        return super().__call__(ctx)
 
 
 def search_for_repeat(
@@ -341,3 +408,114 @@ def search_for_repeat(
             f"(nodes<={max_nodes}, depth<={max_depth}, branch<={max_branch})"
         ),
     )
+
+
+def search_then_verify(
+    client: Any,
+    scenario: Scenario,
+    combo: Any,
+    *,
+    target: str,
+    seeds: int | Sequence[int] = 1,
+    max_iterations: int = 6,
+    max_decisions: int = 256,
+    decks: Sequence[tuple[str, str]],
+    search_nodes: int = 200,
+    search_depth: int = 60,
+) -> WitnessResult:
+    """Search for a repeated trigger, then replay the path through the judge.
+
+    Phase A runs :func:`search_for_repeat` on a throwaway game (same seed,
+    same injected ``scenario``) to find an answer sequence.  Phase B replays
+    exactly those answers through :func:`witness.run_witness` with a
+    :class:`SequentialPolicy`, so the existing observation sampler and
+    ``detect_loop`` decide the verdict instead of the search's proxy.
+
+    The search summary is copied into ``result.evidence`` (``search_nodes``,
+    ``search_depth``, ``search_fires``, ``search_reason``, ...).  If Phase A
+    finds nothing, the returned verdict is ``inconclusive`` with a reason
+    naming the search bounds: no verdict is invented.
+    """
+    seed_list = [int(seeds)] if isinstance(seeds, int) else [int(s) for s in seeds]
+    if not seed_list:
+        raise ValueError("search_then_verify needs at least one seed")
+    deck_list = _absolute_deck_paths(
+        [(str(name), str(path)) for name, path in decks]
+    )
+    search_seed = seed_list[0]
+
+    # -- Phase A: bounded search on a throwaway game ------------------------
+    game_id = client.start_game(
+        deck_list,
+        search_seed,
+        player_types=[pb.PLAYER_TYPE_REMOTE, pb.PLAYER_TYPE_GOLDFISH],
+    )
+    try:
+        _drive_pregame(client, game_id, default_policy)
+        client.setup_scenario(game_id, scenario)
+        client.get_decision(game_id)
+        search = search_for_repeat(
+            client,
+            game_id,
+            target=target,
+            policy=WitnessPolicy(combo),
+            prefer_cards=combo.cards,
+            max_nodes=search_nodes,
+            max_depth=search_depth,
+        )
+    finally:
+        # The caller owns the game lifecycle beyond this call.
+        try:
+            client.stop_game(game_id)
+        except Exception:  # noqa: BLE001 - never mask the search outcome
+            pass
+
+    provenance: dict[str, Any] = {
+        "search_nodes": int(search.nodes),
+        "search_depth": int(search.depth),
+        "search_fires": int(search.trigger_count),
+        "search_target": str(target),
+        "search_reason": str(search.reason),
+        "search_trace_len": len(search.trace),
+    }
+
+    if not search.success or not search.trace:
+        return WitnessResult(
+            verdict="inconclusive",
+            scenario=scenario,
+            iterations=0,
+            seed=search_seed,
+            seeds=seed_list,
+            evidence={
+                "reason": (
+                    "search found no path where the target fired "
+                    f"{_SUCCESS_TARGET} times within bounds "
+                    f"(search_nodes={int(search_nodes)}, "
+                    f"search_depth={int(search_depth)})"
+                ),
+                **provenance,
+            },
+            candidate_kind=str(getattr(combo, "kind", "")),
+            candidate_key=str(getattr(combo, "key", "")),
+            card_names=tuple(getattr(combo, "cards", ())),
+            infinite=bool(getattr(combo, "infinite", False)),
+        )
+
+    # -- Phase B: replay the searched answers through the witness driver ----
+    answers = [entry[2] for entry in search.trace]
+    policy = SequentialPolicy(answers, base=WitnessPolicy(combo), combo=combo)
+    result = run_witness(
+        client,
+        scenario,
+        policy,
+        seeds=seed_list,
+        max_iterations=int(max_iterations),
+        max_decisions=int(max_decisions),
+        decks=deck_list,
+        candidate_kind=str(getattr(combo, "kind", "")),
+        candidate_key=str(getattr(combo, "key", "")),
+        card_names=tuple(getattr(combo, "cards", ())),
+        infinite=bool(getattr(combo, "infinite", False)),
+    )
+    result.evidence = {**result.evidence, **provenance, "replayed_answers": len(answers)}
+    return result

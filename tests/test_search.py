@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from combo_discovery.env import GameNotActiveError
 from combo_discovery.generated import forge_env_pb2 as pb
-from combo_discovery.search import SearchResult, search_for_repeat
+from combo_discovery.runner import DecisionContext
+from combo_discovery.search import (
+    SearchResult,
+    SequentialPolicy,
+    search_for_repeat,
+    search_then_verify,
+)
+from combo_discovery.witness import Candidate, LinkPlan, WitnessPolicy, build_scenario
 
 TARGET = "TargetCard"
 
@@ -152,3 +159,127 @@ def test_search_reports_no_decision_when_game_not_active():
     assert result.success is False
     assert result.nodes == 0
     assert "no outstanding decision" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# SequentialPolicy (replay) + search_then_verify
+# ---------------------------------------------------------------------------
+
+
+def _priority_ctx(options):
+    return DecisionContext(
+        request=pb.DecisionRequest(
+            game_id=1,
+            decision_id=1,
+            player=0,
+            turn=1,
+            phase="Main1",
+            decision_type=pb.DECISION_TYPE_PRIORITY,
+            options=list(options),
+        )
+    )
+
+
+class _RecordingBase:
+    def __init__(self, answer):
+        self.answer = answer
+        self.calls = 0
+
+    def __call__(self, ctx):
+        self.calls += 1
+        return self.answer
+
+
+def test_sequential_policy_replays_then_delegates():
+    first, second = ("option_id", 1), ("option_id", 2)
+    base = _RecordingBase(("option_id", 9))
+    policy = SequentialPolicy([first, second], base=base, links=[LinkPlan("A", "B")])
+    ctx = _priority_ctx([pb.Option(id=0, kind="pass", card_name="")])
+
+    assert isinstance(policy, WitnessPolicy)
+    assert policy(ctx) == first
+    assert policy(ctx) == second
+    assert base.calls == 0
+    assert policy(ctx) == ("option_id", 9)
+    assert base.calls == 1
+    assert policy.replayed == 2
+
+    # The driver calls new_game() on every fresh game; the replay resets.
+    policy.new_game()
+    assert policy.replayed == 0
+    assert policy(ctx) == first
+
+    # WitnessPolicy-compatible surface for the driver's diagnostics/gate.
+    assert hasattr(policy, "note_card_event")
+    assert hasattr(policy, "iterations")
+    assert hasattr(policy, "link_hits")
+    assert hasattr(policy, "trigger_hits")
+    assert isinstance(policy.diagnostics(), dict)
+
+
+class FakeVerifyClient:
+    """Minimal harness fake where the Phase A search fails."""
+
+    def __init__(self):
+        self.game_id = 55
+        self.start_calls = []
+        self.stopped = []
+        self._decision = 0
+
+    def start_game(self, decks, seed, player_types=None, **kwargs):
+        self.start_calls.append((list(decks), int(seed), list(player_types or [])))
+        return self.game_id
+
+    def stop_game(self, game_id):
+        self.stopped.append(game_id)
+
+    def is_game_over(self, game_id):
+        return pb.GameOver(over=False)
+
+    def get_decision(self, game_id):
+        self._decision += 1
+        return pb.DecisionRequest(
+            game_id=game_id,
+            decision_id=self._decision,
+            player=0,
+            turn=1,
+            phase="Main1",
+            decision_type=pb.DECISION_TYPE_PRIORITY,
+            options=[pb.Option(id=0, kind="pass", card_name="")],
+        )
+
+    def setup_scenario(self, game_id, scenario):
+        return "H0", 1
+
+    def poll_events(self, game_id, cursor=0):
+        return pb.EventBatch(next_cursor=int(cursor))
+
+    def submit_decision(self, game_id, decision_id, answer):
+        return pb.StepResult()
+
+
+def test_search_then_verify_search_failure_is_inconclusive():
+    client = FakeVerifyClient()
+    combo = Candidate(cards=("A", "B"), type_lines=("Creature", "Enchantment"))
+    scenario = build_scenario(combo)
+
+    result = search_then_verify(
+        client,
+        scenario,
+        combo,
+        target=TARGET,
+        decks=[("A", "decks/goldfish_A.dck"), ("B", "decks/goldfish_B.dck")],
+        search_nodes=1,
+        search_depth=1,
+    )
+
+    # No verdict is invented: the search failure is reported as inconclusive.
+    assert result.verdict == "inconclusive"
+    assert "search found no path" in result.evidence["reason"]
+    assert result.evidence["search_nodes"] == 1
+    assert result.evidence["search_depth"] == 0
+    assert result.evidence["search_fires"] == 0
+    assert result.evidence["search_trace_len"] == 0
+    # Phase A started and stopped a game; Phase B never ran.
+    assert len(client.start_calls) == 1
+    assert client.stopped == [client.game_id]
