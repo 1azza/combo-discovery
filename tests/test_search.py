@@ -10,6 +10,7 @@ from combo_discovery.search import (
     SearchResult,
     SequentialPolicy,
     search_by_replay,
+    search_for_loops,
     search_for_repeat,
     search_then_verify,
     witness_with_search,
@@ -592,3 +593,89 @@ def test_search_by_replay_is_bounded_when_no_variant_fires():
     assert "no replay variant" in result.reason
     assert client.start_calls <= 3 + 1
     assert result.nodes <= 20 * (3 + 1)
+
+
+# ---------------------------------------------------------------------------
+# search_for_loops (goal = the judge's verdict)
+# ---------------------------------------------------------------------------
+
+
+def test_search_for_loops_prefers_variant_loops_over_inconclusive(monkeypatch):
+    """A variant sequence submitted through SequentialPolicy wins over the
+    baseline's inconclusive.  ``run_witness`` is stubbed because modelling the
+    real loop detector is not the unit under test; sequence selection and
+    verdict preference are."""
+    client = FakeReplayClient()
+    scenario, combo = _replay_combo_scenario()
+    seen: list = []
+
+    def fake_run_witness(client_arg, scenario_arg, policy, **kwargs):
+        seen.append(policy)
+        if isinstance(policy, SequentialPolicy) and (
+            ("attackers", []) in policy._replay
+        ):
+            return WitnessResult(
+                verdict="loops",
+                scenario=scenario_arg,
+                iterations=1,
+                evidence={"reason": "judge says loops"},
+            )
+        return WitnessResult(
+            verdict="inconclusive",
+            scenario=scenario_arg,
+            iterations=0,
+            evidence={"reason": "baseline inconclusive"},
+        )
+
+    monkeypatch.setattr(search_mod, "run_witness", fake_run_witness)
+
+    result = search_for_loops(
+        client,
+        scenario,
+        combo,
+        seeds=1,
+        max_iterations=6,
+        max_decisions=20,
+        decks=DECKS,
+        max_sequences=8,
+    )
+
+    assert result.verdict == "loops"
+    assert result.evidence["reason"] == "judge says loops"
+    assert result.evidence["search_kind"] == "loops"
+    assert result.evidence["best_verdict"] == "loops"
+    assert result.evidence["sequences_tried"] == 2
+    # The baseline (plain WitnessPolicy) was verified first, then a
+    # SequentialPolicy carrying the substituted variant.
+    assert isinstance(seen[0], WitnessPolicy)
+    assert not isinstance(seen[0], SequentialPolicy)
+    assert any(
+        isinstance(p, SequentialPolicy) and ("attackers", []) in p._replay
+        for p in seen
+    )
+
+
+def test_search_for_loops_returns_strongest_without_loops(monkeypatch):
+    client = FakeReplayClient()
+    scenario, combo = _replay_combo_scenario()
+    calls = {"n": 0}
+
+    def fake_run_witness(client_arg, scenario_arg, policy, **kwargs):
+        calls["n"] += 1
+        verdict = "refuted" if calls["n"] == 2 else "inconclusive"
+        return WitnessResult(
+            verdict=verdict, scenario=scenario_arg, iterations=0,
+            evidence={"reason": verdict},
+        )
+
+    monkeypatch.setattr(search_mod, "run_witness", fake_run_witness)
+
+    result = search_for_loops(
+        client, scenario, combo, seeds=1, max_decisions=20, decks=DECKS,
+        max_sequences=2,
+    )
+
+    # inconclusive > refuted, and max_sequences=2 means baseline + one variant.
+    assert result.verdict == "inconclusive"
+    assert result.evidence["sequences_tried"] == 2
+    assert result.evidence["best_verdict"] == "inconclusive"

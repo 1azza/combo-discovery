@@ -49,6 +49,7 @@ __all__ = [
     "SearchResult",
     "SequentialPolicy",
     "search_by_replay",
+    "search_for_loops",
     "search_for_repeat",
     "search_then_verify",
     "witness_with_search",
@@ -61,6 +62,10 @@ _TRIGGER_EVENTS = ("SpellCast",)
 _SETUP_KINDS = ("activate", "play_card")
 _PASS_KIND = "pass"
 _SUCCESS_TARGET = 2
+#: Branch cap used when recording PRIORITY alternatives for the loop search.
+_SEQUENCE_BRANCH = 3
+#: Verdict preference for picking the strongest result across sequences.
+_VERDICT_PREFERENCE = ("loops", "inconclusive", "no_loop", "refuted", "error")
 
 
 @dataclass
@@ -720,12 +725,14 @@ def _play_replay(
     recorded: Sequence[tuple[int, Answer, list[Answer]]] | None = None,
     variant_index: int = -1,
     variant_answer: Answer | None = None,
+    stop_on_success: bool = True,
 ) -> tuple[int, int, list[tuple[int, Answer, list[Answer]]], bool]:
     """Drive one game; return ``(fires, submissions, steps, success)``.
 
     ``recorded is None`` is the baseline (the policy drives and variants are
     collected); otherwise the game replays ``recorded`` with one answer
-    substituted at ``variant_index``.
+    substituted at ``variant_index``.  ``stop_on_success=False`` keeps driving
+    past two target fires, so a full baseline sequence is recorded.
     """
     _drive_pregame(client, game_id, default_policy)
     client.setup_scenario(game_id, scenario)
@@ -754,16 +761,17 @@ def _play_replay(
             break
         # Events from the engine advancing to this decision.
         poll()
-        if fires >= _SUCCESS_TARGET:
+        if stop_on_success and fires >= _SUCCESS_TARGET:
             return fires, submissions, steps, True
         ctx = DecisionContext(request=req)
         if recorded is None:
             answer = policy(ctx)
-            variants = (
-                []
-                if ctx.decision_type == _PRIORITY
-                else _variants_for(ctx, answer, prefer_cards)
-            )
+            if ctx.decision_type == _PRIORITY:
+                # Alternative option ids from the deterministic branch order.
+                ordered = _ordered_candidates(ctx, answer, prefer_cards, _SEQUENCE_BRANCH)
+                variants = [candidate for candidate in ordered if candidate != answer]
+            else:
+                variants = _variants_for(ctx, answer, prefer_cards)
         else:
             answer = _replay_answer(
                 index, ctx, recorded, variant_index, variant_answer, policy
@@ -776,7 +784,7 @@ def _play_replay(
         submissions += 1
         poll()
         steps.append((ctx.decision_type, answer, variants))
-        if fires >= _SUCCESS_TARGET:
+        if stop_on_success and fires >= _SUCCESS_TARGET:
             return fires, submissions, steps, True
         index += 1
     return fires, submissions, steps, False
@@ -917,3 +925,170 @@ def search_by_replay(
             f"max_decisions={max_decisions})"
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Goal-directed search for the judge's verdict (M4b)
+# ---------------------------------------------------------------------------
+
+
+def _sequence_variants(
+    recorded: Sequence[tuple[int, Answer, list[Answer]]],
+):
+    """Yield ``(index, variant)`` in the recorded order (deterministic)."""
+    for index, (_decision_type, _answer, variants) in enumerate(recorded):
+        for variant in variants:
+            yield index, variant
+
+
+def _verdict_rank(verdict: str) -> int:
+    """Lower is stronger; unknown verdicts rank weakest."""
+    try:
+        return _VERDICT_PREFERENCE.index(str(verdict))
+    except ValueError:
+        return len(_VERDICT_PREFERENCE)
+
+
+def _with_loop_provenance(
+    result: WitnessResult, sequences_tried: int, best_verdict: str
+) -> WitnessResult:
+    result.evidence = {
+        **(result.evidence or {}),
+        "sequences_tried": int(sequences_tried),
+        "best_verdict": str(best_verdict),
+        "search_kind": "loops",
+    }
+    return result
+
+
+def _record_baseline(
+    client: Any,
+    scenario: Scenario,
+    combo: Any,
+    *,
+    seed: int,
+    deck_list: Sequence[tuple[str, str]],
+    player_types: Sequence[int],
+    max_decisions: int,
+    prefer_cards: Sequence[str],
+) -> list[tuple[int, Answer, list[Answer]]]:
+    """Drive one full policy game and return its recorded steps.
+
+    Reuses :func:`_play_replay` with ``stop_on_success=False`` so the whole game
+    is recorded (not truncated at two target fires), and always stops the game.
+    """
+    game_id = client.start_game(deck_list, int(seed), player_types=list(player_types))
+    steps: list[tuple[int, Answer, list[Answer]]] = []
+    try:
+        _fires, _submissions, steps, _success = _play_replay(
+            client,
+            game_id,
+            scenario,
+            WitnessPolicy(combo),
+            target="",
+            max_decisions=int(max_decisions),
+            prefer_cards=prefer_cards,
+            recorded=None,
+            stop_on_success=False,
+        )
+    except Exception:  # noqa: BLE001 - a dead recording game yields no sequence
+        steps = []
+    finally:
+        try:
+            client.stop_game(game_id)
+        except Exception:  # noqa: BLE001 - never mask the outcome
+            pass
+    return steps
+
+
+def search_for_loops(
+    client: Any,
+    scenario: Scenario,
+    combo: Any,
+    *,
+    seeds: int | Sequence[int] = 1,
+    max_iterations: int = 6,
+    max_decisions: int = 256,
+    decks: Sequence[tuple[str, str]],
+    max_sequences: int = 8,
+    player_types: Sequence[int] | None = None,
+) -> WitnessResult:
+    """Search for a decision sequence that the loop judge calls ``loops``.
+
+    The objective is the witness verdict, not the "target fires twice" proxy.
+    A baseline policy game is recorded (one full sequence), verified with the
+    ordinary driver, and then one candidate sequence per recorded decision
+    index with a variant is verified through :class:`SequentialPolicy`; the
+    first ``loops`` wins, otherwise the strongest verdict (``loops >
+    inconclusive > no_loop > refuted > error``) is returned.  At most
+    ``max_sequences`` sequences are verified (the baseline counts as one).
+    Provenance (``sequences_tried``, ``best_verdict``, ``search_kind``) is
+    merged into the returned evidence.
+    """
+    seed_list = [int(seeds)] if isinstance(seeds, int) else [int(s) for s in seeds]
+    if not seed_list:
+        raise ValueError("search_for_loops needs at least one seed")
+    deck_list = _absolute_deck_paths(
+        [(str(name), str(path)) for name, path in decks]
+    )
+    types = (
+        list(player_types)
+        if player_types is not None
+        else [pb.PLAYER_TYPE_REMOTE, pb.PLAYER_TYPE_GOLDFISH]
+    )
+    max_sequences = max(1, int(max_sequences))
+    prefer = tuple(getattr(combo, "cards", ()) or ())
+    candidate = {
+        "candidate_kind": str(getattr(combo, "kind", "")),
+        "candidate_key": str(getattr(combo, "key", "")),
+        "card_names": tuple(getattr(combo, "cards", ())),
+        "infinite": bool(getattr(combo, "infinite", False)),
+    }
+
+    def verify(policy: Callable[[DecisionContext], Answer]) -> WitnessResult:
+        return run_witness(
+            client,
+            scenario,
+            policy,
+            seeds=seed_list,
+            max_iterations=int(max_iterations),
+            max_decisions=int(max_decisions),
+            decks=deck_list,
+            **candidate,
+        )
+
+    # 1. Baseline recording (full policy game, reused helpers).
+    recorded = _record_baseline(
+        client,
+        scenario,
+        combo,
+        seed=seed_list[0],
+        deck_list=deck_list,
+        player_types=types,
+        max_decisions=int(max_decisions),
+        prefer_cards=prefer,
+    )
+
+    # 2. Verify the baseline with the ordinary driver.
+    best = verify(WitnessPolicy(combo))
+    sequences_tried = 1
+    if best.verdict == "loops":
+        return _with_loop_provenance(best, sequences_tried, "loops")
+
+    # 3./4. One candidate sequence per recorded variant, verified in order.
+    base_answers = [answer for (_dt, answer, _variants) in recorded]
+    for index, variant in _sequence_variants(recorded):
+        if sequences_tried >= max_sequences:
+            break
+        answers = list(base_answers)
+        answers[index] = variant
+        policy = SequentialPolicy(answers, base=WitnessPolicy(combo), combo=combo)
+        result = verify(policy)
+        sequences_tried += 1
+        if _verdict_rank(result.verdict) < _verdict_rank(best.verdict):
+            best = result
+        if result.verdict == "loops":
+            return _with_loop_provenance(result, sequences_tried, "loops")
+
+    # 5. No loop: return the strongest verdict seen (never invent one).
+    return _with_loop_provenance(best, sequences_tried, best.verdict)
