@@ -1,19 +1,27 @@
-"""Lever 2: recent copy engines x established partner shapes.
+"""Lever 2: recent engines x established partner shapes.
 
-Commander Spellbook reliably lags on brand-new sets, but the witness policy can
-only drive *activated* copy engines (a ``{...}`` cost that creates a token copy
-of a creature) — the Kiki-Jiki / Splinter Twin shape.  So the highest-yield
-direction is the transpose of :mod:`analogue_transfer`: enumerate activated copy
-engines printed in recent sets, cross them with the established functional
-ETB-untapper partners, drop anything Spellbook already catalogues, and run the
+Commander Spellbook reliably lags on brand-new sets.  This instrument enumerates
+recent-set *engines* and crosses them with the established partner shapes the
+witness policy already drives, drops anything Spellbook catalogues, and runs the
 real witness verifier.
 
-This is how recent-set "Kiki-likes" surface against the partner shapes the
-verifier already handles.  Survivors are candidate uncatalogued combos; they
-still need the independent second source before anyone calls them novel.
+Two engine classes are supported (``--engine-class``):
+
+``copy`` (default)
+    An activated ability that creates a token copy of a creature — the
+    Kiki-Jiki / Splinter Twin shape.  Partners are the functional ETB-untappers
+    from :mod:`analogue_transfer` plus the known engines.
+``tap``
+    A free ``{T}:`` activated engine (the tap is the whole cost), closed by any
+    card that untaps a permanent — the Kiki/Pestermite shape generalised.
+    Partners are untappers of any shape.
+
+Survivors are candidate uncatalogued combos; they still need the independent
+second source before anyone calls them novel.
 
 Usage:
     uv run python scripts/recent_engines.py --since 2024 --max-pairs 25 --persist
+    uv run python scripts/recent_engines.py --engine-class tap --since 2024
 """
 
 from __future__ import annotations
@@ -86,6 +94,37 @@ _ACTIVATED_COPY_ENGINE = re.compile(
     re.IGNORECASE,
 )
 
+#: A ``{T}`` that is immediately followed by ``:`` — i.e. the tap is the whole
+#: cost (the ability boundary check below rules out ``{2}{W}, {T}:`` shapes).
+_TAP_ACTIVATED = re.compile(r"\{t\}\s*:", re.IGNORECASE)
+
+#: Ability boundaries used to tell whether ``{T}`` is the first cost component.
+_ABILITY_BOUNDARY = re.compile(r'[."\u2014\u2022]')
+
+#: An activated ability this class excludes: per-turn / activation limits cannot
+#: loop.  Applied to the ability text (cost + effect).
+_TAP_LIMIT = re.compile(r"activate only|once each turn|only once", re.IGNORECASE)
+
+#: A ``{T}:`` ability that creates a token copy (the copy class already covers
+#: these, whatever the copied permanent's type).
+_TAP_COPY_EFFECT = re.compile(
+    r"create [^.\n]*?tokens?[^.\n]*?cop(?:y|ies)", re.IGNORECASE
+)
+
+#: A pure mana effect: starts with "add" and has no other action.
+_MANA_EFFECT = re.compile(r"^\s*add\b", re.IGNORECASE)
+_NON_MANA_VERB = re.compile(
+    r"\b(create|draw|deal|destroy|exile|return|put|counter|sacrifice|discard|"
+    r"mill|look|search|tap|untap|copy|gain|lose|damage|proliferate|scry|"
+    r"surveil|transform|fight|regenerate|shuffle|investigate|attach|double|"
+    r"remove|choose|reveal)\b",
+    re.IGNORECASE,
+)
+
+#: Untappers of any shape: the analogue-transfer ETB pattern plus the other
+#: untap wordings (activated untappers, attack-triggered untappers, ...).
+UNTAP_ANY_PAT = re.compile(UNTAP_PAT.pattern + r"|untap each", re.IGNORECASE)
+
 
 @dataclass(frozen=True)
 class Card:
@@ -119,6 +158,63 @@ def is_etb_untapper(type_line: str, oracle_text: str) -> bool:
     return bool(UNTAP_PAT.search(ot))
 
 
+def _tap_only_effects(oracle_text: str) -> list[str]:
+    """Effects of activated abilities whose *only* cost is ``{T}``.
+
+    For each ``{T}:`` on a line, the text between the previous ability boundary
+    (start of line, period, quote, em-dash, bullet) and the ``{T}`` must be
+    empty — otherwise some other cost (mana, sacrifice, ...) precedes the tap,
+    so the ability is not a free tap engine.
+    """
+    effects: list[str] = []
+    for line in (oracle_text or "").split("\n"):
+        low = line.lower()
+        for match in _TAP_ACTIVATED.finditer(low):
+            prefix = low[: match.start()]
+            cut = 0
+            for boundary in _ABILITY_BOUNDARY.finditer(prefix):
+                cut = boundary.end()
+            if prefix[cut:].strip():
+                continue  # another cost (e.g. {2}{W}, ) sits before the tap
+            effects.append(line[match.end():].strip())
+    return effects
+
+
+def is_pure_mana_ability(effect: str) -> bool:
+    """True for a mana ability with no other effect (ramp, not a loop engine)."""
+    return bool(_MANA_EFFECT.match(effect or "")) and not _NON_MANA_VERB.search(effect)
+
+
+def is_tap_engine(oracle_text: str) -> bool:
+    """True for a free ``{T}:`` activated engine that can loop with an untapper.
+
+    Qualifies when the card has a ``{T}``-only-cost ability that is not pure
+    mana, not a token-copy ability (the copy class covers those) and has no
+    per-turn/activation limit.  Triggered abilities never match (no ``{T}:``).
+    """
+    for effect in _tap_only_effects(oracle_text):
+        if not effect:
+            continue
+        if is_pure_mana_ability(effect):
+            continue
+        if _TAP_COPY_EFFECT.search(effect):
+            continue
+        if _TAP_LIMIT.search(effect):
+            continue
+        return True
+    return False
+
+
+def is_untapper(type_line: str, oracle_text: str) -> bool:
+    """True for an untapper of any shape (activated / ETB / attack trigger).
+
+    The analogue-transfer ETB-untapper pattern plus any card matching
+    ``untap target|untap it|untap that|untap each``.
+    """
+    ot = oracle_text or ""
+    return is_etb_untapper(type_line, ot) or bool(UNTAP_ANY_PAT.search(ot))
+
+
 def _release_year(released_at: str | None) -> int | None:
     if not released_at or len(released_at) < 4:
         return None
@@ -134,17 +230,21 @@ def select_recent_engines(
     *,
     since: int,
     is_legal: Callable[[str], bool],
+    engine_class: str = "copy",
 ) -> list[Card]:
-    """Legal activated copy engines released in ``since`` or later.
+    """Legal engines of ``engine_class`` released in ``since`` or later.
 
     Newest first, then by name, so the cap in :func:`build_pairs` favours the
     freshest sets.
     """
+    predicate = (
+        is_activated_copy_engine if engine_class == "copy" else is_tap_engine
+    )
     out: list[Card] = []
     for card in cards:
         if not is_legal(card.name):
             continue
-        if not is_activated_copy_engine(card.oracle_text):
+        if not predicate(card.oracle_text):
             continue
         year = _release_year(releases.get(card.normalized_name))
         if year is None or year < since:
@@ -159,20 +259,45 @@ def select_partners(
     *,
     is_legal: Callable[[str], bool],
     known_engines: Sequence[str] = (),
+    engine_class: str = "copy",
 ) -> list[str]:
-    """Established partner shapes: ETB-untappers, then the known engines.
+    """Established partner shapes for ``engine_class``.
 
-    Untappers come first so the primary direction (recent engine x untapper) is
-    never crowded out of the cap by the known engines.
+    ``copy``: functional ETB-untappers, then the known engines (untappers first
+    so the primary direction is never crowded out of the cap).
+    ``tap``: untappers of any shape (activated / ETB / attack-triggered).  The
+    ETB-untapper pattern is listed first so the cap favours the established
+    partner shape over the broad ``untap it/that`` spells.
     """
-    untappers = sorted(
-        {
-            card.name
-            for card in cards
-            if is_legal(card.name) and is_etb_untapper(card.type_line, card.oracle_text)
-        }
-    )
-    extra = sorted(engine for engine in known_engines if engine not in untappers)
+    card_list = list(cards)
+    if engine_class == "tap":
+        established = sorted(
+            {
+                card.name
+                for card in card_list
+                if is_legal(card.name) and is_etb_untapper(card.type_line, card.oracle_text)
+            }
+        )
+        established_set = set(established)
+        other = sorted(
+            {
+                card.name
+                for card in card_list
+                if is_legal(card.name)
+                and card.name not in established_set
+                and UNTAP_ANY_PAT.search(card.oracle_text or "")
+            }
+        )
+        untappers = established + other
+    else:
+        untappers = sorted(
+            {
+                card.name
+                for card in card_list
+                if is_legal(card.name) and is_etb_untapper(card.type_line, card.oracle_text)
+            }
+        )
+    extra = sorted(engine for engine in known_engines if engine not in set(untappers))
     return untappers + extra
 
 
@@ -261,9 +386,14 @@ def _year_label(releases: Mapping[str, str], name: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="recent-engines",
-        description="Witness-verify recent copy engines against established partners.",
+        description="Witness-verify recent engines against established partners.",
     )
     parser.add_argument("--db", default="research.db")
+    parser.add_argument(
+        "--engine-class", choices=("copy", "tap"), default="copy",
+        help="engine shape: 'copy' token-copy engines (default) or 'tap' free "
+             "{T}: engines",
+    )
     parser.add_argument(
         "--since", type=int, default=2024,
         help="earliest release year for an engine (default: 2024)",
@@ -300,18 +430,22 @@ def main(argv: list[str] | None = None) -> int:
     releases = load_release_map(DEFAULT_SCRYFALL, {card.normalized_name for card in cards})
 
     engines = select_recent_engines(
-        cards, releases, since=args.since, is_legal=legality.is_legal
+        cards, releases, since=args.since, is_legal=legality.is_legal,
+        engine_class=args.engine_class,
     )
+    known_for_class = KNOWN_ENGINES if args.engine_class == "copy" else ()
     partners = select_partners(
-        cards, is_legal=legality.is_legal, known_engines=KNOWN_ENGINES
+        cards, is_legal=legality.is_legal, known_engines=known_for_class,
+        engine_class=args.engine_class,
     )
     all_pairs = build_pairs(
         [card.name for card in engines], partners, known, max_pairs=None
     )
     pairs = all_pairs[: max(0, args.max_pairs)]
     print(
-        f"recent_engines={len(engines)} partners={len(partners)} "
-        f"uncatalogued_pairs={len(all_pairs)} running={len(pairs)} (since={args.since})"
+        f"engine_class={args.engine_class} recent_engines={len(engines)} "
+        f"partners={len(partners)} uncatalogued_pairs={len(all_pairs)} "
+        f"running={len(pairs)} (since={args.since})"
     )
     for card in engines:
         print(f"  engine {card.name} [{_year_label(releases, card.name)}]")
@@ -367,6 +501,7 @@ def main(argv: list[str] | None = None) -> int:
                     diag = policy.diagnostics()
                     evidence = res.evidence or {}
                     record = {
+                        "engine_class": args.engine_class,
                         "engine": engine,
                         "partner": partner,
                         "engine_year": _year_label(releases, engine),
@@ -377,6 +512,7 @@ def main(argv: list[str] | None = None) -> int:
                     }
                 except Exception as exc:  # noqa: BLE001
                     record = {
+                        "engine_class": args.engine_class,
                         "engine": engine,
                         "partner": partner,
                         "engine_year": _year_label(releases, engine),
@@ -407,10 +543,13 @@ def main(argv: list[str] | None = None) -> int:
             store.close()
 
     loops = [r for r in results if r["verdict"] == "loops"]
-    print(f"\nSUMMARY n={len(results)} {dict(Counter(r['verdict'] for r in results))}")
     print(
-        f"recent engines: {len(engines)}  uncatalogued pairs: {len(all_pairs)}  "
-        f"run: {len(results)}"
+        f"\nSUMMARY engine_class={args.engine_class} n={len(results)} "
+        f"{dict(Counter(r['verdict'] for r in results))}"
+    )
+    print(
+        f"engine class: {args.engine_class}  engines: {len(engines)}  "
+        f"uncatalogued pairs: {len(all_pairs)}  run: {len(results)}"
     )
     print(f"candidate loops not in Spellbook: {len(loops)}")
     for r in loops:

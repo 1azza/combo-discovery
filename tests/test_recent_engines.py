@@ -72,6 +72,30 @@ OLD_ENGINE = _card(
     "{T}: Create a token that's a copy of target creature you control.",
 )
 
+# -- tap-class fixtures -----------------------------------------------------
+
+#: A recent free {T}: engine (non-copy, non-mana) — the Kiki/Pestermite shape.
+TAP_ENGINE = _card(
+    "Test Tap Engine", "Artifact",
+    "{T}: Create a 1/1 green Elf creature token.",
+)
+#: A pure mana ability: ramp, not a loop engine.
+MANA_DORK = _card("Mana Dork", "Creature Elf Druid", "{T}: Add {G}.")
+#: A {T} engine with a per-turn activation limit: cannot loop.
+LIMITED_ENGINE = _card(
+    "Limited Engine", "Artifact",
+    "{T}: Draw a card. Activate only once each turn.",
+)
+#: An activated (non-ETB) untapper: any-shape partner for the tap class.
+ACTIVATED_UNTAPPER = _card(
+    "Test Activated Untapper", "Artifact", "{1}: Untap target creature."
+)
+#: An attack-triggered untapper: also an any-shape partner.
+ATTACK_UNTAPPER = _card(
+    "Test Attack Untapper", "Creature Bird",
+    "Flying\nWhenever Test Attack Untapper attacks, untap target creature.",
+)
+
 ALL = [KIKI, UNTAPPER, ATTACK_ENGINE, ETB_ENGINE, OLD_ENGINE]
 RELEASES = {
     KIKI.normalized_name: "2025-02-01",
@@ -80,6 +104,12 @@ RELEASES = {
     ETB_ENGINE.normalized_name: "2025-03-01",
     OLD_ENGINE.normalized_name: "2011-01-01",
 }
+
+TAP_ALL = [
+    TAP_ENGINE, MANA_DORK, LIMITED_ENGINE, ACTIVATED_UNTAPPER, ATTACK_UNTAPPER,
+    UNTAPPER,
+]
+TAP_RELEASES = {card.normalized_name: "2025-01-01" for card in TAP_ALL}
 
 
 def _legal(name: str) -> bool:
@@ -134,3 +164,59 @@ def test_known_engines_are_appended_to_partners():
         ALL, is_legal=_legal, known_engines=["Kiki-Jiki, Mirror Breaker"]
     )
     assert partners == ["Test Untapper", "Kiki-Jiki, Mirror Breaker"]
+
+
+# -- tap engine class -------------------------------------------------------
+
+
+def test_tap_engine_pairs_with_untapper_in_tap_mode():
+    engines = re_mod.select_recent_engines(
+        TAP_ALL, TAP_RELEASES, since=SINCE, is_legal=_legal, engine_class="tap"
+    )
+    assert [c.name for c in engines] == ["Test Tap Engine"]
+
+    partners = re_mod.select_partners(TAP_ALL, is_legal=_legal, engine_class="tap")
+    # Untappers of any shape: activated and attack-triggered included.
+    assert "Test Untapper" in partners
+    assert "Test Activated Untapper" in partners
+    assert "Test Attack Untapper" in partners
+
+    pairs = re_mod.build_pairs(
+        [c.name for c in engines], partners, set(), max_pairs=60
+    )
+    assert ("Test Tap Engine", "Test Untapper") in pairs
+    assert ("Test Tap Engine", "Test Activated Untapper") in pairs
+
+
+def test_tap_class_excludes_pure_mana_ability():
+    assert not re_mod.is_tap_engine(MANA_DORK.oracle_text)
+    names = {
+        c.name
+        for c in re_mod.select_recent_engines(
+            TAP_ALL, TAP_RELEASES, since=SINCE, is_legal=_legal, engine_class="tap"
+        )
+    }
+    assert "Mana Dork" not in names
+
+
+def test_tap_class_excludes_limited_ability():
+    assert not re_mod.is_tap_engine(LIMITED_ENGINE.oracle_text)
+    names = {
+        c.name
+        for c in re_mod.select_recent_engines(
+            TAP_ALL, TAP_RELEASES, since=SINCE, is_legal=_legal, engine_class="tap"
+        )
+    }
+    assert "Limited Engine" not in names
+
+
+def test_copy_mode_is_still_the_default():
+    # The default class is unchanged: only the copy engine is selected, and the
+    # copy engine is not re-selected by the tap class (it is a copy ability).
+    engines_copy = re_mod.select_recent_engines(ALL, RELEASES, since=SINCE, is_legal=_legal)
+    assert [c.name for c in engines_copy] == ["Test Kiki"]
+
+    engines_tap = re_mod.select_recent_engines(
+        ALL, RELEASES, since=SINCE, is_legal=_legal, engine_class="tap"
+    )
+    assert "Test Kiki" not in {c.name for c in engines_tap}
