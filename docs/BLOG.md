@@ -160,14 +160,32 @@ conditions the scenario does not provide (delirium wants a graveyard; soulbond
 wants pairing). The blocked recall comes from *what we ask the verifier to test*
 and *what the board provides* — not from search power.
 
+## What actually moved the needle
+
+The recall gains came from the **verifier side**, not search:
+
+- **Automatic triggers are credited to the combo step** (the harness already
+  broadcasts every stack push), and observations are sampled per trigger and at
+  phase/turn boundaries — so a triggered line is no longer invisible.
+- **Monotonic zone counts left the structural signature.** `Fear of Missing Out`
+  discards on every token copy, so the graveyard grew every iteration and the
+  "structure" never recurred. `graveyard`/`library`/`hand` are now resources,
+  like tokens and mana.
+- **The client can pass priority.** The harness now offers a `pass` option, so the
+  spin guard advances the pilot past a no-op action instead of burning the whole
+  observation budget on it.
+
+Together: triggered-engine recall 3% -> **21%**, overall 35% -> **46%**, activated
+46% -> **55%**, and undecided runs fell from 51 to 14 — with no false positive
+reintroduced.
+
 ## Future work
 
-1. **Staging** — supply the required supporting objects (a varied graveyard for
-   delirium, soulbond pairing, a token that "entered this turn"). Bounded, and it
-   directly changes verdicts.
-2. **Candidate quality** — new-card focus and more drivable engine archetypes.
-   The measurements say this, not search, is the limit.
-3. **Search correctness** — replay currently matches answers positionally; match
-   them by decision type instead.
+1. **Candidate quality** — new-card focus and more drivable engine archetypes.
+   With the verifier measuring 46%, this is now the limit.
+2. **Staging** — soulbond pairing is not expressible in the scenario format (it
+   needs engine work); a token that "entered this turn" would unlock Ghired.
+3. **Search correctness** — replay matches answers positionally; match them by
+   decision type instead.
 4. **Net-neutral loops** — a loop that repeats with no surplus resource is
    rejected today by the same rule that removes the false positives.

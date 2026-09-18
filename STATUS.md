@@ -34,6 +34,10 @@ analogue transfer (`scripts/analogue_transfer.py`).
 - [x] Harness mana read fixed: colorless mana is read from the engine's
       `ManaAtom.COLORLESS` key (was `MagicColor.COLORLESS`, which hid 8 injected
       mana and made generic costs look free).
+- [x] PRIORITY decisions offer a synthetic `kind="pass"` option, so a client can
+      deliberately pass priority. The witness spin guard uses it to advance past
+      a no-op action — this is what lets `Fear of Missing Out + Helm of the Host`
+      reach combat within the default observation budget.
 
 ### Science layer
 
@@ -54,13 +58,21 @@ analogue transfer (`scripts/analogue_transfer.py`).
 
 - [x] Scenario-driven witness search: inject a board, drive decisions with a
       choice-aware policy, detect structural recurrence + resource growth.
-- [x] **Five false-positive classes found and fixed** (each live-reproduced,
-      each guarded by the acceptance matrix below):
+- [x] **Six false-positive / structural classes found and fixed** (each
+      live-reproduced, each guarded by the acceptance matrix below):
       1. the pre-iteration baseline pair certified a loop;
       2. cross-turn recurrence treated as a loop;
       3. counter-only (policy-driven) growth treated as a loop;
       4. life totals in the structural signature broke combat loops;
-      5. mana-consuming recurrences certified as infinite (bounded by the pool).
+      5. mana-consuming recurrences certified as infinite (bounded by the pool);
+      6. monotonic zone counts (`graveyard`/`library`/`hand`) sat in the
+         structural signature, so loops whose discard/draw grows the graveyard
+         never recurred (`Fear of Missing Out + Helm of the Host`); they are now
+         tracked resources, with the durable-resource requirement kept.
+- [x] Automatic abilities/triggers are credited to their link (the harness
+      already broadcasts every stack push as `SpellCast`), and observations are
+      sampled per trigger and at phase/turn boundaries, with a sticky duplicate
+      guard against the degenerate branch.
 - [x] Acceptance matrix (all live on the harness): Kiki + {Deceiver Exarch,
       Pestermite, Reptilian Recruiter, Bounding Krasis, Breaching Hippocamp,
       Zealous Conscripts, Village Bell-Ringer, Sky Hussar, Hyrax Tower Scout,
@@ -69,8 +81,9 @@ analogue transfer (`scripts/analogue_transfer.py`).
       Raft-Steerer / Firbolg Flutist → not loops; Aurelia + Genji Glove →
       `inconclusive`.
 - [x] **Measured recall on known combos** (`scripts/known_recall.py`): over 133
-      known exact 2-card copy/untap combos — **35% overall**, **46% on
-      activated-engine combos**, **3% on triggered-engine combos**.
+      known exact 2-card copy/untap combos — **46% overall**, **55% on
+      activated-engine combos**, **21% on triggered-engine combos** (up from
+      35% / 46% / 3% at v0.2.0). Undecided runs fell from 51 to 14.
 
 ### Candidate yield
 
@@ -89,12 +102,14 @@ analogue transfer (`scripts/analogue_transfer.py`).
 - [x] A goal-directed search lives in `src/combo_discovery/search.py`: bounded DFS
       over PRIORITY decisions with snapshot/restore backtracking, replay-based
       branching for non-priority decisions, and a verdict-directed mode that aims
-      at `detect_loop`'s verdict. Measured honestly: it changed no verdicts on the
-      known-combo slice — the limit is candidate quality and staging, not search.
+      at `detect_loop`'s verdict. Measured honestly: search itself changed no
+      verdicts. The recall gains that did land came from the verifier side —
+      trigger attribution, per-trigger and phase-boundary sampling, the zone-count
+      resource split, and the PRIORITY pass option — not from search power.
 
 ### Tests
 
-- [x] Python: `546 passed, 1 skipped` (`uv run pytest -q`).
+- [x] Python: `585 passed, 1 skipped` (`uv run pytest -q`).
 - [x] Java conformance tests + Maven package succeed.
 - [x] `scripts/check.sh` (stub regen + pytest + optional Java compile) passes.
 
