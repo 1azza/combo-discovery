@@ -821,16 +821,35 @@ class TestDetectLoop:
         assert verdict == "no_loop"
         assert "no tracked resource grew" in evidence["reason"]
 
-    def test_degenerate_identical_hash_is_loop(self):
+    def test_degenerate_identical_hash_with_growth_is_loop(self):
         observations = [
-            Observation(iteration=0, signature="s1", state_hash="BASE"),
-            Observation(iteration=1, signature="s2", state_hash="SAME"),
-            Observation(iteration=2, signature="s3", state_hash="SAME"),
+            Observation(iteration=0, signature="s1", state_hash="BASE",
+                        resources={"tokens": 0}),
+            Observation(iteration=1, signature="s2", state_hash="SAME",
+                        resources={"tokens": 1}),
+            Observation(iteration=2, signature="s3", state_hash="SAME",
+                        resources={"tokens": 2}),
         ]
         verdict, evidence = detect_loop(observations)
         assert verdict == "loops"
         assert evidence["kind"] == "degenerate"
         assert evidence["pair"] == [1, 2]
+        assert "tokens" in evidence["grown"]
+
+    def test_identical_states_without_growth_is_a_stall(self):
+        # Regression (live: The Fire Crystal + Captain of the Mists): two
+        # consecutive identical states with nothing growing is a stall, not a
+        # loop. The degenerate branch must require durable growth.
+        observations = [
+            Observation(iteration=0, signature="base", state_hash="BASE",
+                        resources={"tokens": 0, "mana": 42}),
+            Observation(iteration=1, signature="same", state_hash="SAME",
+                        resources={"tokens": 0, "mana": 42}),
+            Observation(iteration=2, signature="same", state_hash="SAME",
+                        resources={"tokens": 0, "mana": 42}),
+        ]
+        verdict, _evidence = detect_loop(observations)
+        assert verdict == "no_loop"
 
     def test_identical_baseline_pair_is_not_a_loop(self):
         # Regression (live Keldon Overseer / Elven Raft-Steerer): the baseline

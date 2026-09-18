@@ -1408,7 +1408,8 @@ def detect_loop(
 
     * ``inconclusive`` with fewer than two *post-baseline* observations;
     * ``loops`` (degenerate) when two CONSECUTIVE post-baseline observations in
-      the same turn share a non-empty identical ``state_hash``;
+      the same turn share a non-empty identical ``state_hash`` **and** a durable
+      resource grew between them (identical states with no growth is a stall);
     * ``loops`` when two post-baseline observations in the same turn share a
       non-empty witness signature and a tracked resource grew between them;
     * ``no_loop`` when a same-turn signature recurs but nothing grew, when a
@@ -1454,11 +1455,25 @@ def detect_loop(
         if not same_turn(prev, cur):
             continue
         if prev.state_hash and cur.state_hash and prev.state_hash == cur.state_hash:
+            # Bit-identical consecutive states only certify a loop when a
+            # durable resource grew across the step. Two identical samples with
+            # no growth is a *stall* (nothing happened), not an infinite loop —
+            # the same trap as the original baseline-pair bug, one layer deeper.
+            # A genuinely stationary loop with zero net growth is therefore not
+            # certified; it is indistinguishable from a stall, and reporting
+            # "no loop" beats guessing.
+            grown = [
+                k for k in _grown_between(prev.resources, cur.resources)
+                if k in GAME_STATE_GROWTH_KEYS
+            ]
+            if not grown:
+                continue
             return "loops", {
                 "kind": "degenerate",
                 "pair": [prev.iteration, cur.iteration],
                 "turn": cur.turn,
                 "state_hash": cur.state_hash,
+                "grown": grown,
             }
 
     first_repeat: tuple[int, int] | None = None

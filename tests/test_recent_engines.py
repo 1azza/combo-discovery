@@ -1,0 +1,136 @@
+"""Pure selection logic for ``scripts/recent_engines.py``.
+
+The DB/harness wiring is exercised through the real ``main`` by
+``test_instrument_persist``; here the engine/partner filters and the pair
+cross-product are unit-tested on a tiny synthetic corpus.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+from pathlib import Path
+
+from combo_discovery.corpus.names import normalize_card_name, pair_hash
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_script(name: str):
+    """Import a ``scripts/<name>.py`` module by path (not an installed package)."""
+    path = _REPO_ROOT / "scripts" / f"{name}.py"
+    synth = f"combo_script_{name}"
+    spec = importlib.util.spec_from_file_location(synth, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # ``@dataclass`` resolves string annotations through ``sys.modules`` during
+    # class creation, so the module must be registered before ``exec_module``.
+    sys.modules[synth] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+re_mod = _load_script("recent_engines")
+
+SINCE = 2024
+
+
+def _card(name: str, type_line: str, oracle: str):
+    return re_mod.Card(
+        normalized_name=normalize_card_name(name),
+        name=name,
+        type_line=type_line,
+        oracle_text=oracle.lower(),
+    )
+
+
+#: A recent activated copy engine (the Kiki/Twin shape).
+KIKI = _card(
+    "Test Kiki", "Legendary Creature Goblin",
+    "{T}: Create a token that's a copy of target creature you control.",
+)
+#: The functional ETB-untapper partner shape.
+UNTAPPER = _card(
+    "Test Untapper", "Creature Wizard",
+    "When Test Untapper enters, untap target creature you control.",
+)
+#: A triggered (attack) copy engine: the policy cannot drive it.
+ATTACK_ENGINE = _card(
+    "Attack Copier", "Creature Dragon",
+    "Whenever Attack Copier attacks, create a token that's a copy of "
+    "target creature you control.",
+)
+#: A triggered (ETB) copy engine: also undriveable.
+ETB_ENGINE = _card(
+    "Etb Copier", "Creature Angel",
+    "When Etb Copier enters, create a token that's a copy of target creature "
+    "you control.",
+)
+#: An activated copy engine from an old set.
+OLD_ENGINE = _card(
+    "Old Kiki", "Legendary Creature Goblin",
+    "{T}: Create a token that's a copy of target creature you control.",
+)
+
+ALL = [KIKI, UNTAPPER, ATTACK_ENGINE, ETB_ENGINE, OLD_ENGINE]
+RELEASES = {
+    KIKI.normalized_name: "2025-02-01",
+    UNTAPPER.normalized_name: "2012-05-01",
+    ATTACK_ENGINE.normalized_name: "2025-03-01",
+    ETB_ENGINE.normalized_name: "2025-03-01",
+    OLD_ENGINE.normalized_name: "2011-01-01",
+}
+
+
+def _legal(name: str) -> bool:
+    return True
+
+
+def test_recent_engine_pairs_with_untapper():
+    engines = re_mod.select_recent_engines(ALL, RELEASES, since=SINCE, is_legal=_legal)
+    assert [c.name for c in engines] == ["Test Kiki"]
+
+    partners = re_mod.select_partners(ALL, is_legal=_legal, known_engines=())
+    assert partners == ["Test Untapper"]
+
+    pairs = re_mod.build_pairs(
+        [c.name for c in engines], partners, set(), max_pairs=60
+    )
+    assert pairs == [("Test Kiki", "Test Untapper")]
+
+
+def test_triggered_engines_are_excluded():
+    assert not re_mod.is_activated_copy_engine(ATTACK_ENGINE.oracle_text)
+    assert not re_mod.is_activated_copy_engine(ETB_ENGINE.oracle_text)
+    recent = {
+        c.name
+        for c in re_mod.select_recent_engines(ALL, RELEASES, since=SINCE, is_legal=_legal)
+    }
+    assert recent == {"Test Kiki"}
+
+
+def test_catalogued_pair_is_excluded():
+    known = {pair_hash(KIKI.normalized_name, UNTAPPER.normalized_name)}
+    pairs = re_mod.build_pairs([KIKI.name], [UNTAPPER.name], known, max_pairs=60)
+    assert pairs == []
+
+
+def test_non_recent_engine_excluded_when_since_is_late():
+    recent = {
+        c.name
+        for c in re_mod.select_recent_engines(ALL, RELEASES, since=SINCE, is_legal=_legal)
+    }
+    assert "Old Kiki" not in recent
+    # Lowering ``since`` below its release date lets the old engine in.
+    older = {
+        c.name
+        for c in re_mod.select_recent_engines(ALL, RELEASES, since=2010, is_legal=_legal)
+    }
+    assert "Old Kiki" in older
+
+
+def test_known_engines_are_appended_to_partners():
+    partners = re_mod.select_partners(
+        ALL, is_legal=_legal, known_engines=["Kiki-Jiki, Mirror Breaker"]
+    )
+    assert partners == ["Test Untapper", "Kiki-Jiki, Mirror Breaker"]
