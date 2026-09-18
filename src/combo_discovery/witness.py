@@ -1178,6 +1178,7 @@ class Observation:
     state_hash: str = ""
     event_seq: int = 0
     turn: int = 0
+    phase: str = ""
 
 
 def _zone_count(zone: Any) -> int:
@@ -1355,6 +1356,7 @@ def build_observation(
         state_hash=str(state.state_hash),
         event_seq=int(event_seq),
         turn=int(getattr(state, "turn", 0) or 0),
+        phase=str(getattr(state, "phase", "") or ""),
     )
 
 
@@ -1684,6 +1686,7 @@ def _run_witness_seed(
     candidate_key: str,
     card_names: tuple[str, ...],
     infinite: bool,
+    recorder: Callable[[Observation], None] | None = None,
 ) -> WitnessResult:
     reset = getattr(policy, "new_game", None)
     if callable(reset):
@@ -1844,6 +1847,8 @@ def _run_witness_seed(
                 phase_seen = False
                 return False
             observations.append(observation)
+            if recorder is not None:
+                recorder(observation)
             last_was_phase = bool(skip_duplicate_hash)
             # A spin is a consecutive pair with an unchanged (non-empty)
             # structural signature and no game-state resource growth.  Only the
@@ -2018,6 +2023,7 @@ def run_witness(
     infinite: bool = False,
     stop_on_loop: bool = True,
     pregame_policy: Callable[[DecisionContext], Answer] | None = None,
+    recorder: Callable[[Observation], None] | None = None,
 ) -> WitnessResult:
     """Start a game, inject ``scenario``, and drive ``policy`` for N iterations.
 
@@ -2031,6 +2037,12 @@ def run_witness(
     pre-game/mulligan window is driven to the first PRIORITY decision with
     ``pregame_policy`` (default :func:`runner.default_policy`, which keeps
     hands) before the scenario is injected; see :func:`_drive_pregame`.
+
+    ``recorder``, when given, is called synchronously with each
+    :class:`Observation` at the moment it is captured (the pre-loop baseline
+    and every iteration/trigger/phase sample).  This is the live hook the
+    ``combo-witness --persist`` CLI uses to append observations as they happen;
+    ``None`` leaves behaviour unchanged.
     """
     seed_list = [int(seeds)] if isinstance(seeds, int) else [int(s) for s in seeds]
     if not seed_list:
@@ -2061,6 +2073,7 @@ def run_witness(
             candidate_key=candidate_key,
             card_names=tuple(card_names),
             infinite=bool(infinite),
+            recorder=recorder,
         )
         results.append(result)
         if stop_on_loop and result.verdict == "loops":
@@ -2080,6 +2093,63 @@ def run_witness(
 # ---------------------------------------------------------------------------
 
 
+def observation_recorder(store: Any, run_id: int) -> Callable[[Observation], None]:
+    """Build a live ``recorder`` that appends each observation immediately.
+
+    Pass the result to :func:`run_witness` (``recorder=...``) together with a
+    ``witness_runs`` row started *before* the run: every captured observation is
+    appended to ``witness_observations`` as it happens, which is what lets a UI
+    watch a run in progress.  Each written observation is marked so
+    :func:`persist_observations` will not append it a second time at end of run.
+    """
+
+    def record(observation: Observation) -> None:
+        store.record_witness_observation(
+            run_id,
+            observation.iteration,
+            turn=observation.turn,
+            phase=observation.phase,
+            signature=observation.signature,
+            resources=observation.resources,
+            event_seq=observation.event_seq,
+        )
+        try:
+            setattr(observation, "_persisted", True)
+        except Exception:  # pragma: no cover - dataclasses are mutable
+            logger.debug("could not mark observation persisted", exc_info=True)
+
+    return record
+
+
+def persist_observations(store: Any, run_id: int, result: WitnessResult) -> int:
+    """Append ``result``'s observations that a live recorder has not written.
+
+    A recorder built by :func:`observation_recorder` marks each observation it
+    appends; those are skipped here, so calling this after a live run is a safe
+    no-op and calling it on a result captured without a recorder persists the
+    whole per-step trace.  Returns the number of rows appended.
+    """
+    written = 0
+    for observation in result.observations:
+        if getattr(observation, "_persisted", False):
+            continue
+        store.record_witness_observation(
+            run_id,
+            observation.iteration,
+            turn=observation.turn,
+            phase=observation.phase,
+            signature=observation.signature,
+            resources=observation.resources,
+            event_seq=observation.event_seq,
+        )
+        try:
+            setattr(observation, "_persisted", True)
+        except Exception:  # pragma: no cover - dataclasses are mutable
+            logger.debug("could not mark observation persisted", exc_info=True)
+        written += 1
+    return written
+
+
 def persist_witness(
     store: Any,
     result: WitnessResult,
@@ -2089,19 +2159,36 @@ def persist_witness(
     policy_version: str = WITNESS_POLICY_VERSION,
     params: dict[str, Any] | None = None,
     notes: str = "",
+    run_id: int | None = None,
 ) -> tuple[int, int]:
-    """Append a witness run + result to the store; return ``(run_id, result_id)``."""
-    run_id = store.start_witness_run(
-        engine_commit=engine_commit,
-        proto_version=int(proto_version),
-        policy_version=policy_version,
-        scenario_json=result.scenario.canonical_json(),
-        seeds=result.seeds or [result.seed],
-        params=params or {},
-        notes=notes,
-    )
+    """Append a witness run + result to the store; return ``(run_id, result_id)``.
+
+    ``run_id`` may be passed when the ``witness_runs`` row was already started
+    before the run (the live ``combo-witness --persist`` path); otherwise a new
+    run row is appended.  Per-step observations not already written live are
+    appended via :func:`persist_observations`, and ``result.evidence`` (plus its
+    ``diagnostics`` sub-dict) is stored on the result row.
+    """
+    if run_id is None:
+        active_id = int(
+            store.start_witness_run(
+                engine_commit=engine_commit,
+                proto_version=int(proto_version),
+                policy_version=policy_version,
+                scenario_json=result.scenario.canonical_json(),
+                seeds=result.seeds or [result.seed],
+                params=params or {},
+                notes=notes,
+            )
+        )
+    else:
+        active_id = int(run_id)
+    persist_observations(store, active_id, result)
+    diagnostics: Any = None
+    if isinstance(result.evidence, dict):
+        diagnostics = result.evidence.get("diagnostics")
     result_id = store.record_witness_result(
-        run_id,
+        active_id,
         candidate_kind=result.candidate_kind,
         candidate_key=result.candidate_key,
         card_names=result.card_names,
@@ -2115,8 +2202,10 @@ def persist_witness(
         event_start_seq=result.event_start_seq,
         event_end_seq=result.event_end_seq,
         trace=result.decision_trace,
+        evidence=result.evidence if result.evidence else None,
+        diagnostics=diagnostics,
     )
-    return run_id, result_id
+    return active_id, result_id
 
 
 # ---------------------------------------------------------------------------
@@ -2344,30 +2433,53 @@ def main(argv: list[str] | None = None) -> int:
 
     decks = _parse_decks(args.decks) or DEFAULT_WITNESS_DECKS
     policy = WitnessPolicy(combo)
-    with ForgeEnvClient(host=args.host, port=args.port) as client:
-        client.connect()
-        result = run_witness(
-            client,
-            scenario,
-            policy,
-            seeds=seeds,
-            max_iterations=args.max_iterations,
-            max_decisions=args.max_decisions,
-            decks=decks,
-            candidate_kind=combo.kind,
-            candidate_key=combo.key,
-            card_names=combo.cards,
-            infinite=combo.infinite,
-        )
 
-    if args.persist:
-        store = ExperimentStore(Path(args.db))
-        try:
-            run_id, result_id = persist_witness(store, result)
-        finally:
+    # With --persist the witness_runs row is started *before* the run and a
+    # recorder streams each observation into witness_observations as it is
+    # captured, so a UI can watch the run live.  The result row is appended at
+    # the end (same run id).
+    params = {
+        "max_iterations": int(args.max_iterations),
+        "max_decisions": int(args.max_decisions),
+    }
+    store = ExperimentStore(Path(args.db)) if args.persist else None
+    run_id: int | None = None
+    recorder = None
+    if store is not None:
+        run_id = store.start_witness_run(
+            proto_version=PROTOCOL_VERSION,
+            policy_version=WITNESS_POLICY_VERSION,
+            scenario_json=scenario.canonical_json(),
+            seeds=seeds,
+            params=params,
+        )
+        recorder = observation_recorder(store, run_id)
+
+    try:
+        with ForgeEnvClient(host=args.host, port=args.port) as client:
+            client.connect()
+            result = run_witness(
+                client,
+                scenario,
+                policy,
+                seeds=seeds,
+                max_iterations=args.max_iterations,
+                max_decisions=args.max_decisions,
+                decks=decks,
+                candidate_kind=combo.kind,
+                candidate_key=combo.key,
+                card_names=combo.cards,
+                infinite=combo.infinite,
+                recorder=recorder,
+            )
+        result_id: int | None = None
+        if store is not None:
+            run_id, result_id = persist_witness(
+                store, result, params=params, run_id=run_id
+            )
+    finally:
+        if store is not None:
             store.close()
-    else:
-        run_id = result_id = None
 
     if args.json:
         print(json.dumps({
@@ -2418,6 +2530,8 @@ __all__ = [
     "link_plans",
     "load_candidate",
     "main",
+    "observation_recorder",
+    "persist_observations",
     "persist_witness",
     "resource_totals",
     "run_witness",

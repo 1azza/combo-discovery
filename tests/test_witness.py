@@ -1561,6 +1561,81 @@ class TestRunWitness:
         assert results[0]["verdict"] == result.verdict
         assert results[0]["iterations"] == result.iterations
 
+    def test_recorder_receives_every_observation_in_order(self):
+        client = FakeWitnessClient()
+        captured: list[Observation] = []
+        result = run_witness(
+            client, build_scenario(combo_ab()), self._policy(), seeds=[1],
+            max_iterations=3, recorder=captured.append,
+        )
+        # One synchronous call per captured observation, in capture order: the
+        # pre-loop baseline (0) then one per completed iteration (1..3).
+        assert len(captured) == len(result.observations)
+        assert [o.iteration for o in captured] == [0, 1, 2, 3]
+        assert [o.iteration for o in captured] == [
+            o.iteration for o in result.observations
+        ]
+        # Each recorded observation carries the state's phase (v7 field).
+        assert all(o.phase == "Main1" for o in captured)
+        assert all(o.signature for o in captured)
+
+    def test_recorder_none_does_not_change_behaviour(self):
+        client = FakeWitnessClient()
+        with_recorder: list[Observation] = []
+        run_witness(
+            client, build_scenario(combo_ab()), self._policy(), seeds=[1],
+            max_iterations=3, recorder=with_recorder.append,
+        )
+        plain = run_witness(
+            client, build_scenario(combo_ab()), self._policy(), seeds=[1],
+            max_iterations=3,
+        )
+        assert [o.iteration for o in with_recorder] == [
+            o.iteration for o in plain.observations
+        ]
+
+
+class TestPersistObservations:
+    def test_persist_observations_appends_end_of_run(self, tmp_path):
+        from combo_discovery.store import ExperimentStore
+        from combo_discovery.witness import persist_observations
+
+        client = FakeWitnessClient()
+        result = run_witness(
+            client, build_scenario(combo_ab()), 
+            WitnessPolicy(links=[LinkPlan("A", "B"), LinkPlan("B", "A")], player=0),
+            seeds=[1], max_iterations=2,
+        )
+        store = ExperimentStore(tmp_path / "w.sqlite")
+        run_id = store.start_witness_run(seeds=[1])
+        written = persist_observations(store, run_id, result)
+        rows = store.witness_observations(run_id)
+        store.close()
+        assert written == len(result.observations) == 3
+        assert [r["iteration"] for r in rows] == [0, 1, 2]
+        assert [r["phase"] for r in rows] == ["Main1", "Main1", "Main1"]
+
+    def test_recorder_then_persist_observations_does_not_duplicate(self, tmp_path):
+        from combo_discovery.store import ExperimentStore
+        from combo_discovery.witness import (
+            observation_recorder,
+            persist_observations,
+        )
+
+        store = ExperimentStore(tmp_path / "w.sqlite")
+        run_id = store.start_witness_run(seeds=[1])
+        result = run_witness(
+            FakeWitnessClient(), build_scenario(combo_ab()),
+            WitnessPolicy(links=[LinkPlan("A", "B"), LinkPlan("B", "A")], player=0),
+            seeds=[1], max_iterations=2,
+            recorder=observation_recorder(store, run_id),
+        )
+        written = persist_observations(store, run_id, result)
+        rows = store.witness_observations(run_id)
+        store.close()
+        assert written == 0
+        assert len(rows) == len(result.observations) == 3
+
 
 class TestPhaseBoundarySampling:
     """The driver samples phase/turn boundaries even after the policy stalls."""

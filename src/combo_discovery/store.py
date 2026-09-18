@@ -29,7 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only (avoids an import cycle)
     from .runner import DecisionContext, GameResult
 
 # Current schema version. Bump this and register a migration in _MIGRATIONS.
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 # Serializes all DB access; see the module docstring for why.
 _DB_LOCK = threading.Lock()
@@ -67,6 +67,7 @@ _TABLES = (
     "motif_enrichment",
     "witness_runs",
     "witness_results",
+    "witness_observations",
 )
 
 _SCHEMA_SQL = """
@@ -502,6 +503,36 @@ def _migration_6(conn: sqlite3.Connection) -> None:
     conn.executescript(_WITNESS_SCHEMA_SQL)
 
 
+# Schema v7 (per-step witness observations + verdict evidence/diagnostics).
+#
+# ``witness_observations`` is keyed by ``run_id`` only, not by ``result_id``:
+# a result row is written at the *end* of a run, while observations stream in as
+# they happen (this is what lets the UI watch a run live).  The two
+# ``witness_results`` columns are added by ALTER TABLE, which is itself
+# append-only in effect (existing rows keep NULL; no row is mutated).
+_WITNESS_OBSERVATIONS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS witness_observations (
+  id INTEGER PRIMARY KEY,
+  run_id INTEGER NOT NULL,
+  iteration INTEGER NOT NULL,
+  turn INTEGER,
+  phase TEXT,
+  signature TEXT,
+  resources_json TEXT,
+  event_seq INTEGER,
+  created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_witness_observations_run
+  ON witness_observations(run_id);
+ALTER TABLE witness_results ADD COLUMN evidence_json TEXT;
+ALTER TABLE witness_results ADD COLUMN diagnostics_json TEXT;
+"""
+
+
+def _migration_7(conn: sqlite3.Connection) -> None:
+    """Schema v7: per-step witness observations and verdict evidence columns."""
+    conn.executescript(_WITNESS_OBSERVATIONS_SCHEMA_SQL)
+
+
 # version -> callable applying the change for that version.
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migration_2,
@@ -509,6 +540,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     4: _migration_4,
     5: _migration_5,
     6: _migration_6,
+    7: _migration_7,
 }
 
 
@@ -808,16 +840,24 @@ class ExperimentStore:
         event_start_seq: int = 0,
         event_end_seq: int = 0,
         trace: Any = None,
+        evidence: Any = None,
+        diagnostics: Any = None,
     ) -> int:
-        """Append a witness-result row and return its id."""
+        """Append a witness-result row and return its id.
+
+        ``evidence``/``diagnostics`` are optional and stored as JSON in the
+        nullable ``evidence_json``/``diagnostics_json`` columns (schema v7).
+        Omitting them keeps the legacy call shape and stores NULL.
+        """
         with _DB_LOCK:
             cur = self._conn.execute(
                 "INSERT INTO witness_results "
                 "(run_id, candidate_kind, candidate_key, card_names_json, verdict, "
                 " infinite, iterations, signature_json, resource_deltas_json, "
                 " state_hash_before, state_hash_after, event_start_seq, "
-                " event_end_seq, trace_json, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " event_end_seq, trace_json, evidence_json, diagnostics_json, "
+                " created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     int(run_id),
                     candidate_kind,
@@ -836,6 +876,55 @@ class ExperimentStore:
                     int(event_start_seq),
                     int(event_end_seq),
                     json.dumps(trace if trace is not None else [], default=str, sort_keys=True),
+                    (
+                        json.dumps(evidence, default=str, sort_keys=True)
+                        if evidence is not None
+                        else None
+                    ),
+                    (
+                        json.dumps(diagnostics, default=str, sort_keys=True)
+                        if diagnostics is not None
+                        else None
+                    ),
+                    _utc_now(),
+                ),
+            )
+            self._conn.commit()
+            assert cur.lastrowid is not None  # set by the INSERT above
+            return int(cur.lastrowid)
+
+    def record_witness_observation(
+        self,
+        run_id: int,
+        iteration: int,
+        turn: int | None = None,
+        phase: str = "",
+        signature: str = "",
+        resources: Any = None,
+        event_seq: int | None = None,
+    ) -> int:
+        """Append one per-step witness observation and return its id.
+
+        Observations are keyed by ``run_id`` alone (the corresponding
+        ``witness_results`` row is written at the end of the run) and are
+        appended as they happen, so a live UI can poll them.  ``turn`` and
+        ``event_seq`` are nullable; ``resources`` is any JSON-encodable mapping.
+        """
+        with _DB_LOCK:
+            cur = self._conn.execute(
+                "INSERT INTO witness_observations "
+                "(run_id, iteration, turn, phase, signature, resources_json, "
+                " event_seq, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    int(run_id),
+                    int(iteration),
+                    None if turn is None else int(turn),
+                    str(phase or ""),
+                    str(signature or ""),
+                    json.dumps(
+                        resources if resources is not None else {}, sort_keys=True
+                    ),
+                    None if event_seq is None else int(event_seq),
                     _utc_now(),
                 ),
             )
@@ -861,6 +950,20 @@ class ExperimentStore:
             else:
                 rows = self._conn.execute(
                     "SELECT * FROM witness_results WHERE run_id = ? ORDER BY id",
+                    (int(run_id),),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def witness_observations(self, run_id: int | None = None) -> list[dict[str, Any]]:
+        """Per-step observations, optionally filtered to one run, oldest first."""
+        with _DB_LOCK:
+            if run_id is None:
+                rows = self._conn.execute(
+                    "SELECT * FROM witness_observations ORDER BY id"
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM witness_observations WHERE run_id = ? ORDER BY id",
                     (int(run_id),),
                 ).fetchall()
         return [dict(row) for row in rows]

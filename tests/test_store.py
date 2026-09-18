@@ -108,7 +108,7 @@ class TestSchema:
             "observed_deck_cards", "observed_pairs",
             "evaluation_runs", "evaluation_results",
             "motif_runs", "motif_enrichment",
-            "witness_runs", "witness_results",
+            "witness_runs", "witness_results", "witness_observations",
         ):
             assert t in tables
         indexes = sqlite3.connect(path).execute(
@@ -120,9 +120,11 @@ class TestSchema:
             "idx_predicates_pred", "idx_hypotheses_status_score",
             "idx_oracle_ids_oracle", "idx_known_pairs_hash", "idx_eval_results_scope",
             "idx_motif_enrichment_motif", "idx_witness_results_run",
-            "idx_witness_results_verdict",
+            "idx_witness_results_verdict", "idx_witness_observations_run",
         } <= idx_names
-        assert [tuple(r) for r in versions] == [(1,), (2,), (3,), (4,), (5,), (6,)]
+        assert [tuple(r) for r in versions] == [
+            (1,), (2,), (3,), (4,), (5,), (6,), (7,)
+        ]
 
     def test_foreign_keys_enforced(self, tmp_path):
         store = ExperimentStore(tmp_path / "exp.sqlite")
@@ -158,6 +160,61 @@ class TestSchema:
         assert "witness_runs" in tables
         assert "witness_results" in tables
         assert versions == [(1,), (2,), (3,), (4,), (5,), (6,)]
+
+    def test_v7_migration_applies_to_fresh_and_existing_v6_db(self, tmp_path, monkeypatch):
+        # Fresh DB: created through the full migration chain, so it is stamped
+        # all the way to v7 and carries the v7 table/columns.
+        fresh_path = tmp_path / "fresh.sqlite"
+        fresh = ExperimentStore(fresh_path)
+        fresh_columns = {
+            r["name"] for r in fresh._conn.execute("PRAGMA table_info(witness_results)")
+        }
+        fresh_obs = {
+            r["name"]
+            for r in fresh._conn.execute("PRAGMA table_info(witness_observations)")
+        }
+        fresh_versions = [
+            tuple(r) for r in fresh._conn.execute("SELECT version FROM schema_version")
+        ]
+        fresh.close()
+        assert {"evidence_json", "diagnostics_json"} <= fresh_columns
+        assert fresh_obs == {
+            "id", "run_id", "iteration", "turn", "phase",
+            "signature", "resources_json", "event_seq", "created_at",
+        }
+        assert fresh_versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
+
+        # Existing v6 DB: build one at v6, then upgrade through migration 7.
+        old_path = tmp_path / "v6.sqlite"
+        monkeypatch.setattr(store_module, "_SCHEMA_VERSION", 6)
+        old = ExperimentStore(old_path)
+        old_columns = {
+            r["name"] for r in old._conn.execute("PRAGMA table_info(witness_results)")
+        }
+        old.close()
+        assert "evidence_json" not in old_columns
+        assert "diagnostics_json" not in old_columns
+
+        monkeypatch.setattr(store_module, "_SCHEMA_VERSION", 7)
+        upgraded = ExperimentStore(old_path)
+        new_columns = {
+            r["name"]
+            for r in upgraded._conn.execute("PRAGMA table_info(witness_results)")
+        }
+        tables = {
+            r[0]
+            for r in upgraded._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        versions = [
+            tuple(r)
+            for r in upgraded._conn.execute("SELECT version FROM schema_version")
+        ]
+        upgraded.close()
+        assert {"evidence_json", "diagnostics_json"} <= new_columns
+        assert "witness_observations" in tables
+        assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
 
 
 class TestWitnessPersistence:
@@ -206,6 +263,57 @@ class TestWitnessPersistence:
         with pytest.raises(sqlite3.IntegrityError):
             store.record_witness_result(999999, verdict="no_loop")
         store.close()
+
+    def test_witness_observation_roundtrip(self, tmp_path):
+        store = ExperimentStore(tmp_path / "w.sqlite")
+        run_id = store.start_witness_run(seeds=[1])
+        # Observations are keyed by run_id alone: they can be appended before
+        # any witness_results row exists (the live-UI contract).
+        first = store.record_witness_observation(
+            run_id, 0, turn=1, phase="Main1", signature="sig-base",
+            resources={"mana": 8, "tokens": 0}, event_seq=0,
+        )
+        second = store.record_witness_observation(
+            run_id, 1, turn=1, phase="Main1", signature="sig-iter1",
+            resources={"mana": 9, "tokens": 1}, event_seq=4,
+        )
+        # Nullable turn/event_seq round-trip as NULL.
+        third = store.record_witness_observation(run_id, 2, phase="Combat")
+        rows = store.witness_observations(run_id)
+        store.close()
+        assert [r["id"] for r in rows] == [first, second, third]
+        assert [r["iteration"] for r in rows] == [0, 1, 2]
+        assert rows[0]["phase"] == "Main1"
+        assert rows[0]["signature"] == "sig-base"
+        assert json.loads(rows[0]["resources_json"]) == {"mana": 8, "tokens": 0}
+        assert rows[1]["event_seq"] == 4
+        assert json.loads(rows[1]["resources_json"]) == {"mana": 9, "tokens": 1}
+        assert rows[2]["turn"] is None
+        assert rows[2]["event_seq"] is None
+        assert rows[2]["signature"] == ""
+        assert json.loads(rows[2]["resources_json"]) == {}
+        assert all(r["created_at"].endswith("+00:00") for r in rows)
+
+    def test_evidence_and_diagnostics_roundtrip(self, tmp_path):
+        store = ExperimentStore(tmp_path / "w.sqlite")
+        run_id = store.start_witness_run(seeds=[1])
+        evidence = {
+            "kind": "recurrence",
+            "grown": ["mana", "tokens"],
+            "diagnostics": {"executed_actions": 3, "link_hits": [2, 1]},
+        }
+        store.record_witness_result(
+            run_id, verdict="loops", evidence=evidence,
+            diagnostics=evidence["diagnostics"],
+        )
+        # Omitting them stores NULL (the columns are nullable).
+        store.record_witness_result(run_id, verdict="no_loop")
+        rows = store.witness_results(run_id)
+        store.close()
+        assert json.loads(rows[0]["evidence_json"]) == evidence
+        assert json.loads(rows[0]["diagnostics_json"]) == evidence["diagnostics"]
+        assert rows[1]["evidence_json"] is None
+        assert rows[1]["diagnostics_json"] is None
 
 
 class TestRecording:
