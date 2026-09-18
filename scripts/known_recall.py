@@ -30,6 +30,7 @@ from pathlib import Path
 
 from combo_discovery import witness as W
 from combo_discovery.env import ForgeEnvClient
+from combo_discovery.research_config import load_config
 from combo_discovery.search import witness_with_search
 from combo_discovery.store import ExperimentStore
 
@@ -92,7 +93,13 @@ def main(argv: list[str] | None = None) -> int:
         "--search", action="store_true",
         help="route inconclusive runs through the bounded search fallback",
     )
+    parser.add_argument(
+        "--persist", action="store_true",
+        help="stream observations + verdicts into the witness tables (off by default)",
+    )
     args = parser.parse_args(argv)
+    # Engine metadata for persisted runs (research.toml falls back to defaults).
+    cfg = load_config()
 
     decks = []
     for part in args.decks.split(","):
@@ -135,61 +142,93 @@ def main(argv: list[str] | None = None) -> int:
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    store = ExperimentStore(Path(args.db))
+    # Only touch the database when asked: the default path stays write-free.
+    store = ExperimentStore(Path(args.db)) if args.persist else None
     results: list[dict] = []
-    with ForgeEnvClient(host=args.host, port=args.port) as client:
-        client.connect()
-        for combo_id, a, b in batch:
-            combo = W.Candidate(
-                cards=(display.get(a, a), display.get(b, b)),
-                type_lines=(type_lines.get(a, ""), type_lines.get(b, "")),
-                kind="pair", key=str(combo_id), pattern="known_pair",
-            )
-            policy = W.WitnessPolicy(combo)
-            engine = _engine_kind(a, b, oracle)
-            try:
-                if args.search:
-                    res = witness_with_search(
-                        client, W.build_scenario(combo), combo,
-                        target=combo.cards[0], seeds=[1], max_iterations=6,
-                        max_decisions=256, decks=decks,
-                        search_nodes=200, search_depth=60,
+    try:
+        with ForgeEnvClient(host=args.host, port=args.port) as client:
+            client.connect()
+            for combo_id, a, b in batch:
+                combo = W.Candidate(
+                    cards=(display.get(a, a), display.get(b, b)),
+                    type_lines=(type_lines.get(a, ""), type_lines.get(b, "")),
+                    kind="pair", key=str(combo_id), pattern="known_pair",
+                )
+                scenario = W.build_scenario(combo)
+                policy = W.WitnessPolicy(combo)
+                engine = _engine_kind(a, b, oracle)
+                run_id = None
+                recorder = None
+                if store is not None:
+                    run_id, recorder = W.start_witness_recording(
+                        store, scenario=scenario, seeds=[1],
+                        params={"max_iterations": 6, "max_decisions": 256},
+                        engine_commit=cfg.engine_commit,
+                        proto_version=cfg.proto_version,
                     )
-                    diag = (res.evidence or {}).get("diagnostics", {})
-                else:
-                    res = W.run_witness(
-                        client, W.build_scenario(combo), policy,
-                        seeds=[1], max_iterations=6, max_decisions=256, decks=decks,
-                        candidate_kind=combo.kind, candidate_key=combo.key,
-                        card_names=combo.cards, infinite=combo.infinite,
-                    )
-                    diag = policy.diagnostics()
-                evidence = res.evidence or {}
-                record = {
-                    "combo_id": combo_id,
-                    "cards": [display.get(a, a), display.get(b, b)],
-                    "engine": engine,
-                    "verdict": res.verdict,
-                    "executed": int(diag.get("executed_actions", 0)),
-                    "reason": evidence.get("kind") or evidence.get("reason"),
-                }
-            except Exception as exc:  # noqa: BLE001
-                record = {
-                    "combo_id": combo_id,
-                    "cards": [display.get(a, a), display.get(b, b)],
-                    "engine": engine,
-                    "verdict": "error",
-                    "executed": 0,
-                    "reason": str(exc),
-                }
-            results.append(record)
-            out_path.write_text(json.dumps(results, indent=1))  # survive interruptions
-            print(
-                f"  {combo_id:7d} [{engine:10s}] {record['verdict']:12s} "
-                f"exec={record['executed']:2d} {record['cards'][0]} + "
-                f"{record['cards'][1]}  {record['reason']}"
-            )
-    store.close()
+                persisted_res: W.WitnessResult | None = None
+                try:
+                    if args.search:
+                        # witness_with_search runs two games and does not thread a
+                        # recorder through, so its observations are persisted in
+                        # bulk at the end (below) rather than streamed live.
+                        res = witness_with_search(
+                            client, scenario, combo,
+                            target=combo.cards[0], seeds=[1], max_iterations=6,
+                            max_decisions=256, decks=decks,
+                            search_nodes=200, search_depth=60,
+                        )
+                        diag = (res.evidence or {}).get("diagnostics", {})
+                    else:
+                        res = W.run_witness(
+                            client, scenario, policy,
+                            seeds=[1], max_iterations=6, max_decisions=256,
+                            decks=decks,
+                            candidate_kind=combo.kind, candidate_key=combo.key,
+                            card_names=combo.cards, infinite=combo.infinite,
+                            recorder=recorder,
+                        )
+                        diag = policy.diagnostics()
+                    persisted_res = res
+                    evidence = res.evidence or {}
+                    record = {
+                        "combo_id": combo_id,
+                        "cards": [display.get(a, a), display.get(b, b)],
+                        "engine": engine,
+                        "verdict": res.verdict,
+                        "executed": int(diag.get("executed_actions", 0)),
+                        "reason": evidence.get("kind") or evidence.get("reason"),
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    record = {
+                        "combo_id": combo_id,
+                        "cards": [display.get(a, a), display.get(b, b)],
+                        "engine": engine,
+                        "verdict": "error",
+                        "executed": 0,
+                        "reason": str(exc),
+                    }
+                    if store is not None and run_id is not None:
+                        # Never leave the run row without a result.
+                        W.persist_error_result(
+                            store, run_id, scenario=scenario, error=exc,
+                            candidate_kind=combo.kind, candidate_key=combo.key,
+                            card_names=combo.cards,
+                        )
+                        run_id = None
+                if store is not None and run_id is not None and persisted_res is not None:
+                    W.persist_witness(store, persisted_res, run_id=run_id)
+                results.append(record)
+                # survive interruptions
+                out_path.write_text(json.dumps(results, indent=1))
+                print(
+                    f"  {combo_id:7d} [{engine:10s}] {record['verdict']:12s} "
+                    f"exec={record['executed']:2d} {record['cards'][0]} + "
+                    f"{record['cards'][1]}  {record['reason']}"
+                )
+    finally:
+        if store is not None:
+            store.close()
 
     counts = Counter(r["verdict"] for r in results)
     print(

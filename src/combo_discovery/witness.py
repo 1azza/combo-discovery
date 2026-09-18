@@ -2093,6 +2093,40 @@ def run_witness(
 # ---------------------------------------------------------------------------
 
 
+def start_witness_recording(
+    store: Any,
+    *,
+    scenario: Scenario,
+    seeds: Sequence[int],
+    params: dict[str, Any] | None = None,
+    engine_commit: str = "",
+    proto_version: int = PROTOCOL_VERSION,
+    policy_version: str = WITNESS_POLICY_VERSION,
+    notes: str = "",
+) -> tuple[int, Callable[[Observation], None]]:
+    """Start a ``witness_runs`` row and return ``(run_id, live_recorder)``.
+
+    Shared by ``combo-witness --persist`` and the batch instruments: the run row
+    is opened *before* the run so observations can stream to a UI, and the
+    returned recorder is meant to be passed to :func:`run_witness` as
+    ``recorder=``.  Finish with
+    ``persist_witness(store, result, run_id=run_id, ...)``.  This is the single
+    place that builds the pre-run row, so every writer records the same fields.
+    """
+    run_id = int(
+        store.start_witness_run(
+            engine_commit=engine_commit,
+            proto_version=int(proto_version),
+            policy_version=policy_version,
+            scenario_json=scenario.canonical_json(),
+            seeds=list(seeds),
+            params=params or {},
+            notes=notes,
+        )
+    )
+    return run_id, observation_recorder(store, run_id)
+
+
 def observation_recorder(store: Any, run_id: int) -> Callable[[Observation], None]:
     """Build a live ``recorder`` that appends each observation immediately.
 
@@ -2206,6 +2240,41 @@ def persist_witness(
         diagnostics=diagnostics,
     )
     return active_id, result_id
+
+
+def persist_error_result(
+    store: Any,
+    run_id: int,
+    *,
+    scenario: Scenario,
+    error: Any,
+    candidate_kind: str = "",
+    candidate_key: str = "",
+    card_names: Sequence[str] = (),
+    seed: int = 0,
+    seeds: Sequence[int] | None = None,
+) -> int:
+    """Persist an ``error`` verdict for a run that raised before returning one.
+
+    Guarantees a ``witness_runs`` row started by :func:`start_witness_recording`
+    is never left without a result.  Reuses :func:`persist_witness`, so any
+    observations already streamed live are kept and the error reason lands in
+    ``evidence_json``.  Returns the result id.
+    """
+    result = WitnessResult(
+        verdict="error",
+        scenario=scenario,
+        iterations=0,
+        seed=int(seed),
+        seeds=[int(s) for s in (seeds if seeds is not None else [seed])],
+        evidence={"error": f"{type(error).__name__}: {error}"},
+        error=str(error),
+        candidate_kind=candidate_kind,
+        candidate_key=candidate_key,
+        card_names=tuple(card_names),
+    )
+    _, result_id = persist_witness(store, result, run_id=int(run_id))
+    return result_id
 
 
 # ---------------------------------------------------------------------------
@@ -2446,14 +2515,9 @@ def main(argv: list[str] | None = None) -> int:
     run_id: int | None = None
     recorder = None
     if store is not None:
-        run_id = store.start_witness_run(
-            proto_version=PROTOCOL_VERSION,
-            policy_version=WITNESS_POLICY_VERSION,
-            scenario_json=scenario.canonical_json(),
-            seeds=seeds,
-            params=params,
+        run_id, recorder = start_witness_recording(
+            store, scenario=scenario, seeds=seeds, params=params
         )
-        recorder = observation_recorder(store, run_id)
 
     try:
         with ForgeEnvClient(host=args.host, port=args.port) as client:
@@ -2531,6 +2595,7 @@ __all__ = [
     "load_candidate",
     "main",
     "observation_recorder",
+    "persist_error_result",
     "persist_observations",
     "persist_witness",
     "resource_totals",
