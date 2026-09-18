@@ -306,10 +306,17 @@ def default_policy(ctx: DecisionContext) -> Answer:
     """
     t = ctx.decision_type
     if t == pb.DECISION_TYPE_PRIORITY:
-        # Previous v2 behavior: highest option id.
+        # Previous v2 behavior: highest option id, but never the synthetic
+        # "pass" option unless it is the only thing offered.  The spin guard in
+        # the witness driver is the only deliberate passer; defaulting to it
+        # here would silently change every fallback.
         if not ctx.options:
             raise ValueError("PRIORITY decision with no options")
-        return ("option_id", sorted(ctx.options, key=lambda o: o.id)[-1].id)
+        non_pass = [
+            o for o in ctx.options if (o.kind or "").strip().lower() != "pass"
+        ]
+        pool = non_pass or ctx.options
+        return ("option_id", sorted(pool, key=lambda o: o.id)[-1].id)
     if t == pb.DECISION_TYPE_MULLIGAN_KEEP:
         return ("boolean_answer", True)
     if t == pb.DECISION_TYPE_MULLIGAN_TUCK:
