@@ -2,8 +2,8 @@
 
 No framework: :class:`http.server.ThreadingHTTPServer` plus a path dispatcher.
 Only ``GET``/``HEAD`` are implemented — there is no write surface at all.
-HTML is rendered server-side; the JSON endpoints exist for the feed poll and for
-programmatic inspection.
+HTML is rendered server-side; the JSON endpoints exist for the Gallery poll and
+for programmatic inspection.
 """
 
 from __future__ import annotations
@@ -17,7 +17,8 @@ from urllib.parse import parse_qs, urlparse
 
 from ..corpus.names import normalize_card_name, pair_hash
 from .db import ReadOnlyStore, parse_json
-from .gallery import build_gallery
+from .gallery import PAGE_SIZE, build_gallery
+from .images import warm_images
 from .pages import (
     layout,
     page_candidate,
@@ -28,7 +29,7 @@ from .render import build_samples, find_cycles
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-GALLERY_LIMIT = 18
+GALLERY_LIMIT = PAGE_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -201,9 +202,7 @@ class WebHandler(BaseHTTPRequestHandler):
 
         # -- HTML pages -----------------------------------------------------
         if path == "/":
-            payload = build_gallery(
-                self.store, query, per_column=GALLERY_LIMIT
-            )
+            payload = build_gallery(self.store, query, per_page=GALLERY_LIMIT)
             self._html(page_gallery(payload, self.db_path), head=head)
             return
         if len(parts) == 2 and parts[0] == "run" and parts[1].isdigit():
@@ -226,7 +225,7 @@ class WebHandler(BaseHTTPRequestHandler):
             return
 
         if parts == ["gallery"]:
-            payload = build_gallery(self.store, query, per_column=GALLERY_LIMIT)
+            payload = build_gallery(self.store, query, per_page=GALLERY_LIMIT)
             self._json(payload, head=head)
             return
         if parts == ["runs"]:
@@ -399,6 +398,11 @@ def serve(
         return 1
     bound_host, bound_port = server.server_address[:2]
     print(f"combo-web  http://{bound_host}:{bound_port}  (db: {db_path}, read-only)")
+    # Pay the one-off Scryfall bulk load now, so the first reader gets a fast
+    # paint instead of waiting ~4s on the first card lookup.
+    warmed = warm_images()
+    if warmed > 0.2:
+        print(f"combo-web  card index warmed in {warmed:.1f}s")
     print("press ctrl+c to stop")
     try:
         server.serve_forever()

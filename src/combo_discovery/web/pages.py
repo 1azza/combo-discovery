@@ -16,9 +16,9 @@ from .assets import CSS, JS
 from .db import parse_json
 from .gallery import (
     COLOUR_FILTERS,
-    MV_FILTERS,
     TYPE_FILTERS,
     render_board,
+    render_tabs,
 )
 from .render import (
     build_samples,
@@ -63,7 +63,8 @@ def _nav(active: str) -> str:
             parts.append(
                 '<span class="nav-item nav-disabled" aria-disabled="true">'
                 f'<span class="nav-title">{esc(title)}</span>'
-                f'<span class="nav-sub">{esc(subtitle)} · coming soon</span></span>'
+                f'<span class="nav-sub">{esc(subtitle)}</span>'
+                '<span class="nav-soon">coming soon</span></span>'
             )
         else:
             classes = "nav-item active" if key == active else "nav-item"
@@ -150,10 +151,11 @@ def _filter_select(
 def page_gallery(payload: dict[str, Any], db_path: str) -> str:
     filters = payload.get("filters") or {}
     colour = (filters.get("colours") or [""])[0] if filters.get("colours") else ""
+    tab = payload.get("tab") or "queued"
     form = (
         _filter_select("color", "Colour", COLOUR_FILTERS, colour)
-        + _filter_select("mv", "Mana value", MV_FILTERS, filters.get("mv") or "")
         + _filter_select("type", "Card type", TYPE_FILTERS, filters.get("type") or "")
+        + f'<input type="hidden" name="tab" value="{esc(tab)}">'
     )
     body = f"""
 <section class="hero" style="--i:0">
@@ -170,14 +172,15 @@ def page_gallery(payload: dict[str, Any], db_path: str) -> str:
   <span id="gallery-live" class="live"><span class="dot"></span> live</span>
   <span class="count-tag faint" id="gallery-updated"></span>
 </div>
+{render_tabs(payload["tabs"])}
 <section class="board-wrap" aria-label="Pairings by status">
-  {render_board(payload["columns"])}
+  {render_board(payload["columns"], tab)}
 </section>
-<p class="board-note">Showing the strongest pairings in each column. The board
-refreshes on its own.</p>
+<p class="board-note">One tile per pairing; open a tile's attempts to see every
+test. Columns page 12 at a time and refresh on their own.</p>
 <div class="lightbox" id="lightbox" hidden>
   <button type="button" class="lb-close" id="lightbox-close">Close</button>
-  <img class="lb-img" id="lightbox-img" alt="" width="488" height="680">
+  <img class="lb-img" id="lightbox-img" alt="" width="672" height="936">
 </div>
 """
     return layout("The Gallery", body, active="gallery", db_path=db_path)

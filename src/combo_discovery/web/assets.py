@@ -1,8 +1,8 @@
 """Inline stylesheet and the small vanilla-JS enhancement.
 
 Everything here is embedded in the page: no CDN, no external fonts, no build
-step. The Javascript only powers the live feed (polling ``/api/feed``) and the
-copy-to-clipboard button; every page is fully readable with JS disabled.
+step. The Javascript only powers the Gallery board (polling ``/api/gallery``)
+and the copy-to-clipboard button; every page is fully readable with JS disabled.
 """
 
 from __future__ import annotations
@@ -127,8 +127,20 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
 .nav-item.active { border-color: var(--border-hi); background: var(--accent-dim); }
 .nav-item.active .nav-title { color: var(--accent-hi); }
 .nav-item.active .nav-sub { color: var(--accent); }
-.nav-disabled { cursor: not-allowed; opacity: 0.6; }
+.nav-disabled { cursor: not-allowed; opacity: 0.75; }
 .nav-disabled .nav-title { color: var(--faint); }
+.nav-soon {
+  align-self: flex-start;
+  margin-top: 1px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent);
+  border-radius: 999px;
+  padding: 0 6px;
+}
 
 .skip {
   position: absolute;
@@ -281,10 +293,47 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
 .col-refuted .col-title::before { background: var(--err); border-radius: 1px; }
 .col-indecided .col-head { border-top-color: var(--muted); }
 .col-indecided .col-title::before { background: transparent; border: 1.5px solid var(--muted); }
-.col-queued .col-head { border-top-color: var(--faint); border-top-style: dashed; }
-.col-queued .col-title::before { background: transparent; border: 1.5px dashed var(--faint); }
+.col-queued .col-head { border-top-color: var(--muted); }
+.col-queued .col-title::before { background: transparent; border: 1.5px dashed var(--muted); }
 .col-playing .col-head { border-top-color: var(--accent); }
 .col-playing .col-title::before { background: var(--accent); box-shadow: 0 0 0 0 var(--accent-dim); animation: pulse 1.6s ease-out infinite; }
+
+/* -- gallery: status tabs (narrow widths only) --------------------------- */
+
+.status-tabs { display: none; }
+.tab-mark { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.status-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 11px;
+  white-space: nowrap;
+}
+.status-tab:hover { color: var(--text); border-color: var(--border-hi); text-decoration: none; }
+.status-tab.active { color: var(--text); border-color: var(--border-hi); background: var(--panel-hi); }
+.tab-count {
+  font-size: 10px;
+  color: var(--faint);
+  background: var(--panel);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+.tab-playing.active { color: var(--accent); }
+.tab-playing .tab-mark { background: var(--accent); animation: pulse 1.6s ease-out infinite; }
+.tab-loops.active { color: var(--ok); }
+.tab-loops .tab-mark { background: var(--ok); }
+.tab-refuted.active { color: var(--err); }
+.tab-refuted .tab-mark { background: var(--err); border-radius: 1px; }
+.tab-indecided .tab-mark { background: transparent; border: 1.5px solid var(--muted); }
+.tab-queued .tab-mark { background: transparent; border: 1.5px dashed var(--muted); }
 
 /* -- gallery: tiles ------------------------------------------------------ */
 
@@ -363,29 +412,79 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
 .tile-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .tile-when { font-family: var(--mono); font-size: 10px; color: var(--faint); margin-left: auto; }
 .tile-open { font-family: var(--mono); font-size: 11px; color: var(--accent); white-space: nowrap; }
+.tile-mixed {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
 
+/* Attempts: one pairing, several tests. */
+.tile-tries { margin-top: 6px; }
+.tile-tries summary {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.tile-tries summary::marker { color: var(--accent); }
+.tries { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.try { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-family: var(--mono); font-size: 10.5px; }
+.try-meta { color: var(--muted); }
+.try-link { color: var(--accent); margin-left: auto; white-space: nowrap; }
+
+/* One chip system: every status shares weight (border + tint + shape). */
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   font-family: var(--mono);
   font-size: 10px;
+  font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  padding: 3px 8px;
+  padding: 3px 9px;
   border-radius: 999px;
   border: 1px solid currentColor;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  color: var(--muted);
   white-space: nowrap;
 }
-.chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
 .chip-loops { color: var(--ok); }
 .chip-refuted { color: var(--err); }
 .chip-refuted::before { border-radius: 1px; }
 .chip-indecided { color: var(--muted); }
 .chip-indecided::before { background: transparent; border: 1.5px solid currentColor; }
-.chip-queued { color: var(--faint); border-style: dashed; }
+.chip-queued { color: var(--muted); }
 .chip-queued::before { background: transparent; border: 1.5px dashed currentColor; }
 .chip-playing { color: var(--accent); }
+
+/* -- gallery: pager ------------------------------------------------------ */
+
+.col-page {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 9px 12px 11px;
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.col-page-nav { display: inline-flex; align-items: center; gap: 8px; }
+.col-page-num { color: var(--muted); }
+.page-link { color: var(--accent); white-space: nowrap; }
+.page-link.disabled { color: var(--faint); opacity: 0.5; }
+.page-link.disabled:hover { text-decoration: none; }
 
 .board-note { color: var(--faint); font-size: 12px; margin: 10px 2px 0; }
 
@@ -767,8 +866,21 @@ details.tech > summary:hover { color: var(--text); }
 
 @media (max-width: 900px) {
   .grid.two, .grid.halves { grid-template-columns: minmax(0, 1fr); }
+  /* One status at a time, reachable from the tab strip. */
+  .status-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 12px;
+  }
   .board { grid-template-columns: minmax(0, 1fr); }
   .board-wrap { overflow-x: visible; }
+  .board-col { display: none; }
+  .board[data-active="queued"] .col-queued,
+  .board[data-active="playing"] .col-playing,
+  .board[data-active="loops"] .col-loops,
+  .board[data-active="refuted"] .col-refuted,
+  .board[data-active="indecided"] .col-indecided { display: flex; }
   .board-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
 }
 
@@ -784,7 +896,8 @@ details.tech > summary:hover { color: var(--text); }
   .verdict-sentence { font-size: 15px; }
   .cards-cell .card-link { font-size: 14px; }
   .nav-item { padding: 5px 9px; }
-  .nav-item .nav-sub { display: none; }
+  .nav-item:not(.nav-disabled) .nav-sub { display: none; }
+  .nav-soon { font-size: 8.5px; }
 }
 
 @media (max-width: 380px) {
@@ -813,31 +926,24 @@ JS = """
   if (board && window.fetch && window.setInterval) {
     var live = document.getElementById("gallery-live");
     var updated = document.getElementById("gallery-updated");
+    var prevCounts = {};
 
-    function apply(payload) {
-      var columns = payload.columns || [];
-      var before = {};
+    function positions() {
+      var box = {};
       board.querySelectorAll("article.tile[data-key]").forEach(function (tile) {
-        before[tile.getAttribute("data-key")] = tile.getBoundingClientRect();
+        box[tile.getAttribute("data-key")] = tile.getBoundingClientRect();
       });
+      return box;
+    }
 
-      columns.forEach(function (column) {
-        var body = board.querySelector('[data-body="' + column.key + '"]');
-        if (!body) { return; }
-        var signature = (column.html || "").length + ":" + column.count;
-        if (body.getAttribute("data-sig") === signature) { return; }
-        body.innerHTML = column.html || '<p class="col-empty">' + esc(column.empty) + "</p>";
-        body.setAttribute("data-sig", signature);
-        var counter = board.querySelector('[data-count="' + column.key + '"]');
-        if (counter && counter.textContent !== String(column.count)) {
-          counter.textContent = column.count;
-          counter.classList.remove("bump");
-          void counter.offsetWidth;
-          counter.classList.add("bump");
-        }
-      });
+    function bump(counter) {
+      counter.classList.remove("bump");
+      void counter.offsetWidth;
+      counter.classList.add("bump");
+    }
 
-      // FLIP: tiles that changed column visibly slide to their new home.
+    function flip(before) {
+      // Tiles that changed column visibly slide to their new home.
       board.querySelectorAll("article.tile[data-key]").forEach(function (tile) {
         var previous = before[tile.getAttribute("data-key")];
         if (!previous) {
@@ -856,13 +962,48 @@ JS = """
           tile.style.transform = "";
         });
       });
+    }
 
+    function apply(payload) {
+      var columns = payload.columns || [];
+      var before = positions();
+
+      columns.forEach(function (column) {
+        var section = board.querySelector('section[data-col="' + column.key + '"]');
+        if (!section) { return; }
+        var signature = column.sig || (column.count + ":" + (column.html || "").length);
+        if (section.getAttribute("data-sig") === signature) { return; }
+        var counter = section.querySelector("[data-count]");
+        var changed = prevCounts[column.key] !== undefined
+          && prevCounts[column.key] !== column.count;
+        section.innerHTML = column.html
+          || '<header class="col-head"><h2 class="col-title"></h2></header>'
+             + '<div class="board-body"><p class="col-empty">' + esc(column.empty) + "</p></div>";
+        section.setAttribute("data-sig", signature);
+        prevCounts[column.key] = column.count;
+        if (counter && changed) {
+          var next = section.querySelector("[data-count]");
+          if (next) { bump(next); }
+        }
+      });
+
+      // Tab counts tick with the board (the tab strip lives outside it).
+      (payload.tabs || []).forEach(function (tab) {
+        var counter = document.querySelector('[data-tab-count="' + tab.key + '"]');
+        if (counter && counter.textContent !== String(tab.count)) {
+          counter.textContent = tab.count;
+        }
+      });
+
+      flip(before);
       if (updated) { updated.textContent = "updated " + new Date().toLocaleTimeString(); }
       if (live) { live.classList.remove("stale"); }
     }
 
     function tick() {
       if (document.hidden) { return; }
+      // location.search carries filters, tab and page, so a poll never resets a
+      // reader who has paged or switched tabs.
       fetch("/api/gallery" + window.location.search, { cache: "no-store" })
         .then(function (response) {
           if (!response.ok) { throw new Error("bad status"); }
