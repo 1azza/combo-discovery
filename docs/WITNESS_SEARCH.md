@@ -273,17 +273,17 @@ copy/untap class (a copy engine plus an untapper):
 
 | engine | n | loops | refuted/no_loop | inconclusive | recall |
 |---|---|---|---|---|---|
-| all | 133 | 57 | 25 | 51 | **43%** |
-| activated (`{T}`-cost copy) | 99 | 54 | 12 | 33 | **55%** |
-| triggered (attack/ETB/loyalty) | 34 | 3 | 13 | 18 | **9%** |
+| all | 133 | 61 | 58 | 14 | **46%** |
+| activated (`{T}`-cost copy) | 99 | 54 | 38 | 7 | **55%** |
+| triggered (attack/ETB/loyalty) | 34 | 7 | 20 | 7 | **21%** |
 
 Progression across the fixes: 32% -> 35% (activated/static copy engines, life out
-of the signature) -> **43%** (credit automatic trigger events to links, and sample
-per trigger so a trigger-driven run collects more than the baseline sample).
-Activated-engine recall is now 55%. Triggered engines rose 3% -> 9% but remain
-the weak spot: crediting a trigger is not enough, because a triggered line must
-be *repeated* by playing the game (upkeep after upkeep, combat after combat) —
-that is the goal-directed pilot's job.
+of the signature) -> 43% (credit automatic trigger events to links, sample per
+trigger) -> **46%** (move monotonic zone counts into resources; surface a
+`pass` option at PRIORITY so the spin guard can advance past a no-op action).
+Triggered-engine recall more than doubled (9% -> 21%) and undecided runs fell from
+51 to 14. The residual triggered gap is condition setup and combos that genuinely
+do not loop.
 
 Readings:
 
