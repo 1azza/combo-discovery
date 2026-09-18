@@ -14,6 +14,8 @@ from combo_discovery.witness import (
     CardSpec,
     Candidate,
     DEFAULT_GRAVEYARD,
+    GAME_STATE_GROWTH_KEYS,
+    GROWTH_KEYS,
     LinkPlan,
     MAX_FORCED_PASSES,
     MAX_PREGAME_DECISIONS,
@@ -28,6 +30,7 @@ from combo_discovery.witness import (
     detect_loop,
     is_graveyard_gated,
     link_plans,
+    resource_totals,
     run_witness,
     synthetic_cycle,
     witness_signature,
@@ -732,6 +735,28 @@ class TestWitnessSignature:
         assert low.signature == high.signature
         assert high.resources["mana"] - low.resources["mana"] == 3
 
+    def test_zone_volumes_are_not_structural(self):
+        # Discard/draw/mill grow hand/graveyard/library counts monotonically, so
+        # they are resources, not structure.  Regression for Fear of Missing
+        # Out's ETB ("discard a card, then draw a card") growing the graveyard
+        # every iteration and stopping a genuine loop from recurring.
+        base = make_state()
+        changed = make_state()
+        changed.graveyard[0].cards.add(name="Dead", count=3)
+        changed.library[0].cards.add(name="Top", count=2)
+        changed.hand[0].cards.add(name="Held", count=1)
+        assert witness_signature(base) == witness_signature(changed)
+
+    def test_resource_totals_report_zone_volumes(self):
+        state = make_state()
+        state.graveyard[0].cards.add(name="Dead", count=3)
+        state.library[0].cards.add(name="Top", count=2)
+        state.hand[0].cards.add(name="Held", count=1)
+        totals = resource_totals(state)
+        assert totals["graveyard"] == 3
+        assert totals["library"] == 2
+        assert totals["hand"] == 1
+
     def test_signature_changes_with_battlefield(self):
         base = witness_signature(make_state())
         changed = make_state()
@@ -864,6 +889,23 @@ class TestDetectLoop:
         verdict, evidence = detect_loop(observations)
         assert verdict == "inconclusive"
         assert "counters" in evidence["reason"]
+
+    def test_zone_volume_growth_alone_is_not_a_loop(self):
+        # graveyard/library/hand growth is reported as a resource but is not a
+        # durable enough one to certify a loop: pure mill/discard stays
+        # rejected, exactly as before this change.
+        observations = [
+            obs(0, "s0", graveyard=0, library=0),
+            obs(1, "same", graveyard=1, library=1),
+            obs(2, "same", graveyard=2, library=2),
+        ]
+        verdict, _ = detect_loop(observations)
+        assert verdict == "inconclusive"
+
+    def test_zone_volumes_are_growth_keys_but_not_game_state(self):
+        for key in ("graveyard", "library", "hand"):
+            assert key in GROWTH_KEYS
+            assert key not in GAME_STATE_GROWTH_KEYS
 
     def test_insufficient_observations_is_inconclusive(self):
         assert detect_loop([])[0] == "inconclusive"

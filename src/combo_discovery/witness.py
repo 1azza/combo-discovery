@@ -121,6 +121,10 @@ _PERMANENT_TYPE_TOKENS = (
 
 #: Resource counters tracked for growth.  These are deliberately excluded from
 #: the witness signature so a growing loop can still recur structurally.
+#: ``graveyard``/``library``/``hand`` are included because discard/draw/mill
+#: move cards between them monotonically every iteration; they are reported in
+#: the evidence but are *not* durable enough to qualify a loop on their own (see
+#: :data:`GAME_STATE_GROWTH_KEYS`).
 GROWTH_KEYS = (
     "mana",
     "tokens",
@@ -130,6 +134,9 @@ GROWTH_KEYS = (
     "spells_resolved",
     "extra_phases",
     "permanents",
+    "graveyard",
+    "library",
+    "hand",
 )
 
 #: Growth in these counters is driven by the *policy's own* repeated actions
@@ -1232,30 +1239,37 @@ def witness_signature(state: pb.FullState) -> dict[str, Any]:
     """The structural projection that must recur for a loop.
 
     Captures *non-token* battlefield names/tapped/counters, phase, active
-    player, zone counts and the stack shape.  Monotonic *scalars* (mana pool,
-    **life totals**, total damage, cast counts, **token count**) are deliberately
-    excluded so they can accumulate across iterations without changing the
-    signature; they are tracked as growing resources by :func:`resource_totals`.
-    A token-growing loop therefore shows a recurring structure + a strictly
-    growing ``tokens`` resource.
+    player, the non-token battlefield count, ``exile``/``command`` counts and
+    the stack shape.  Monotonic *scalars* (mana pool, **life totals**, total
+    damage, cast counts, **token count**) are deliberately excluded so they can
+    accumulate across iterations without changing the signature; they are
+    tracked as growing resources by :func:`resource_totals`.  A token-growing
+    loop therefore shows a recurring structure + a strictly growing ``tokens``
+    resource.
+
+    The *volume* zone counts ``graveyard``/``library``/``hand`` are excluded for
+    the same reason: discard/draw/mill move cards between them monotonically
+    every iteration, so including them stops a genuine loop from recurring
+    (Fear of Missing Out's ETB "discard a card, then draw a card" grows the
+    graveyard each pass).  They are reported as resources by
+    :func:`resource_totals`.  The battlefield count and ``exile``/``command``
+    stay structural: the non-token board must recur, and exile/command changes
+    are loop-relevant board shifts rather than per-iteration churn.
 
     Life is excluded for a concrete reason: a combat loop damages the opponent
     every iteration, so including life would stop the structure from recurring
     and reject a genuine loop (Combat Celebrant + Kiki-Jiki).  ``turn`` is also
     excluded (a turn-cycling loop should recur).  Library order is not exposed
-    by FullState v2 and is represented only as a count.
+    by FullState v2.
     """
     return {
         "phase": state.phase,
         "active_player": state.active_player,
         "battlefield": _battlefield_entries(state),
         "zone_counts": {
-            "hand": [_zone_count(z) for z in state.hand],
             "battlefield": [
                 _non_token_battlefield_count(state, z) for z in state.battlefield
             ],
-            "graveyard": [_zone_count(z) for z in state.graveyard],
-            "library": [_zone_count(z) for z in state.library],
             "exile": [_zone_count(z) for z in state.exile],
             "command": [_zone_count(z) for z in state.command],
         },
@@ -1310,6 +1324,11 @@ def resource_totals(
         "spells_resolved": int(spells_resolved),
         "extra_phases": int(extra_phases),
         "permanents": sum(len(list(z.permanents)) for z in state.battlefield),
+        # Zone *volumes*: discard/draw/mill grow these monotonically, so they
+        # are resources, not structure (see :func:`witness_signature`).
+        "graveyard": sum(_zone_count(z) for z in state.graveyard),
+        "library": sum(_zone_count(z) for z in state.library),
+        "hand": sum(_zone_count(z) for z in state.hand),
     }
 
 
