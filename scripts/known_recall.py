@@ -28,6 +28,7 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from combo_discovery import batch as B
 from combo_discovery import witness as W
 from combo_discovery.env import ForgeEnvClient
 from combo_discovery.research_config import load_config
@@ -97,6 +98,14 @@ def main(argv: list[str] | None = None) -> int:
         "--persist", action="store_true",
         help="stream observations + verdicts into the witness tables (off by default)",
     )
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="harness workers (1 = today's serial path; N uses ports port..port+N-1)",
+    )
+    parser.add_argument(
+        "--spawn", action="store_true",
+        help="spawn the worker harness servers before the sweep (implies --workers>1)",
+    )
     args = parser.parse_args(argv)
     # Engine metadata for persisted runs (research.toml falls back to defaults).
     cfg = load_config()
@@ -143,88 +152,152 @@ def main(argv: list[str] | None = None) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Only touch the database when asked: the default path stays write-free.
-    store = ExperimentStore(Path(args.db)) if args.persist else None
+    # ``--workers 1`` (the default) keeps the original serial code path exactly.
+    store = (
+        ExperimentStore(Path(args.db))
+        if (args.persist and args.workers <= 1)
+        else None
+    )
     results: list[dict] = []
     try:
-        with ForgeEnvClient(host=args.host, port=args.port) as client:
-            client.connect()
-            for combo_id, a, b in batch:
-                combo = W.Candidate(
-                    cards=(display.get(a, a), display.get(b, b)),
-                    type_lines=(type_lines.get(a, ""), type_lines.get(b, "")),
-                    kind="pair", key=str(combo_id), pattern="known_pair",
-                )
-                scenario = W.build_scenario(combo)
-                policy = W.WitnessPolicy(combo)
-                engine = _engine_kind(a, b, oracle)
-                run_id = None
-                recorder = None
-                if store is not None:
-                    run_id, recorder = W.start_witness_recording(
-                        store, scenario=scenario, seeds=[1],
-                        params={"max_iterations": 6, "max_decisions": 256},
-                        engine_commit=cfg.engine_commit,
-                        proto_version=cfg.proto_version,
+        if args.workers <= 1:
+            with ForgeEnvClient(host=args.host, port=args.port) as client:
+                client.connect()
+                for combo_id, a, b in batch:
+                    combo = W.Candidate(
+                        cards=(display.get(a, a), display.get(b, b)),
+                        type_lines=(type_lines.get(a, ""), type_lines.get(b, "")),
+                        kind="pair", key=str(combo_id), pattern="known_pair",
                     )
-                persisted_res: W.WitnessResult | None = None
-                try:
-                    if args.search:
-                        # witness_with_search runs two games and does not thread a
-                        # recorder through, so its observations are persisted in
-                        # bulk at the end (below) rather than streamed live.
-                        res = witness_with_search(
-                            client, scenario, combo,
-                            target=combo.cards[0], seeds=[1], max_iterations=6,
-                            max_decisions=256, decks=decks,
-                            search_nodes=200, search_depth=60,
+                    scenario = W.build_scenario(combo)
+                    policy = W.WitnessPolicy(combo)
+                    engine = _engine_kind(a, b, oracle)
+                    run_id = None
+                    recorder = None
+                    if store is not None:
+                        run_id, recorder = W.start_witness_recording(
+                            store, scenario=scenario, seeds=[1],
+                            params={"max_iterations": 6, "max_decisions": 256},
+                            engine_commit=cfg.engine_commit,
+                            proto_version=cfg.proto_version,
                         )
-                        diag = (res.evidence or {}).get("diagnostics", {})
-                    else:
-                        res = W.run_witness(
-                            client, scenario, policy,
-                            seeds=[1], max_iterations=6, max_decisions=256,
-                            decks=decks,
-                            candidate_kind=combo.kind, candidate_key=combo.key,
-                            card_names=combo.cards, infinite=combo.infinite,
-                            recorder=recorder,
-                        )
-                        diag = policy.diagnostics()
-                    persisted_res = res
-                    evidence = res.evidence or {}
-                    record = {
-                        "combo_id": combo_id,
-                        "cards": [display.get(a, a), display.get(b, b)],
-                        "engine": engine,
-                        "verdict": res.verdict,
-                        "executed": int(diag.get("executed_actions", 0)),
-                        "reason": evidence.get("kind") or evidence.get("reason"),
-                    }
-                except Exception as exc:  # noqa: BLE001
-                    record = {
-                        "combo_id": combo_id,
-                        "cards": [display.get(a, a), display.get(b, b)],
-                        "engine": engine,
-                        "verdict": "error",
-                        "executed": 0,
-                        "reason": str(exc),
-                    }
-                    if store is not None and run_id is not None:
-                        # Never leave the run row without a result.
-                        W.persist_error_result(
-                            store, run_id, scenario=scenario, error=exc,
-                            candidate_kind=combo.kind, candidate_key=combo.key,
-                            card_names=combo.cards,
-                        )
-                        run_id = None
-                if store is not None and run_id is not None and persisted_res is not None:
-                    W.persist_witness(store, persisted_res, run_id=run_id)
+                    persisted_res: W.WitnessResult | None = None
+                    try:
+                        if args.search:
+                            # witness_with_search runs two games and does not thread a
+                            # recorder through, so its observations are persisted in
+                            # bulk at the end (below) rather than streamed live.
+                            res = witness_with_search(
+                                client, scenario, combo,
+                                target=combo.cards[0], seeds=[1], max_iterations=6,
+                                max_decisions=256, decks=decks,
+                                search_nodes=200, search_depth=60,
+                            )
+                            diag = (res.evidence or {}).get("diagnostics", {})
+                        else:
+                            res = W.run_witness(
+                                client, scenario, policy,
+                                seeds=[1], max_iterations=6, max_decisions=256,
+                                decks=decks,
+                                candidate_kind=combo.kind, candidate_key=combo.key,
+                                card_names=combo.cards, infinite=combo.infinite,
+                                recorder=recorder,
+                            )
+                            diag = policy.diagnostics()
+                        persisted_res = res
+                        evidence = res.evidence or {}
+                        record = {
+                            "combo_id": combo_id,
+                            "cards": [display.get(a, a), display.get(b, b)],
+                            "engine": engine,
+                            "verdict": res.verdict,
+                            "executed": int(diag.get("executed_actions", 0)),
+                            "reason": evidence.get("kind") or evidence.get("reason"),
+                        }
+                    except Exception as exc:  # noqa: BLE001
+                        record = {
+                            "combo_id": combo_id,
+                            "cards": [display.get(a, a), display.get(b, b)],
+                            "engine": engine,
+                            "verdict": "error",
+                            "executed": 0,
+                            "reason": str(exc),
+                        }
+                        if store is not None and run_id is not None:
+                            # Never leave the run row without a result.
+                            W.persist_error_result(
+                                store, run_id, scenario=scenario, error=exc,
+                                candidate_kind=combo.kind, candidate_key=combo.key,
+                                card_names=combo.cards,
+                            )
+                            run_id = None
+                    if store is not None and run_id is not None and persisted_res is not None:
+                        W.persist_witness(store, persisted_res, run_id=run_id)
+                    results.append(record)
+                    # survive interruptions
+                    out_path.write_text(json.dumps(results, indent=1))
+                    print(
+                        f"  {combo_id:7d} [{engine:10s}] {record['verdict']:12s} "
+                        f"exec={record['executed']:2d} {record['cards'][0]} + "
+                        f"{record['cards'][1]}  {record['reason']}"
+                    )
+        else:
+            if args.search:
+                parser.error("--search cannot be combined with --workers > 1")
+            batch_pairs = [
+                (display.get(a, a), display.get(b, b)) for _cid, a, b in batch
+            ]
+            # Mirror the serial Candidate exactly: type lines only (the serial
+            # path deliberately passes no oracle_texts) and the combo id as key.
+            # Without this, graveyard-gated cards (delirium) would stage a
+            # supporting graveyard only on the parallel path and flip verdicts.
+            normalized = {name: norm for norm, name in display.items()}
+            combo_by_pair = {
+                (display.get(a, a), display.get(b, b)): combo_id
+                for combo_id, a, b in batch
+            }
+
+            def _known_candidate(engine: str, partner: str) -> W.Candidate:
+                n1 = normalized.get(engine, engine)
+                n2 = normalized.get(partner, partner)
+                return W.Candidate(
+                    cards=(engine, partner),
+                    type_lines=(type_lines.get(n1, ""), type_lines.get(n2, "")),
+                    kind="pair",
+                    key=str(combo_by_pair.get((engine, partner), "")),
+                    pattern="known_pair",
+                )
+
+            records = B.run_batch(
+                batch_pairs,
+                workers=args.workers,
+                host=args.host,
+                base_port=args.port,
+                spawn=args.spawn,
+                db=args.db,
+                persist=args.persist,
+                decks=decks,
+                seeds=[1],
+                max_iterations=6,
+                max_decisions=256,
+                candidate_builder=_known_candidate,
+            )
+            for (combo_id, a, b), rec in zip(batch, records):
+                record = {
+                    "combo_id": combo_id,
+                    "cards": [display.get(a, a), display.get(b, b)],
+                    "engine": _engine_kind(a, b, oracle),
+                    "verdict": rec["verdict"],
+                    "executed": int(rec.get("executed", 0)),
+                    "reason": rec.get("reason"),
+                }
                 results.append(record)
-                # survive interruptions
                 out_path.write_text(json.dumps(results, indent=1))
                 print(
-                    f"  {combo_id:7d} [{engine:10s}] {record['verdict']:12s} "
-                    f"exec={record['executed']:2d} {record['cards'][0]} + "
-                    f"{record['cards'][1]}  {record['reason']}"
+                    f"  {combo_id:7d} [{record['engine']:10s}] "
+                    f"{record['verdict']:12s} exec={record['executed']:2d} "
+                    f"{record['cards'][0]} + {record['cards'][1]}  "
+                    f"{record['reason']}"
                 )
     finally:
         if store is not None:

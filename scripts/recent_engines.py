@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
+from combo_discovery import batch as B
 from combo_discovery import witness as W
 from combo_discovery.corpus.names import normalize_card_name, pair_hash
 from combo_discovery.env import ForgeEnvClient
@@ -449,6 +450,14 @@ def main(argv: list[str] | None = None) -> int:
         "--persist", action="store_true",
         help="stream observations + verdicts into the witness tables (off by default)",
     )
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="harness workers (1 = today's serial path; N uses ports port..port+N-1)",
+    )
+    parser.add_argument(
+        "--spawn", action="store_true",
+        help="spawn the worker harness servers before the sweep",
+    )
     args = parser.parse_args(argv)
     # Engine metadata for persisted runs (research.toml falls back to defaults).
     cfg = load_config()
@@ -490,86 +499,148 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  engine {card.name} [{_year_label(releases, card.name)}]")
 
     # Only touch the database when asked: the default path stays write-free.
-    store = ExperimentStore(Path(args.db)) if args.persist else None
+    # ``--workers 1`` (the default) keeps the original serial code path exactly.
+    store = (
+        ExperimentStore(Path(args.db))
+        if (args.persist and args.workers <= 1)
+        else None
+    )
     results: list[dict] = []
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with ForgeEnvClient(host=args.host, port=args.port) as client:
-            client.connect()
-            for engine, partner in pairs:
-                engine_card = next(c for c in engines if c.name == engine)
-                partner_card = next(
-                    (c for c in cards if c.name == partner), None
-                )
-                combo = W.Candidate(
+        if args.workers <= 1:
+            with ForgeEnvClient(host=args.host, port=args.port) as client:
+                client.connect()
+                for engine, partner in pairs:
+                    engine_card = next(c for c in engines if c.name == engine)
+                    partner_card = next(
+                        (c for c in cards if c.name == partner), None
+                    )
+                    combo = W.Candidate(
+                        cards=(engine, partner),
+                        type_lines=(
+                            engine_card.type_line,
+                            partner_card.type_line if partner_card else "",
+                        ),
+                        oracle_texts=(
+                            engine_card.oracle_text,
+                            partner_card.oracle_text if partner_card else "",
+                        ),
+                        kind="pair",
+                        key=f"recent_engines:{engine}+{partner}",
+                        pattern="recent_engine",
+                    )
+                    scenario = W.build_scenario(combo)
+                    policy = W.WitnessPolicy(combo)
+                    run_id = None
+                    recorder = None
+                    if store is not None:
+                        run_id, recorder = W.start_witness_recording(
+                            store, scenario=scenario, seeds=[1],
+                            params={"max_iterations": 6, "max_decisions": 256},
+                            engine_commit=cfg.engine_commit,
+                            proto_version=cfg.proto_version,
+                        )
+                    persisted_res: W.WitnessResult | None = None
+                    try:
+                        res = W.run_witness(
+                            client, scenario, policy, seeds=[1],
+                            max_iterations=6, max_decisions=256, decks=decks,
+                            candidate_kind=combo.kind, candidate_key=combo.key,
+                            card_names=combo.cards, infinite=combo.infinite,
+                            recorder=recorder,
+                        )
+                        persisted_res = res
+                        diag = policy.diagnostics()
+                        evidence = res.evidence or {}
+                        record = {
+                            "engine_class": args.engine_class,
+                            "engine": engine,
+                            "partner": partner,
+                            "engine_year": _year_label(releases, engine),
+                            "partner_year": _year_label(releases, partner),
+                            "verdict": res.verdict,
+                            "executed": int(diag.get("executed_actions", 0)),
+                            "reason": evidence.get("kind") or evidence.get("reason"),
+                        }
+                    except Exception as exc:  # noqa: BLE001
+                        record = {
+                            "engine_class": args.engine_class,
+                            "engine": engine,
+                            "partner": partner,
+                            "engine_year": _year_label(releases, engine),
+                            "partner_year": _year_label(releases, partner),
+                            "verdict": "error",
+                            "executed": 0,
+                            "reason": str(exc),
+                        }
+                        if store is not None and run_id is not None:
+                            # Never leave the run row without a result.
+                            W.persist_error_result(
+                                store, run_id, scenario=scenario, error=exc,
+                                candidate_kind=combo.kind, candidate_key=combo.key,
+                                card_names=combo.cards,
+                            )
+                            run_id = None
+                    if store is not None and run_id is not None and persisted_res is not None:
+                        W.persist_witness(store, persisted_res, run_id=run_id)
+                    results.append(record)
+                    out_path.write_text(json.dumps(results, indent=1))
+                    print(
+                        f"  {record['verdict']:12s} exec={record['executed']:2d} "
+                        f"{engine} [{record['engine_year']}] + {partner} "
+                        f"[{record['partner_year']}]  {record['reason'] or ''}"
+                    )
+        else:
+            # Mirror the serial Candidate exactly (same key/pattern and the
+            # already-lower-cased oracle texts from this run's corpus read).
+            engine_by_name = {card.name: card for card in engines}
+            card_by_name = {card.name: card for card in cards}
+
+            def _recent_candidate(engine: str, partner: str) -> W.Candidate:
+                engine_card = engine_by_name.get(engine)
+                partner_card = card_by_name.get(partner)
+                return W.Candidate(
                     cards=(engine, partner),
                     type_lines=(
-                        engine_card.type_line,
+                        engine_card.type_line if engine_card else "",
                         partner_card.type_line if partner_card else "",
                     ),
                     oracle_texts=(
-                        engine_card.oracle_text,
+                        engine_card.oracle_text if engine_card else "",
                         partner_card.oracle_text if partner_card else "",
                     ),
                     kind="pair",
                     key=f"recent_engines:{engine}+{partner}",
                     pattern="recent_engine",
                 )
-                scenario = W.build_scenario(combo)
-                policy = W.WitnessPolicy(combo)
-                run_id = None
-                recorder = None
-                if store is not None:
-                    run_id, recorder = W.start_witness_recording(
-                        store, scenario=scenario, seeds=[1],
-                        params={"max_iterations": 6, "max_decisions": 256},
-                        engine_commit=cfg.engine_commit,
-                        proto_version=cfg.proto_version,
-                    )
-                persisted_res: W.WitnessResult | None = None
-                try:
-                    res = W.run_witness(
-                        client, scenario, policy, seeds=[1],
-                        max_iterations=6, max_decisions=256, decks=decks,
-                        candidate_kind=combo.kind, candidate_key=combo.key,
-                        card_names=combo.cards, infinite=combo.infinite,
-                        recorder=recorder,
-                    )
-                    persisted_res = res
-                    diag = policy.diagnostics()
-                    evidence = res.evidence or {}
-                    record = {
-                        "engine_class": args.engine_class,
-                        "engine": engine,
-                        "partner": partner,
-                        "engine_year": _year_label(releases, engine),
-                        "partner_year": _year_label(releases, partner),
-                        "verdict": res.verdict,
-                        "executed": int(diag.get("executed_actions", 0)),
-                        "reason": evidence.get("kind") or evidence.get("reason"),
-                    }
-                except Exception as exc:  # noqa: BLE001
-                    record = {
-                        "engine_class": args.engine_class,
-                        "engine": engine,
-                        "partner": partner,
-                        "engine_year": _year_label(releases, engine),
-                        "partner_year": _year_label(releases, partner),
-                        "verdict": "error",
-                        "executed": 0,
-                        "reason": str(exc),
-                    }
-                    if store is not None and run_id is not None:
-                        # Never leave the run row without a result.
-                        W.persist_error_result(
-                            store, run_id, scenario=scenario, error=exc,
-                            candidate_kind=combo.kind, candidate_key=combo.key,
-                            card_names=combo.cards,
-                        )
-                        run_id = None
-                if store is not None and run_id is not None and persisted_res is not None:
-                    W.persist_witness(store, persisted_res, run_id=run_id)
+
+            records = B.run_batch(
+                pairs,
+                workers=args.workers,
+                host=args.host,
+                base_port=args.port,
+                spawn=args.spawn,
+                db=args.db,
+                persist=args.persist,
+                decks=decks,
+                seeds=[1],
+                max_iterations=6,
+                max_decisions=256,
+                candidate_builder=_recent_candidate,
+            )
+            for (engine, partner), rec in zip(pairs, records):
+                record = {
+                    "engine_class": args.engine_class,
+                    "engine": engine,
+                    "partner": partner,
+                    "engine_year": _year_label(releases, engine),
+                    "partner_year": _year_label(releases, partner),
+                    "verdict": rec["verdict"],
+                    "executed": int(rec.get("executed", 0)),
+                    "reason": rec.get("reason"),
+                }
                 results.append(record)
                 out_path.write_text(json.dumps(results, indent=1))
                 print(

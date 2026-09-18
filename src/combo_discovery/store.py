@@ -629,6 +629,10 @@ class ExperimentStore:
         with _DB_LOCK:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
+            # Generous wait for any external writer (the in-process _DB_LOCK
+            # already serializes this process's own writes, including the
+            # parallel batch workers that share one store instance).
+            self._conn.execute("PRAGMA busy_timeout=30000")
             _ensure_schema(self._conn)
             self._conn.commit()
 
