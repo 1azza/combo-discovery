@@ -109,6 +109,7 @@ class TestSchema:
             "evaluation_runs", "evaluation_results",
             "motif_runs", "motif_enrichment",
             "witness_runs", "witness_results", "witness_observations",
+            "witness_events",
         ):
             assert t in tables
         indexes = sqlite3.connect(path).execute(
@@ -121,9 +122,10 @@ class TestSchema:
             "idx_oracle_ids_oracle", "idx_known_pairs_hash", "idx_eval_results_scope",
             "idx_motif_enrichment_motif", "idx_witness_results_run",
             "idx_witness_results_verdict", "idx_witness_observations_run",
+            "idx_witness_events_run",
         } <= idx_names
         assert [tuple(r) for r in versions] == [
-            (1,), (2,), (3,), (4,), (5,), (6,), (7,)
+            (1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)
         ]
 
     def test_foreign_keys_enforced(self, tmp_path):
@@ -162,8 +164,10 @@ class TestSchema:
         assert versions == [(1,), (2,), (3,), (4,), (5,), (6,)]
 
     def test_v7_migration_applies_to_fresh_and_existing_v6_db(self, tmp_path, monkeypatch):
-        # Fresh DB: created through the full migration chain, so it is stamped
-        # all the way to v7 and carries the v7 table/columns.
+        # Fresh DB: created through the migration chain, so it is stamped
+        # through v7 and carries the v7 table/columns.  Pin the target version so
+        # this test keeps testing *v7* now that the module default is v8.
+        monkeypatch.setattr(store_module, "_SCHEMA_VERSION", 7)
         fresh_path = tmp_path / "fresh.sqlite"
         fresh = ExperimentStore(fresh_path)
         fresh_columns = {
@@ -215,6 +219,55 @@ class TestSchema:
         assert {"evidence_json", "diagnostics_json"} <= new_columns
         assert "witness_observations" in tables
         assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
+
+    def test_v8_migration_applies_to_fresh_and_existing_v7_db(self, tmp_path, monkeypatch):
+        # Existing v7 DB: build one at v7, then upgrade through migration 8.
+        old_path = tmp_path / "v7.sqlite"
+        monkeypatch.setattr(store_module, "_SCHEMA_VERSION", 7)
+        old = ExperimentStore(old_path)
+        old_tables = {
+            r[0]
+            for r in old._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        old_run_columns = {
+            r["name"] for r in old._conn.execute("PRAGMA table_info(witness_runs)")
+        }
+        old.close()
+        assert "witness_events" not in old_tables
+        assert "candidate_key" not in old_run_columns
+
+        monkeypatch.setattr(store_module, "_SCHEMA_VERSION", 8)
+        upgraded = ExperimentStore(old_path)
+        new_tables = {
+            r[0]
+            for r in upgraded._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        new_run_columns = {
+            r["name"] for r in upgraded._conn.execute("PRAGMA table_info(witness_runs)")
+        }
+        event_columns = {
+            r["name"] for r in upgraded._conn.execute("PRAGMA table_info(witness_events)")
+        }
+        indexes = {
+            r["name"]
+            for r in upgraded._conn.execute("PRAGMA index_list(witness_events)")
+        }
+        versions = [
+            tuple(r) for r in upgraded._conn.execute("SELECT version FROM schema_version")
+        ]
+        upgraded.close()
+        assert "witness_events" in new_tables
+        assert {"candidate_key", "card_names_json"} <= new_run_columns
+        assert event_columns == {
+            "id", "run_id", "seq", "turn", "phase", "kind", "actor", "target",
+            "text", "detail_json", "created_at",
+        }
+        assert "idx_witness_events_run" in indexes
+        assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
 
 
 class TestWitnessPersistence:
@@ -292,6 +345,49 @@ class TestWitnessPersistence:
         assert rows[2]["event_seq"] is None
         assert rows[2]["signature"] == ""
         assert json.loads(rows[2]["resources_json"]) == {}
+        assert all(r["created_at"].endswith("+00:00") for r in rows)
+
+    def test_witness_run_records_pair_up_front(self, tmp_path):
+        store = ExperimentStore(tmp_path / "w.sqlite")
+        run_id = store.start_witness_run(
+            seeds=[1],
+            candidate_key="1048622",
+            card_names=["Kiki-Jiki, Mirror Breaker", "Deceiver Exarch"],
+        )
+        runs = store.witness_runs()
+        store.close()
+        assert runs[0]["id"] == run_id
+        assert runs[0]["candidate_key"] == "1048622"
+        assert json.loads(runs[0]["card_names_json"]) == [
+            "Kiki-Jiki, Mirror Breaker", "Deceiver Exarch"
+        ]
+
+    def test_witness_events_roundtrip_and_seq_monotonic(self, tmp_path):
+        store = ExperimentStore(tmp_path / "w.sqlite")
+        run_id = store.start_witness_run(seeds=[1])
+        other = store.start_witness_run(seeds=[2])
+        first = store.record_witness_event(
+            run_id, "cast", "Kiki-Jiki, Mirror Breaker is cast", turn=1, phase="MAIN1",
+            actor="Kiki-Jiki, Mirror Breaker", detail={"mana": 1},
+        )
+        second = store.record_witness_event(
+            run_id, "copy", "Kiki-Jiki, Mirror Breaker copies Deceiver Exarch",
+            turn=1, phase="MAIN1", actor="Kiki-Jiki, Mirror Breaker",
+            target="Deceiver Exarch",
+        )
+        # A different run has its own seq sequence (starts at 1 again).
+        other_id = store.record_witness_event(other, "verdict", "Verdict: loops")
+        rows = store.witness_events(run_id)
+        all_rows = store.witness_events()
+        store.close()
+        assert [r["seq"] for r in rows] == [1, 2]
+        assert [r["id"] for r in rows] == [first, second]
+        assert [r["kind"] for r in rows] == ["cast", "copy"]
+        assert rows[1]["target"] == "Deceiver Exarch"
+        assert json.loads(rows[0]["detail_json"]) == {"mana": 1}
+        # Nullable phase/turn round-trip; other() is NULL for empty detail.
+        assert other_id > first
+        assert [r["seq"] for r in all_rows if r["run_id"] == other] == [1]
         assert all(r["created_at"].endswith("+00:00") for r in rows)
 
     def test_evidence_and_diagnostics_roundtrip(self, tmp_path):

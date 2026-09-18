@@ -28,6 +28,7 @@ from .loop import (
     build_observation,
     detect_loop,
 )
+from .narration import Narration, narrate_game_event, narrate_option
 from .policy import WITNESS_POLICY_VERSION
 from .scenario import Scenario
 
@@ -72,6 +73,7 @@ class WitnessResult:
     seed: int = 0
     seeds: list[int] = field(default_factory=list)
     observations: list[Observation] = field(default_factory=list)
+    narrations: list[Narration] = field(default_factory=list)
     evidence: dict[str, Any] = field(default_factory=dict)
     error: str = ""
     candidate_kind: str = ""
@@ -113,6 +115,24 @@ def _policy_diagnostics(policy: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return {str(key): value for key, value in raw.items()}
     return {}
+
+
+def _chosen_option(req: Any, answer: Any) -> Any | None:
+    """The option a PRIORITY answer selected, when the answer is an option id."""
+    if not (
+        isinstance(answer, tuple)
+        and len(answer) == 2
+        and answer[0] == "option_id"
+    ):
+        return None
+    try:
+        wanted = int(answer[1])
+    except (TypeError, ValueError):
+        return None
+    for option in getattr(req, "options", ()) or ():
+        if int(option.id) == wanted:
+            return option
+    return None
 
 
 def _is_over(client: Any, game_id: int) -> bool:
@@ -225,6 +245,19 @@ def _run_witness_seed(
     cast_count = 0
     spells_resolved = 0
     game_over = False
+    narrations: list[Narration] = []
+    event_narrations = 0  # narration rows sourced from game events (vs. decisions)
+
+    record_event = getattr(recorder, "record_event", None)
+    if not callable(record_event):
+        record_event = None
+
+    def emit(narration: Narration) -> None:
+        """Collect a narration row and stream it live when a recorder is given."""
+        narrations.append(narration)
+        if record_event is not None:
+            record_event(narration)
+            narration._persisted = True
 
     def make_result(
         verdict: str,
@@ -246,6 +279,7 @@ def _run_witness_seed(
             seed=int(seed),
             seeds=[int(seed)],
             observations=observations,
+            narrations=narrations,
             evidence=evidence,
             error=error,
             candidate_kind=candidate_kind,
@@ -309,13 +343,22 @@ def _run_witness_seed(
             ``TurnStarted`` event in the batch also raises the ``phase_seen``
             flag, which the decision loop turns into a phase/turn-boundary
             sample (see below).
+
+            This is also where card-level narration is sourced: every event
+            that maps to a row is streamed as it arrives, before the next
+            observation or decision.
             """
             nonlocal event_cursor, cast_count, spells_resolved, phase_seen
+            nonlocal event_narrations
             note_event = getattr(policy, "note_card_event", None)
             batch = client.poll_events(game_id, event_cursor)
             for event in batch.events:
                 if event.type in ("Phase", "TurnStarted"):
                     phase_seen = True
+                narration = narrate_game_event(event)
+                if narration is not None:
+                    event_narrations += 1
+                    emit(narration)
                 if event.type not in ("SpellCast", "SpellResolved"):
                     continue
                 if event.type == "SpellCast":
@@ -439,11 +482,39 @@ def _run_witness_seed(
             trace.append((req.decision_id, req.decision_type, answer))
             decisions += 1
 
+            # Decision-stream narration fallback: only while the engine has
+            # emitted no card-level events at all.  Once real events flow they
+            # are authoritative and the decisions stay silent (no double rows).
+            if event_narrations == 0 and req.decision_type == pb.DECISION_TYPE_PRIORITY:
+                if req.player == player:
+                    chosen = _chosen_option(req, answer)
+                    if chosen is not None:
+                        fallback = narrate_option(
+                            str(getattr(chosen, "card_name", "") or ""),
+                            option_kind=str(getattr(chosen, "kind", "") or ""),
+                            turn=int(getattr(req, "turn", 0) or 0),
+                            phase=str(getattr(req, "phase", "") or ""),
+                            detail={
+                                "decision_id": int(req.decision_id),
+                                "option_id": int(chosen.id),
+                            },
+                        )
+                        if fallback is not None:
+                            emit(fallback)
+
             completed = int(getattr(policy, "iterations", 0))
             while iteration_seen < completed and iterations_done < max_iterations:
                 iteration_seen += 1
                 iterations_done += 1
                 capture_observation(iterations_done)
+                last = observations[-1] if observations else None
+                emit(Narration(
+                    kind="iteration",
+                    text=f"Loop iteration {iterations_done}",
+                    turn=(last.turn if last is not None else None),
+                    phase=(last.phase if last is not None else ""),
+                    detail={"iteration": int(iterations_done)},
+                ))
 
             # Advance until trigger: a trigger-driven line rarely completes a
             # policy iteration, so poll for newly credited triggers after every
@@ -512,9 +583,26 @@ def _run_witness_seed(
         elif verdict == "no_loop" and game_over:
             verdict = "refuted"
             evidence = {**evidence, "game_over": True}
+        last = observations[-1] if observations else None
+        emit(Narration(
+            kind="verdict",
+            text=f"Verdict: {verdict}",
+            turn=(last.turn if last is not None else None),
+            phase=(last.phase if last is not None else ""),
+            detail={
+                "verdict": verdict,
+                "iterations": int(iterations_done),
+                "candidate_key": candidate_key,
+            },
+        ))
         return make_result(verdict, evidence, iterations=iterations_done)
     except Exception as exc:  # noqa: BLE001 - surfaced as the "error" verdict
         logger.warning("witness run failed (seed=%s): %s", seed, exc)
+        emit(Narration(
+            kind="verdict",
+            text="Verdict: error",
+            detail={"verdict": "error", "error": f"{type(exc).__name__}: {exc}"},
+        ))
         return make_result(
             "error", {"error": f"{type(exc).__name__}: {exc}"}, error=str(exc)
         )

@@ -255,7 +255,12 @@ def main(argv: list[str] | None = None) -> int:
     recorder = None
     if store is not None:
         run_id, recorder = start_witness_recording(
-            store, scenario=scenario, seeds=seeds, params=params
+            store,
+            scenario=scenario,
+            seeds=seeds,
+            params=params,
+            candidate_key=combo.key,
+            card_names=combo.cards,
         )
 
     try:

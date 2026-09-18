@@ -29,7 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only (avoids an import cycle)
     from .runner import DecisionContext, GameResult
 
 # Current schema version. Bump this and register a migration in _MIGRATIONS.
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 
 # Serializes all DB access; see the module docstring for why.
 _DB_LOCK = threading.Lock()
@@ -68,6 +68,7 @@ _TABLES = (
     "witness_runs",
     "witness_results",
     "witness_observations",
+    "witness_events",
 )
 
 _SCHEMA_SQL = """
@@ -533,6 +534,38 @@ def _migration_7(conn: sqlite3.Connection) -> None:
     conn.executescript(_WITNESS_OBSERVATIONS_SCHEMA_SQL)
 
 
+# Schema v8 (live witness narration + run identity).
+#
+# ``witness_events`` is the card-level narration stream a live UI renders: one
+# row per game event (or decision fallback) as it happens, keyed by ``run_id``
+# and a per-run ``seq``.  The two ``witness_runs`` columns record the
+# hypothesized pair up front, so an *in-progress* run is identifiable
+# (``witness_results`` only lands at the end).  Both changes are additive.
+_WITNESS_EVENTS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS witness_events (
+  id INTEGER PRIMARY KEY,
+  run_id INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  turn INTEGER,
+  phase TEXT,
+  kind TEXT NOT NULL,
+  actor TEXT,
+  target TEXT,
+  text TEXT NOT NULL,
+  detail_json TEXT,
+  created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_witness_events_run
+  ON witness_events(run_id, seq);
+ALTER TABLE witness_runs ADD COLUMN candidate_key TEXT;
+ALTER TABLE witness_runs ADD COLUMN card_names_json TEXT;
+"""
+
+
+def _migration_8(conn: sqlite3.Connection) -> None:
+    """Schema v8: live witness-narration rows and pre-run pair identity."""
+    conn.executescript(_WITNESS_EVENTS_SCHEMA_SQL)
+
+
 # version -> callable applying the change for that version.
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migration_2,
@@ -541,6 +574,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     5: _migration_5,
     6: _migration_6,
     7: _migration_7,
+    8: _migration_8,
 }
 
 
@@ -800,14 +834,22 @@ class ExperimentStore:
         seeds: Sequence[int] | None = None,
         params: dict[str, Any] | None = None,
         notes: str = "",
+        candidate_key: str = "",
+        card_names: Sequence[str] = (),
     ) -> int:
-        """Append a witness-run row and return its id."""
+        """Append a witness-run row and return its id.
+
+        ``candidate_key``/``card_names`` identify the hypothesized pair at run
+        *start* (schema v8), so a live UI can name an in-progress run before its
+        ``witness_results`` row exists.
+        """
         with _DB_LOCK:
             cur = self._conn.execute(
                 "INSERT INTO witness_runs "
                 "(started_at, engine_commit, proto_version, policy_version, "
-                " scenario_json, seeds_json, params_json, notes) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " scenario_json, seeds_json, params_json, notes, candidate_key, "
+                " card_names_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     _utc_now(),
                     engine_commit,
@@ -817,6 +859,8 @@ class ExperimentStore:
                     json.dumps([int(s) for s in (seeds or [])]),
                     json.dumps(params or {}, sort_keys=True),
                     notes,
+                    candidate_key,
+                    json.dumps(list(card_names), sort_keys=True),
                 ),
             )
             self._conn.commit()
@@ -932,6 +976,53 @@ class ExperimentStore:
             assert cur.lastrowid is not None  # set by the INSERT above
             return int(cur.lastrowid)
 
+    def record_witness_event(
+        self,
+        run_id: int,
+        kind: str,
+        text: str,
+        *,
+        turn: int | None = None,
+        phase: str = "",
+        actor: str = "",
+        target: str = "",
+        detail: Any = None,
+    ) -> int:
+        """Append one card-level narration row and return its id.
+
+        ``seq`` is assigned inside the write lock as ``MAX(seq) + 1`` for the
+        run, so it stays strictly monotonic even when worker threads stream
+        events into several runs through one store.  ``detail`` is any
+        JSON-encodable mapping.
+        """
+        with _DB_LOCK:
+            cur = self._conn.execute(
+                "INSERT INTO witness_events "
+                "(run_id, seq, turn, phase, kind, actor, target, text, "
+                " detail_json, created_at) "
+                "SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ? "
+                "FROM witness_events WHERE run_id = ?",
+                (
+                    int(run_id),
+                    None if turn is None else int(turn),
+                    str(phase or ""),
+                    str(kind),
+                    str(actor or ""),
+                    str(target or ""),
+                    str(text),
+                    (
+                        json.dumps(detail, default=str, sort_keys=True)
+                        if detail is not None
+                        else None
+                    ),
+                    _utc_now(),
+                    int(run_id),
+                ),
+            )
+            self._conn.commit()
+            assert cur.lastrowid is not None  # set by the INSERT above
+            return int(cur.lastrowid)
+
     def witness_runs(self) -> list[dict[str, Any]]:
         """All witness runs, oldest first."""
         with _DB_LOCK:
@@ -964,6 +1055,24 @@ class ExperimentStore:
             else:
                 rows = self._conn.execute(
                     "SELECT * FROM witness_observations WHERE run_id = ? ORDER BY id",
+                    (int(run_id),),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def witness_events(self, run_id: int | None = None) -> list[dict[str, Any]]:
+        """Card-level narration rows, optionally filtered to one run.
+
+        Ordered by the per-run ``seq`` (the live-UI read order); across runs the
+        ``run_id`` groups them first.
+        """
+        with _DB_LOCK:
+            if run_id is None:
+                rows = self._conn.execute(
+                    "SELECT * FROM witness_events ORDER BY run_id, seq"
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM witness_events WHERE run_id = ? ORDER BY seq",
                     (int(run_id),),
                 ).fetchall()
         return [dict(row) for row in rows]

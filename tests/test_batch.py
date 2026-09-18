@@ -13,6 +13,8 @@ import time
 import pytest
 
 from combo_discovery import batch
+from combo_discovery.generated import forge_env_pb2 as pb
+from combo_discovery.store import ExperimentStore
 from combo_discovery.witness import WitnessResult
 
 
@@ -148,3 +150,120 @@ def test_spawn_wires_worker_pool_and_stops_it(monkeypatch):
 def test_empty_pairs_returns_empty(monkeypatch):
     monkeypatch.setattr(batch, "ForgeEnvClient", FakeClient)
     assert batch.run_batch([], workers=4, decks=DECKS) == []
+
+
+# ---------------------------------------------------------------------------
+# Live narration streams from the worker that owns the run
+# ---------------------------------------------------------------------------
+
+
+KIKI = "Kiki-Jiki, Mirror Breaker"
+DECEIVER = "Deceiver Exarch"
+
+
+class FakeNarratingClient:
+    """A leased client that emits one Kiki-Jiki loop turn on poll."""
+
+    def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
+        self.game_id = port
+        self.mana = 0
+        self._decisions = 0
+        self._polls = 0
+        self._emitted = False
+
+    def connect(self):
+        return None
+
+    def close(self):
+        return None
+
+    def start_game(self, decks, seed, player_types=None, **kwargs):
+        return self.game_id
+
+    def setup_scenario(self, game_id, scenario):
+        return "H0", 3
+
+    def get_decision(self, game_id):
+        self._decisions += 1
+        return pb.DecisionRequest(
+            game_id=game_id,
+            decision_id=self._decisions,
+            player=0,
+            turn=1,
+            phase="MAIN1",
+            decision_type=pb.DECISION_TYPE_PRIORITY,
+            options=[pb.Option(id=0, kind="activate", card_name=KIKI)],
+        )
+
+    def submit_decision(self, game_id, decision_id, answer):
+        self.mana += 1
+        return pb.StepResult()
+
+    def is_game_over(self, game_id):
+        return pb.GameOver(over=False)
+
+    def get_state(self, game_id, view_as_player=0):
+        state = pb.FullState(
+            game_id=1, turn=1, phase="MAIN1", active_player=0,
+            state_hash=f"H{self.mana}",
+        )
+        state.life.extend([20, 20])
+        state.typed_mana_pools.add(colorless=self.mana)
+        state.battlefield_cards.append(pb.Permanent(id=0, card_name=KIKI))
+        state.battlefield.add().permanents.append(0)
+        return state
+
+    def poll_events(self, game_id, cursor=0):
+        self._polls += 1
+        if self._polls == 1 or self._emitted:
+            return pb.EventBatch(next_cursor=cursor)
+        self._emitted = True
+        return pb.EventBatch(
+            events=[
+                pb.GameEvent(
+                    seq=1, game_id=game_id, type="SpellResolved", card_name=KIKI,
+                    player=0, turn=1, phase="MAIN1",
+                    detail_raw=(
+                        f"{KIKI} (125) - A creates a token that's a copy of "
+                        f"{DECEIVER} (126)."
+                    ),
+                ),
+                pb.GameEvent(
+                    seq=2, game_id=game_id, type="CardTapped", card_name=KIKI,
+                    player=0, turn=1, phase="MAIN1", extra="tapped=false",
+                ),
+            ],
+            next_cursor=2,
+        )
+
+    def stop_game(self, game_id):
+        return None
+
+
+def test_batch_persist_streams_witness_events(monkeypatch, tmp_path):
+    path = tmp_path / "batch.sqlite"
+    ExperimentStore(path).close()  # create the schema
+    monkeypatch.setattr(batch, "ForgeEnvClient", FakeNarratingClient)
+    monkeypatch.setattr(batch, "_load_card_meta", lambda db: {})
+
+    records = batch.run_batch(
+        [(KIKI, DECEIVER)],
+        workers=1,
+        decks=DECKS,
+        db=path,
+        persist=True,
+        max_iterations=2,
+        max_decisions=4,
+    )
+
+    assert records[0]["engine"] == KIKI
+    store = ExperimentStore(path)
+    runs = store.witness_runs()
+    events = store.witness_events(runs[0]["id"])
+    store.close()
+    kinds = [e["kind"] for e in events]
+    assert "copy" in kinds
+    assert "untap" in kinds
+    assert runs[0]["candidate_key"] == f"{KIKI}+{DECEIVER}"

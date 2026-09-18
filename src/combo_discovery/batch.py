@@ -147,6 +147,8 @@ def _run_one(
                 },
                 engine_commit=engine_commit,
                 proto_version=int(proto_version),
+                candidate_key=combo.key,
+                card_names=combo.cards,
             )
         res = run_witness(
             client,

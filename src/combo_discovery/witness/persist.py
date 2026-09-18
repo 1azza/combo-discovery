@@ -12,6 +12,7 @@ from typing import Any
 from ..env import PROTOCOL_VERSION
 from .driver import WitnessResult
 from .loop import Observation
+from .narration import Narration
 from .policy import WITNESS_POLICY_VERSION
 from .scenario import Scenario
 
@@ -34,13 +35,16 @@ def start_witness_recording(
     proto_version: int = PROTOCOL_VERSION,
     policy_version: str = WITNESS_POLICY_VERSION,
     notes: str = "",
-) -> tuple[int, Callable[[Observation], None]]:
+    candidate_key: str = "",
+    card_names: Sequence[str] = (),
+) -> tuple[int, WitnessLiveRecorder]:
     """Start a ``witness_runs`` row and return ``(run_id, live_recorder)``.
 
     Shared by ``combo-witness --persist`` and the batch instruments: the run row
-    is opened *before* the run so observations can stream to a UI, and the
-    returned recorder is meant to be passed to :func:`run_witness` as
-    ``recorder=``.  Finish with
+    is opened *before* the run so observations and narration can stream to a UI,
+    and the returned recorder is meant to be passed to :func:`run_witness` as
+    ``recorder=``.  ``candidate_key``/``card_names`` are recorded on the run row
+    up front (schema v8) so an in-progress run is identifiable.  Finish with
     ``persist_witness(store, result, run_id=run_id, ...)``.  This is the single
     place that builds the pre-run row, so every writer records the same fields.
     """
@@ -53,9 +57,11 @@ def start_witness_recording(
             seeds=list(seeds),
             params=params or {},
             notes=notes,
+            candidate_key=candidate_key,
+            card_names=list(card_names),
         )
     )
-    return run_id, observation_recorder(store, run_id)
+    return run_id, WitnessLiveRecorder(store, run_id)
 
 
 def observation_recorder(store: Any, run_id: int) -> Callable[[Observation], None]:
@@ -84,6 +90,41 @@ def observation_recorder(store: Any, run_id: int) -> Callable[[Observation], Non
             logger.debug("could not mark observation persisted", exc_info=True)
 
     return record
+
+
+class WitnessLiveRecorder:
+    """Live recorder for observations *and* card-level narration.
+
+    Callable with an :class:`Observation` (the existing ``recorder=`` contract)
+    and exposes ``record_event``, which the driver uses to stream narration as
+    each game event happens.  Both write immediately, so a UI can poll the DB
+    while the run is still in flight.
+    """
+
+    def __init__(self, store: Any, run_id: int):
+        self._store = store
+        self._run_id = int(run_id)
+        self._record_observation = observation_recorder(store, self._run_id)
+
+    def __call__(self, observation: Observation) -> None:
+        self._record_observation(observation)
+
+    def record_event(self, narration: Narration) -> None:
+        self._store.record_witness_event(
+            self._run_id,
+            narration.kind,
+            narration.text,
+            turn=narration.turn,
+            phase=narration.phase,
+            actor=narration.actor,
+            target=narration.target,
+            detail=narration.detail or None,
+        )
+        try:
+            narration._persisted = True
+        except Exception:  # pragma: no cover - dataclasses are mutable
+            logger.debug("could not mark narration persisted", exc_info=True)
+
 
 
 def persist_observations(store: Any, run_id: int, result: WitnessResult) -> int:
@@ -115,6 +156,35 @@ def persist_observations(store: Any, run_id: int, result: WitnessResult) -> int:
     return written
 
 
+def persist_narrations(store: Any, run_id: int, result: WitnessResult) -> int:
+    """Append ``result``'s narration rows that a live recorder has not written.
+
+    Mirrors :func:`persist_observations`: rows streamed live are marked and
+    skipped, so this safely backfills a run captured without a live recorder
+    (and is a no-op after one).  Returns the number of rows appended.
+    """
+    written = 0
+    for narration in result.narrations:
+        if getattr(narration, "_persisted", False):
+            continue
+        store.record_witness_event(
+            run_id,
+            narration.kind,
+            narration.text,
+            turn=narration.turn,
+            phase=narration.phase,
+            actor=narration.actor,
+            target=narration.target,
+            detail=narration.detail or None,
+        )
+        try:
+            narration._persisted = True
+        except Exception:  # pragma: no cover - dataclasses are mutable
+            logger.debug("could not mark narration persisted", exc_info=True)
+        written += 1
+    return written
+
+
 def persist_witness(
     store: Any,
     result: WitnessResult,
@@ -130,9 +200,11 @@ def persist_witness(
 
     ``run_id`` may be passed when the ``witness_runs`` row was already started
     before the run (the live ``combo-witness --persist`` path); otherwise a new
-    run row is appended.  Per-step observations not already written live are
-    appended via :func:`persist_observations`, and ``result.evidence`` (plus its
-    ``diagnostics`` sub-dict) is stored on the result row.
+    run row is appended (recording the pair up front).  Per-step observations
+    and narration not already written live are appended via
+    :func:`persist_observations`/:func:`persist_narrations`, and
+    ``result.evidence`` (plus its ``diagnostics`` sub-dict) is stored on the
+    result row.
     """
     if run_id is None:
         active_id = int(
@@ -144,11 +216,14 @@ def persist_witness(
                 seeds=result.seeds or [result.seed],
                 params=params or {},
                 notes=notes,
+                candidate_key=result.candidate_key,
+                card_names=list(result.card_names),
             )
         )
     else:
         active_id = int(run_id)
     persist_observations(store, active_id, result)
+    persist_narrations(store, active_id, result)
     diagnostics: Any = None
     if isinstance(result.evidence, dict):
         diagnostics = result.evidence.get("diagnostics")

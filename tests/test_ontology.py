@@ -981,10 +981,10 @@ class TestSchemaAndPersistence:
         assert all(row["version"] == 1 for row in rows)
         assert all(json.loads(row["pattern_json"]) for row in rows)
 
-    def test_schema_version_is_seven(self, ontology_db):
+    def test_schema_version_is_eight(self, ontology_db):
         db, _ = ontology_db
         versions = [row[0] for row in _query(db, "SELECT version FROM schema_version")]
-        assert versions == [1, 2, 3, 4, 5, 6, 7]
+        assert versions == [1, 2, 3, 4, 5, 6, 7, 8]
 
     def test_migration_3_creates_tables(self, tmp_path):
         conn = sqlite3.connect(tmp_path / "raw.db")
