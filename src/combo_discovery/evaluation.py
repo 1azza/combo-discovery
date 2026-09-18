@@ -27,19 +27,15 @@ import sqlite3
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .cards import utc_now as _utc_now
 from . import store as store_module
 from .corpus.names import normalize_card_name, pair_hash
 from .store import ExperimentStore
 
 SOURCE_A = "commander_spellbook"
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------------

@@ -44,11 +44,11 @@ import sqlite3
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
+from ..cards import utc_now as _utc_now
 from .. import store as store_module
 from ..corpus.names import pair_hash
 from ..corpus.spellbook import DEFAULT_VINTAGE_FORMAT, VintageLegality
@@ -58,10 +58,6 @@ SOURCE_KNOWN = "commander_spellbook"
 _KIND_SINGLE = "single"
 _KIND_PAIR = "pair"
 _KIND_CROSS = "card_pair"
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------------

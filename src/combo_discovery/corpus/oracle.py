@@ -14,15 +14,11 @@ import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any
 
+from ..cards import utc_now as _utc_now
 from .. import store as store_module
 from ..store import ExperimentStore
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass

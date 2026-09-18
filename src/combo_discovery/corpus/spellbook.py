@@ -28,12 +28,12 @@ import urllib.request
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
 import ijson
 
+from ..cards import utc_now as _utc_now
 from .. import store as store_module
 from ..store import ExperimentStore
 from .names import (
@@ -56,10 +56,6 @@ DEFAULT_VINTAGE_FORMAT = Path(
 #: Forge edition metadata lives next to the formats tree (``forge-gui/res``).
 DEFAULT_FORGE_EDITIONS = DEFAULT_VINTAGE_FORMAT.parent.parent.parent / "editions"
 _KEEP_STATUS = frozenset({"OK", "EXAMPLE"})
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------------

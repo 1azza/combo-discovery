@@ -21,29 +21,39 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sqlite3
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import Mapping
 
+from combo_discovery import batch as B
 from combo_discovery import witness as W
+from combo_discovery.cards import is_etb_untapper, is_legal, known_pair_hashes
 from combo_discovery.corpus.names import normalize_card_name, pair_hash
 from combo_discovery.env import ForgeEnvClient
-from combo_discovery.ontology.builder import _load_vintage
 from combo_discovery.research_config import load_config
 from combo_discovery.store import ExperimentStore
 
 DEFAULT_ENGINES = "Kiki-Jiki, Mirror Breaker;Splinter Twin"
 DEFAULT_DECKS = ["A=decks/goldfish_A.dck", "B=decks/goldfish_B.dck"]
 
-#: The functional ETB-untap shapes that can untap the copy engine: untap a
-#: targeted permanent/creature, or the gain-control-then-untap-it shape.
-UNTAP_PAT = re.compile(r"untap target|untap it|untap that")
 
+def _pair_candidate(
+    engine: str, partner: str, type_lines: Mapping[str, str]
+) -> W.Candidate:
+    """Build the Candidate the serial and parallel paths must both produce.
 
-def _is_creature(tl: str) -> bool:
-    return "creature" in (tl or "").lower()
+    The shape is deliberately minimal — type lines only (no ``oracle_texts``)
+    and the analogue key — so the parallel path cannot stage extra board state
+    and flip verdicts.
+    """
+    return W.Candidate(
+        cards=(engine, partner),
+        type_lines=(type_lines.get(engine, ""), type_lines.get(partner, "")),
+        kind="pair",
+        key=f"analogue:{engine}+{partner}",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -61,6 +71,14 @@ def main(argv: list[str] | None = None) -> int:
         "--persist", action="store_true",
         help="stream observations + verdicts into the witness tables (off by default)",
     )
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="harness workers (1 = today's serial path; N uses ports port..port+N-1)",
+    )
+    parser.add_argument(
+        "--spawn", action="store_true",
+        help="spawn the worker harness servers before the sweep (implies --workers>1)",
+    )
     args = parser.parse_args(argv)
     # Engine metadata for persisted runs (research.toml falls back to defaults).
     cfg = load_config()
@@ -71,8 +89,7 @@ def main(argv: list[str] | None = None) -> int:
         decks.append((name or path, os.path.abspath(path or name)))
 
     conn = sqlite3.connect(args.db)
-    legality = _load_vintage({})
-    known = {r[0] for r in conn.execute("select pair_hash from known_combo_pairs")}
+    known = known_pair_hashes(conn)
     type_lines = {r[0]: (r[1] or "") for r in conn.execute(
         "select name, type_line from cards")}
 
@@ -80,15 +97,9 @@ def main(argv: list[str] | None = None) -> int:
     for _id, _norm, name, tl, ot in conn.execute(
         "select id, normalized_name, name, type_line, lower(oracle_text) from cards"
     ):
-        if not ot or "untap" not in ot:
+        if not is_etb_untapper(tl, ot):
             continue
-        if not _is_creature(tl):
-            continue
-        if "enters" not in ot and "enter the battlefield" not in ot:
-            continue
-        if not UNTAP_PAT.search(ot):
-            continue
-        if not legality.is_legal(name):
+        if not is_legal(name):
             continue
         partners.append(name)
     partners = sorted(set(partners))
@@ -107,61 +118,90 @@ def main(argv: list[str] | None = None) -> int:
     print(f"engines={len(engines)} partners={len(partners)} analogue pairs={len(pairs)}")
 
     # Only touch the database when asked: the default path stays write-free.
-    store = ExperimentStore(Path(args.db)) if args.persist else None
+    # ``--workers 1`` (the default) keeps the original serial code path exactly;
+    # ``run_batch`` owns persistence for the parallel path.
+    store = (
+        ExperimentStore(Path(args.db))
+        if (args.persist and args.workers <= 1)
+        else None
+    )
     results: list[dict] = []
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with ForgeEnvClient(host=args.host, port=args.port) as client:
-            client.connect()
-            for engine, partner in pairs:
-                combo = W.Candidate(
-                    cards=(engine, partner),
-                    type_lines=(type_lines.get(engine, ""),
-                                type_lines.get(partner, "")),
-                    kind="pair", key=f"analogue:{engine}+{partner}",
-                )
-                scenario = W.build_scenario(combo)
-                policy = W.WitnessPolicy(combo)
-                run_id = None
-                recorder = None
-                if store is not None:
-                    run_id, recorder = W.start_witness_recording(
-                        store, scenario=scenario, seeds=[1],
-                        params={"max_iterations": 6, "max_decisions": 256},
-                        engine_commit=cfg.engine_commit,
-                        proto_version=cfg.proto_version,
-                    )
-                persisted_res: W.WitnessResult | None = None
-                try:
-                    res = W.run_witness(
-                        client, scenario, policy, seeds=[1],
-                        max_iterations=6, max_decisions=256, decks=decks,
-                        candidate_kind=combo.kind, candidate_key=combo.key,
-                        card_names=combo.cards, infinite=combo.infinite,
-                        recorder=recorder,
-                    )
-                    persisted_res = res
-                    diag = policy.diagnostics()
-                    record = {
-                        "engine": engine, "partner": partner, "verdict": res.verdict,
-                        "executed": int(diag.get("executed_actions", 0)),
-                        "reason": (res.evidence or {}).get("kind")
-                        or (res.evidence or {}).get("reason"),
-                    }
-                except Exception as exc:  # noqa: BLE001
-                    record = {"engine": engine, "partner": partner, "verdict": "error",
-                              "executed": 0, "reason": str(exc)}
-                    if store is not None and run_id is not None:
-                        # Never leave the run row without a result.
-                        W.persist_error_result(
-                            store, run_id, scenario=scenario, error=exc,
-                            candidate_kind=combo.kind, candidate_key=combo.key,
-                            card_names=combo.cards,
+        if args.workers <= 1:
+            with ForgeEnvClient(host=args.host, port=args.port) as client:
+                client.connect()
+                for engine, partner in pairs:
+                    combo = _pair_candidate(engine, partner, type_lines)
+                    scenario = W.build_scenario(combo)
+                    policy = W.WitnessPolicy(combo)
+                    run_id = None
+                    recorder = None
+                    if store is not None:
+                        run_id, recorder = W.start_witness_recording(
+                            store, scenario=scenario, seeds=[1],
+                            params={"max_iterations": 6, "max_decisions": 256},
+                            engine_commit=cfg.engine_commit,
+                            proto_version=cfg.proto_version,
                         )
-                        run_id = None
-                if store is not None and run_id is not None and persisted_res is not None:
-                    W.persist_witness(store, persisted_res, run_id=run_id)
+                    persisted_res: W.WitnessResult | None = None
+                    try:
+                        res = W.run_witness(
+                            client, scenario, policy, seeds=[1],
+                            max_iterations=6, max_decisions=256, decks=decks,
+                            candidate_kind=combo.kind, candidate_key=combo.key,
+                            card_names=combo.cards, infinite=combo.infinite,
+                            recorder=recorder,
+                        )
+                        persisted_res = res
+                        diag = policy.diagnostics()
+                        record = {
+                            "engine": engine, "partner": partner, "verdict": res.verdict,
+                            "executed": int(diag.get("executed_actions", 0)),
+                            "reason": (res.evidence or {}).get("kind")
+                            or (res.evidence or {}).get("reason"),
+                        }
+                    except Exception as exc:  # noqa: BLE001
+                        record = {"engine": engine, "partner": partner, "verdict": "error",
+                                  "executed": 0, "reason": str(exc)}
+                        if store is not None and run_id is not None:
+                            # Never leave the run row without a result.
+                            W.persist_error_result(
+                                store, run_id, scenario=scenario, error=exc,
+                                candidate_kind=combo.kind, candidate_key=combo.key,
+                                card_names=combo.cards,
+                            )
+                            run_id = None
+                    if store is not None and run_id is not None and persisted_res is not None:
+                        W.persist_witness(store, persisted_res, run_id=run_id)
+                    results.append(record)
+                    out_path.write_text(json.dumps(results, indent=1))
+                    print(f"  {record['verdict']:12s} exec={record['executed']:2d} "
+                          f"{engine} + {partner}")
+        else:
+            # Mirror the serial Candidate exactly via the shared factory.
+            records = B.run_batch(
+                pairs,
+                workers=args.workers,
+                host=args.host,
+                base_port=args.port,
+                spawn=args.spawn,
+                db=args.db,
+                persist=args.persist,
+                decks=decks,
+                seeds=[1],
+                max_iterations=6,
+                max_decisions=256,
+                candidate_builder=lambda e, p: _pair_candidate(e, p, type_lines),
+            )
+            for (engine, partner), rec in zip(pairs, records):
+                record = {
+                    "engine": engine, "partner": partner,
+                    "verdict": rec["verdict"],
+                    "executed": int(rec.get("executed", 0)),
+                    "reason": rec.get("reason"),
+                }
                 results.append(record)
                 out_path.write_text(json.dumps(results, indent=1))
                 print(f"  {record['verdict']:12s} exec={record['executed']:2d} "

@@ -33,10 +33,10 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from ..cards import utc_now as _utc_now
 from .. import store as store_module
 from ..store import ExperimentStore
 from . import parser as corpus_parser
@@ -421,10 +421,6 @@ _MAX_RAW_BYTES = 512 * 1024
 
 def _http_error_sample(path: Path, exc: BaseException) -> dict[str, Any]:
     return {"source": str(path), "line": 0, "reason": f"{type(exc).__name__}: {exc}"}
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _match_names(parsed: ParsedCard) -> list[str]:

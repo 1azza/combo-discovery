@@ -33,6 +33,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from .cards import verdict_rank as _verdict_rank
 from .env import Answer, GameNotActiveError, InvalidRequestError, StaleDecisionError
 from .generated import forge_env_pb2 as pb
 from .runner import DecisionContext, default_policy
@@ -64,10 +65,6 @@ _PASS_KIND = "pass"
 _SUCCESS_TARGET = 2
 #: Branch cap used when recording PRIORITY alternatives for the loop search.
 _SEQUENCE_BRANCH = 3
-#: Verdict preference for picking the strongest result across sequences.
-_VERDICT_PREFERENCE = ("loops", "inconclusive", "no_loop", "refuted", "error")
-
-
 @dataclass
 class SearchResult:
     """Outcome of one bounded search.
@@ -939,14 +936,6 @@ def _sequence_variants(
     for index, (_decision_type, _answer, variants) in enumerate(recorded):
         for variant in variants:
             yield index, variant
-
-
-def _verdict_rank(verdict: str) -> int:
-    """Lower is stronger; unknown verdicts rank weakest."""
-    try:
-        return _VERDICT_PREFERENCE.index(str(verdict))
-    except ValueError:
-        return len(_VERDICT_PREFERENCE)
 
 
 def _with_loop_provenance(

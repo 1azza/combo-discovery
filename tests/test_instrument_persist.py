@@ -11,6 +11,7 @@ import importlib.util
 import sqlite3
 from pathlib import Path
 
+from combo_discovery import cards as cards_mod
 from combo_discovery.generated import forge_env_pb2 as pb
 from combo_discovery.store import ExperimentStore
 from test_witness import FakeWitnessClient
@@ -115,7 +116,7 @@ def test_analogue_transfer_persist_writes_run_result_and_observations(
     db = tmp_path / "research.db"
     ExperimentStore(db).close()
     _seed_cards(db)
-    monkeypatch.setattr(at, "_load_vintage", lambda names: _Permissive())
+    monkeypatch.setattr(cards_mod, "_LEGALITY", _Permissive())
     monkeypatch.setattr(at, "ForgeEnvClient", _FakeHarness)
     out = tmp_path / "analogue.json"
 
@@ -158,7 +159,7 @@ def test_instruments_default_path_writes_nothing(tmp_path, monkeypatch):
     db = tmp_path / "research.db"
     ExperimentStore(db).close()
     _seed_cards(db)
-    monkeypatch.setattr(at, "_load_vintage", lambda names: _Permissive())
+    monkeypatch.setattr(cards_mod, "_LEGALITY", _Permissive())
     monkeypatch.setattr(at, "ForgeEnvClient", _FakeHarness)
     out = tmp_path / "analogue_default.json"
 
@@ -172,3 +173,60 @@ def test_instruments_default_path_writes_nothing(tmp_path, monkeypatch):
         assert store.witness_observations() == []
     finally:
         store.close()
+
+
+class _StubWitnessResult:
+    """Minimal result object for stubbing the serial ``run_witness`` call."""
+
+    verdict = "no_loop"
+    iterations = 0
+    error = None
+    evidence: dict = {"kind": "stub"}
+
+
+def test_analogue_parallel_candidate_matches_serial(tmp_path, monkeypatch):
+    """The ``--workers>1`` path must stage the exact same Candidate as serial.
+
+    A mismatch here is the parity hazard: extra board state (e.g. oracle texts
+    or different keys) would make a worker verdict disagree with the serial one.
+    """
+    db = tmp_path / "research.db"
+    ExperimentStore(db).close()
+    _seed_cards(db)
+    monkeypatch.setattr(cards_mod, "_LEGALITY", _Permissive())
+
+    # Serial: capture every Candidate the script stages for verification.
+    serial_combos: list = []
+    monkeypatch.setattr(
+        at.W, "build_scenario",
+        lambda combo: serial_combos.append(combo) or object(),
+    )
+    monkeypatch.setattr(at.W, "run_witness", lambda *a, **k: _StubWitnessResult())
+    monkeypatch.setattr(at, "ForgeEnvClient", _FakeHarness)
+    serial_out = tmp_path / "serial.json"
+    assert at.main(["--db", str(db), "--out", str(serial_out)]) == 0
+    serial_by_pair = {(c.cards[0], c.cards[1]): c for c in serial_combos}
+    assert serial_by_pair
+
+    # Parallel: capture the candidate builder and rebuild the same pair.
+    captured: dict = {}
+
+    def _fake_run_batch(pairs, **kwargs):
+        captured["pairs"] = list(pairs)
+        captured["builder"] = kwargs["candidate_builder"]
+        return [
+            {"verdict": "no_loop", "executed": 0, "reason": "stub"} for _ in pairs
+        ]
+
+    monkeypatch.setattr(at.B, "run_batch", _fake_run_batch)
+    parallel_out = tmp_path / "parallel.json"
+    assert at.main(
+        ["--db", str(db), "--out", str(parallel_out), "--workers", "4"]
+    ) == 0
+
+    assert set(captured["pairs"]) == set(serial_by_pair)
+    for engine, partner in captured["pairs"]:
+        built = captured["builder"](engine, partner)
+        assert built == serial_by_pair[(engine, partner)]
+        # The parity hazard: the parallel path must not stage oracle texts.
+        assert built.oracle_texts == ()

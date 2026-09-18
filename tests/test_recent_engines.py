@@ -1,8 +1,8 @@
-"""Pure selection logic for ``scripts/recent_engines.py``.
+"""Selection logic for ``scripts/recent_engines.py``.
 
-The DB/harness wiring is exercised through the real ``main`` by
-``test_instrument_persist``; here the engine/partner filters and the pair
-cross-product are unit-tested on a tiny synthetic corpus.
+The card predicates themselves are covered by :mod:`tests.test_cards`; here the
+engine/partner filters and the pair cross-product are unit-tested on a tiny
+synthetic corpus through the script's own ``select_*``/``build_pairs`` helpers.
 """
 
 from __future__ import annotations
@@ -143,8 +143,6 @@ def test_recent_engine_pairs_with_untapper():
 
 
 def test_triggered_engines_are_excluded():
-    assert not re_mod.is_activated_copy_engine(ATTACK_ENGINE.oracle_text)
-    assert not re_mod.is_activated_copy_engine(ETB_ENGINE.oracle_text)
     recent = {
         c.name
         for c in re_mod.select_recent_engines(ALL, RELEASES, since=SINCE, is_legal=_legal)
@@ -201,37 +199,18 @@ def test_tap_engine_pairs_with_untapper_in_tap_mode():
     assert ("Test Tap Engine", "Test Activated Untapper") in pairs
 
 
-def test_tap_class_excludes_pure_mana_ability():
-    assert not re_mod.is_tap_engine(MANA_DORK.oracle_text)
-    # A pure-mana artifact with a rider ("deals 1 damage to you") is not an engine.
-    assert not re_mod.is_tap_engine(MANA_ARTIFACT.oracle_text, MANA_ARTIFACT.type_line)
-    # A mana land with several mana abilities is not an engine either.
-    assert not re_mod.is_tap_engine(MANA_LAND.oracle_text, MANA_LAND.type_line)
+def test_tap_class_excludes_pure_mana_cards():
+    # Mana dorks, mana lands and rider-carrying mana artifacts are all ramp.
     names = {
         c.name
         for c in re_mod.select_recent_engines(
             TAP_ALL, TAP_RELEASES, since=SINCE, is_legal=_legal, engine_class="tap"
         )
     }
+    assert names == {"Test Tap Engine"}
     assert "Mana Dork" not in names
-
-
-def test_tap_class_excludes_multi_ability_mana_land():
-    # Both {T} abilities add mana, so the land is ramp — not a tap engine.
-    assert not re_mod.is_tap_engine(MANA_LAND.oracle_text, MANA_LAND.type_line)
-    names = {
-        c.name
-        for c in re_mod.select_recent_engines(
-            TAP_ALL, TAP_RELEASES, since=SINCE, is_legal=_legal, engine_class="tap"
-        )
-    }
     assert "Test Mana Land" not in names
-
-    # A {T}: ... engine with a real effect still qualifies (the Land guard only
-    # fires when every {T} ability is a mana ability).
-    assert re_mod.is_tap_engine(TAP_ENGINE.oracle_text, TAP_ENGINE.type_line)
-    real_land = _card("Test Utility Land", "Land", "{T}: Draw a card.")
-    assert re_mod.is_tap_engine(real_land.oracle_text, real_land.type_line)
+    assert "Test Mana Artifact" not in names
 
 
 def test_pair_order_interleaves_engines_and_partners():
@@ -251,7 +230,6 @@ def test_pair_order_interleaves_engines_and_partners():
 
 
 def test_tap_class_excludes_limited_ability():
-    assert not re_mod.is_tap_engine(LIMITED_ENGINE.oracle_text)
     names = {
         c.name
         for c in re_mod.select_recent_engines(

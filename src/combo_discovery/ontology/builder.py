@@ -27,10 +27,10 @@ import sqlite3
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from itertools import combinations
 from typing import Any, Iterable, Mapping, Sequence
 
+from ..cards import utc_now as _utc_now
 from ..corpus.spellbook import (
     DEFAULT_FORGE_EDITIONS,
     DEFAULT_VINTAGE_FORMAT,
@@ -147,10 +147,6 @@ class OntologyReport:
             )
             lines.append(f"      {hypothesis['mechanism']}")
         return "\n".join(lines)
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def latest_import_id(conn: sqlite3.Connection) -> str | None:

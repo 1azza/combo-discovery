@@ -19,10 +19,10 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .cards import utc_now as _utc_now
 from .generated import forge_env_pb2 as pb
 
 if TYPE_CHECKING:  # pragma: no cover - typing only (avoids an import cycle)
@@ -542,10 +542,6 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     6: _migration_6,
     7: _migration_7,
 }
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
