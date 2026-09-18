@@ -97,34 +97,8 @@ class ReadOnlyStore:
 
     # -- witness runs / results / observations ------------------------------
 
-    def feed(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Newest witness results joined to their run, for the live feed."""
-        if not self.has_table("witness_results"):
-            return []
-        rows = self.query(
-            """
-            SELECT wr.id, wr.run_id, wr.candidate_kind, wr.candidate_key,
-                   wr.card_names_json, wr.verdict, wr.infinite, wr.iterations,
-                   wr.created_at, r.started_at, r.engine_commit, r.policy_version,
-                   (SELECT COUNT(*) FROM witness_observations o
-                     WHERE o.run_id = wr.run_id) AS observation_count
-            FROM witness_results wr
-            LEFT JOIN witness_runs r ON r.id = wr.run_id
-            ORDER BY wr.id DESC
-            LIMIT ?
-            """,
-            (int(limit),),
-        )
-        for row in rows:
-            row["cards"] = parse_json(row.get("card_names_json"), []) or []
-            row["observation_count"] = int(row.get("observation_count") or 0)
-        return rows
-
     def run(self, run_id: int) -> dict[str, Any] | None:
         return self.one("SELECT * FROM witness_runs WHERE id = ?", (int(run_id),))
-
-    def result(self, result_id: int) -> dict[str, Any] | None:
-        return self.one("SELECT * FROM witness_results WHERE id = ?", (int(result_id),))
 
     def results_for_run(self, run_id: int) -> list[dict[str, Any]]:
         return self.query(
@@ -198,49 +172,6 @@ class ReadOnlyStore:
             return None
         return self._decorate_hypothesis(row)
 
-    def list_candidates(
-        self,
-        *,
-        pattern: str = "",
-        search: str = "",
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        if not self.has_table("combo_hypotheses"):
-            return []
-        clauses: list[str] = []
-        params: list[Any] = []
-        if pattern.strip():
-            if pattern.strip().isdigit():
-                clauses.append("h.pattern_id = ?")
-                params.append(int(pattern))
-            else:
-                clauses.append("p.name = ?")
-                params.append(pattern.strip())
-        if search.strip():
-            like = f"%{like_escape(search.strip())}%"
-            clauses.append(
-                "(h.mechanism LIKE ? ESCAPE '\\' OR EXISTS ("
-                " SELECT 1 FROM json_each(h.card_ids_json) je"
-                " JOIN cards c ON c.id = CAST(je.value AS INTEGER)"
-                " WHERE c.name LIKE ? ESCAPE '\\'))"
-            )
-            params.extend([like, like])
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = self.query(
-            f"""
-            SELECT h.id, h.import_id, h.pattern_id, h.card_ids_json, h.mechanism,
-                   h.score, h.status, h.created_at,
-                   p.name AS pattern, p.description AS pattern_description
-            FROM combo_hypotheses h
-            LEFT JOIN patterns p ON p.id = h.pattern_id
-            {where}
-            ORDER BY h.score DESC, h.id
-            LIMIT ?
-            """,
-            (*params, int(limit)),
-        )
-        return [self._decorate_hypothesis(row) for row in rows]
-
     def _decorate_hypothesis(self, row: dict[str, Any]) -> dict[str, Any]:
         ids: list[int] = []
         for value in parse_json(row.get("card_ids_json"), []) or []:
@@ -253,9 +184,6 @@ class ReadOnlyStore:
         row["cards"] = [{"id": cid, "name": names.get(cid, f"#{cid}")} for cid in ids]
         row["card_names"] = [card["name"] for card in row["cards"]]
         return row
-
-    def patterns(self) -> list[dict[str, Any]]:
-        return self.query("SELECT id, name, description FROM patterns ORDER BY id")
 
     def interactions_for_pair(
         self, card_a: int, card_b: int

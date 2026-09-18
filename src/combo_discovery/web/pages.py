@@ -1,13 +1,9 @@
 """Full-page composition for the web console.
 
-The primary view is written for a Magic player who knows what an infinite combo
-is but nothing about this project. Internal vocabulary (signatures, state
-hashes, policy versions, raw reasons) is kept, but demoted into a collapsed
-"Technical details" section.
-
-Server-side HTML is the source of truth; the only client-side behaviour is the
-feed poll in :mod:`combo_discovery.web.assets`. Every page degrades gracefully
-with Javascript disabled.
+The product is The Gallery: a board of pairings being checked, written for a
+Magic player. The run and candidate pages remain only as detail bridges from a
+tile. Server-side HTML is the source of truth; the Gallery polls its JSON
+endpoint in :mod:`combo_discovery.web.assets` to advance while a sweep runs.
 """
 
 from __future__ import annotations
@@ -18,6 +14,12 @@ from typing import Any
 
 from .assets import CSS, JS
 from .db import parse_json
+from .gallery import (
+    COLOUR_FILTERS,
+    MV_FILTERS,
+    TYPE_FILTERS,
+    render_board,
+)
 from .render import (
     build_samples,
     card_link,
@@ -47,18 +49,30 @@ from .render import (
 BRAND = "combo-discovery"
 TAGLINE = "combo loop tester"
 
-PAGES = (
-    ("live", "/", "Live"),
-    ("candidates", "/candidates", "Combos"),
+#: (key, href or None, title, subtitle). ``None`` href = not shipped yet.
+NAV_ITEMS: tuple[tuple[str, str | None, str, str], ...] = (
+    ("gallery", "/", "The Gallery", "combos being checked"),
+    ("goldfish", None, "The Goldfish", "watch a combo being tested"),
 )
 
 
 def _nav(active: str) -> str:
-    links = "".join(
-        f'<a class="{"active" if key == active else ""}" href="{href}">{label}</a>'
-        for key, href, label in PAGES
-    )
-    return f'<nav class="nav">{links}</nav>'
+    parts: list[str] = []
+    for key, href, title, subtitle in NAV_ITEMS:
+        if href is None:
+            parts.append(
+                '<span class="nav-item nav-disabled" aria-disabled="true">'
+                f'<span class="nav-title">{esc(title)}</span>'
+                f'<span class="nav-sub">{esc(subtitle)} · coming soon</span></span>'
+            )
+        else:
+            classes = "nav-item active" if key == active else "nav-item"
+            parts.append(
+                f'<a class="{classes}" href="{href}">'
+                f'<span class="nav-title">{esc(title)}</span>'
+                f'<span class="nav-sub">{esc(subtitle)}</span></a>'
+            )
+    return f'<nav class="nav" aria-label="Primary">{"".join(parts)}</nav>'
 
 
 def _foot(db_path: str) -> str:
@@ -86,12 +100,13 @@ def layout(
         f"<title>{esc(title)} · {BRAND}</title>\n"
         f"<style>{CSS}</style>\n"
         "</head>\n<body>\n"
+        '<a class="skip" href="#main">Skip to content</a>'
         '<header class="topbar"><div class="topbar-inner">'
         f'<a class="brand" href="/"><span class="mark">◆</span> {BRAND}'
         f'<span class="sub">{esc(TAGLINE)}</span></a>'
         f"{_nav(active)}"
         "</div></header>\n"
-        f'<main class="wrap">{body}{_foot(db_path)}</main>\n'
+        f'<main class="wrap" id="main">{body}{_foot(db_path)}</main>\n'
         f"<script>{JS}</script>\n"
         "</body>\n</html>\n"
     )
@@ -109,56 +124,63 @@ def _card_links(names: Sequence[Any], *, css: str = "card-link") -> str:
 
 
 # ---------------------------------------------------------------------------
-# feed
+# gallery (home)
 # ---------------------------------------------------------------------------
 
 
-def feed_rows(results: Sequence[dict[str, Any]]) -> str:
-    rows: list[str] = []
-    for row in results:
-        cards = _card_links(row.get("cards") or [])
-        rows.append(
-            f'<tr data-id="{esc(row.get("id"))}">'
-            f'<td class="cards-cell">{cards}</td>'
-            f'<td><a class="result-link" href="/run/{esc(row.get("run_id"))}">'
-            f"{_result_badge(row.get('verdict'))}</a></td>"
-            f'<td class="num">{esc(row.get("iterations"))}</td>'
-            f'<td class="mono-cell faint">{esc(short_time(row.get("created_at")))}</td>'
-            "</tr>"
+def _filter_select(
+    name: str,
+    label: str,
+    options: Sequence[tuple[str, str]] | Sequence[str],
+    current: str,
+) -> str:
+    items = [f'<option value="">{esc(label)}: any</option>']
+    for option in options:
+        value, text = option if isinstance(option, tuple) else (option, option)
+        selected = " selected" if str(value) == str(current) else ""
+        items.append(
+            f'<option value="{esc(value)}"{selected}>{esc(text)}</option>'
         )
-    return "".join(rows)
+    return (
+        f'<label class="filter"><span class="filter-label">{esc(label)}</span>'
+        f'<select name="{esc(name)}">{"".join(items)}</select></label>'
+    )
 
 
-def page_feed(results: Sequence[dict[str, Any]], db_path: str) -> str:
-    body_rows = feed_rows(results) or (
-        '<tr><td colspan="4"><p class="empty">Nothing tested yet. '
-        "Once the tester runs, each pair of cards it tries will show up here."
-        "</p></td></tr>"
+def page_gallery(payload: dict[str, Any], db_path: str) -> str:
+    filters = payload.get("filters") or {}
+    colour = (filters.get("colours") or [""])[0] if filters.get("colours") else ""
+    form = (
+        _filter_select("color", "Colour", COLOUR_FILTERS, colour)
+        + _filter_select("mv", "Mana value", MV_FILTERS, filters.get("mv") or "")
+        + _filter_select("type", "Card type", TYPE_FILTERS, filters.get("type") or "")
     )
     body = f"""
 <section class="hero" style="--i:0">
-  <h1>Combos being tested</h1>
-  <p class="lede">Each row is a pair of cards the tester put on the battlefield
-  to see whether they loop. Open a row to watch the board, step by step, and
-  find out what the tester decided.</p>
+  <h1>The Gallery</h1>
+  <p class="lede">Every pairing the machine thinks might loop, sorted by how
+  promising it looks. Watch them move from queued, to on the table, to a result
+  while it checks them.</p>
 </section>
-<section class="panel" style="--i:1">
-  <div class="panel-title">
-    <span id="feed-live" class="live"><span class="dot"></span> live</span>
-    <span class="count-tag" id="feed-count">{len(results)} results</span>
-    <span class="count-tag faint" id="feed-updated"></span>
-  </div>
-  <div class="table-wrap">
-    <table>
-      <thead><tr>
-        <th>Cards</th><th>Result</th><th class="num">Steps</th><th>When</th>
-      </tr></thead>
-      <tbody id="feed-body">{body_rows}</tbody>
-    </table>
-  </div>
+<form class="filters" method="get" action="/" id="gallery-filters">
+  {form}
+  <noscript><button type="submit" class="copy">Filter</button></noscript>
+</form>
+<div class="board-status">
+  <span id="gallery-live" class="live"><span class="dot"></span> live</span>
+  <span class="count-tag faint" id="gallery-updated"></span>
+</div>
+<section class="board-wrap" aria-label="Pairings by status">
+  {render_board(payload["columns"])}
 </section>
+<p class="board-note">Showing the strongest pairings in each column. The board
+refreshes on its own.</p>
+<div class="lightbox" id="lightbox" hidden>
+  <button type="button" class="lb-close" id="lightbox-close">Close</button>
+  <img class="lb-img" id="lightbox-img" alt="" width="488" height="680">
+</div>
 """
-    return layout("Combos being tested", body, active="live", db_path=db_path)
+    return layout("The Gallery", body, active="gallery", db_path=db_path)
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +432,7 @@ def page_run(
     )
 
     body = f"""
-<div class="crumbs"><a href="/">Live</a> / {esc(title)}</div>
+<div class="crumbs"><a href="/">The Gallery</a> / {esc(title)}</div>
 <section class="hero verdict-hero {esc(verdict_class(verdict))}" style="--i:0">
   <h1 class="verdict-title">{esc(headline)}</h1>
   <p class="verdict-cards">{cards_line}</p>
@@ -443,11 +465,11 @@ def page_run(
 </section>
 {technical}
 """
-    return layout(title, body, active="", db_path=db_path)
+    return layout(title, body, active="gallery", db_path=db_path)
 
 
 # ---------------------------------------------------------------------------
-# candidate page(s)
+# candidate page
 # ---------------------------------------------------------------------------
 
 
@@ -523,8 +545,7 @@ def page_candidate(
 """
 
     body = f"""
-<div class="crumbs"><a href="/">Live</a> / <a href="/candidates">Combos</a> /
-  {esc(title)}</div>
+<div class="crumbs"><a href="/">The Gallery</a> / {esc(title)}</div>
 <section class="hero" style="--i:0">
   <h1 class="verdict-cards">{_card_links(names) if names else esc(title)}</h1>
   <p class="verdict-meta">{provenance_badge(badge_state)}</p>
@@ -546,74 +567,13 @@ def page_candidate(
 </section>
 {technical}
 """
-    return layout(title, body, active="candidates", db_path=db_path)
-
-
-def page_candidates(
-    *,
-    candidates: Sequence[dict[str, Any]],
-    patterns: Sequence[dict[str, Any]],
-    pattern: str,
-    search: str,
-    db_path: str,
-) -> str:
-    options = ['<option value="">All combo types</option>']
-    for row in patterns:
-        selected = (
-            " selected"
-            if str(row.get("id")) == str(pattern) or row.get("name") == pattern
-            else ""
-        )
-        options.append(
-            f'<option value="{esc(row.get("id"))}"{selected}>{esc(row.get("name"))}</option>'
-        )
-
-    rows = "".join(
-        f'<tr><td class="cards-cell">{_card_links(c.get("card_names") or [])}</td>'
-        f'<td class="mono-cell faint">{esc(c.get("pattern") or "—")}</td>'
-        f'<td class="num">{esc(_fmt_score(c.get("score")))}</td>'
-        f'<td>{esc(c.get("status") or "—")}</td>'
-        f'<td class="mono-cell"><a href="/candidate/{esc(c.get("id"))}">'
-        "open →</a></td></tr>"
-        for c in candidates
-    ) or (
-        '<tr><td colspan="5"><p class="empty">No combos match. They are built '
-        "from the imported card collection.</p></td></tr>"
-    )
-
-    body = f"""
-<section class="hero" style="--i:0">
-  <h1>Combos we think might loop</h1>
-  <p class="lede">Pairs of cards that look like they set each other off. Open
-  one to read the idea and see how it tested.</p>
-</section>
-<section class="panel" style="--i:1">
-  <form method="get" action="/candidates" class="filter-row"
-        style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
-    <select name="pattern" class="pill" style="padding:6px 8px">{''.join(options)}</select>
-    <input type="search" name="q" value="{esc(search)}"
-      placeholder="search by card…" class="pill"
-      style="padding:6px 10px;min-width:220px;flex:1;background:var(--surface);
-             color:var(--text);border:1px solid var(--border)">
-    <button type="submit" class="copy">filter</button>
-  </form>
-  <div class="table-wrap"><table>
-    <thead><tr><th>Cards</th><th>Combo type</th><th class="num">Match</th>
-    <th>Status</th><th></th></tr></thead>
-    <tbody>{rows}</tbody>
-  </table></div>
-  <p class="faint" style="font-size:12px">{len(candidates)} shown</p>
-</section>
-"""
-    return layout("Combos", body, active="candidates", db_path=db_path)
+    return layout(title, body, active="gallery", db_path=db_path)
 
 
 __all__ = [
-    "feed_rows",
     "layout",
     "page_candidate",
-    "page_candidates",
-    "page_feed",
+    "page_gallery",
     "page_run",
     "provenance_badge",
 ]

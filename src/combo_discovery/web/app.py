@@ -11,25 +11,24 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
-from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ..corpus.names import normalize_card_name, pair_hash
 from .db import ReadOnlyStore, parse_json
+from .gallery import build_gallery
 from .pages import (
     layout,
     page_candidate,
-    page_candidates,
-    page_feed,
+    page_gallery,
     page_run,
 )
 from .render import build_samples, find_cycles
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-FEED_LIMIT = 60
+GALLERY_LIMIT = 18
 
 
 # ---------------------------------------------------------------------------
@@ -57,10 +56,6 @@ def replay_command(
         parts.append(f"--max-decisions {params['max_decisions']}")
     parts.append("--persist")
     return " ".join(parts)
-
-
-def _iso_now() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 def _evidence(result: dict[str, Any]) -> Any:
@@ -155,8 +150,9 @@ class WebHandler(BaseHTTPRequestHandler):
         markup = layout(
             "Not found",
             '<section class="hero"><h1>Not found</h1>'
-            '<p class="lede">That path does not exist in the witness console.</p>'
-            '<p><a href="/">← back to the live feed</a></p></section>',
+            '<p class="lede">That path does not exist in this console.</p>'
+            '<p><a href="/">← back to The Gallery</a></p></section>',
+            active="gallery",
             db_path=self.db_path,
         )
         self._html(markup, status=404)
@@ -205,25 +201,10 @@ class WebHandler(BaseHTTPRequestHandler):
 
         # -- HTML pages -----------------------------------------------------
         if path == "/":
-            results = self.store.feed(FEED_LIMIT)
-            self._html(page_feed(results, self.db_path), head=head)
-            return
-        if path == "/candidates":
-            pattern = (query.get("pattern") or [""])[0]
-            search = (query.get("q") or [""])[0]
-            candidates = self.store.list_candidates(
-                pattern=pattern, search=search, limit=100
+            payload = build_gallery(
+                self.store, query, per_column=GALLERY_LIMIT
             )
-            self._html(
-                page_candidates(
-                    candidates=candidates,
-                    patterns=self.store.patterns(),
-                    pattern=pattern,
-                    search=search,
-                    db_path=self.db_path,
-                ),
-                head=head,
-            )
+            self._html(page_gallery(payload, self.db_path), head=head)
             return
         if len(parts) == 2 and parts[0] == "run" and parts[1].isdigit():
             self._render_run(int(parts[1]), head=head)
@@ -238,41 +219,23 @@ class WebHandler(BaseHTTPRequestHandler):
         self, parts: list[str], query: dict[str, list[str]], *, head: bool
     ) -> None:
         if not parts:
-            self._json({"endpoints": [
-                "/api/feed", "/api/runs", "/api/run/{id}",
-                "/api/candidates?pattern=&q=&limit=", "/api/candidate/{id}",
-            ]}, head=head)
-            return
-
-        if parts == ["feed"]:
-            limit = _query_int(query, "limit", FEED_LIMIT)
-            results = self.store.feed(limit)
             self._json(
-                {"results": results, "count": len(results), "generated_at": _iso_now()},
+                {"endpoints": ["/api/gallery", "/api/runs", "/api/run/{id}"]},
                 head=head,
             )
+            return
+
+        if parts == ["gallery"]:
+            payload = build_gallery(self.store, query, per_column=GALLERY_LIMIT)
+            self._json(payload, head=head)
             return
         if parts == ["runs"]:
             limit = _query_int(query, "limit", 100)
             runs = self.store.list_runs(limit)
             self._json({"runs": runs, "count": len(runs)}, head=head)
             return
-        if parts == ["candidates"]:
-            pattern = (query.get("pattern") or [""])[0]
-            search = (query.get("q") or [""])[0]
-            limit = _query_int(query, "limit", 50)
-            candidates = self.store.list_candidates(
-                pattern=pattern, search=search, limit=limit
-            )
-            self._json(
-                {"candidates": candidates, "count": len(candidates)}, head=head
-            )
-            return
         if len(parts) == 2 and parts[0] in {"run", "runs"} and parts[1].isdigit():
             self._json(self._run_payload(int(parts[1])), head=head)
-            return
-        if len(parts) == 2 and parts[0] == "candidate" and parts[1].isdigit():
-            self._json(self._candidate_payload(int(parts[1])), head=head)
             return
 
         self._json({"error": "unknown endpoint"}, status=404, head=head)
@@ -304,24 +267,6 @@ class WebHandler(BaseHTTPRequestHandler):
             payload["cycles"] = find_cycles(samples)
             payload["per_step"] = per_step
         return payload
-
-    def _candidate_payload(self, hypothesis_id: int) -> dict[str, Any]:
-        hypothesis = self.store.hypothesis(hypothesis_id)
-        if hypothesis is None:
-            return {"error": "candidate not found", "candidate_id": hypothesis_id}
-        ids = hypothesis.get("card_ids") or []
-        interactions: list[dict[str, Any]] = []
-        if len(ids) >= 2:
-            interactions = _decorate_interactions(
-                self.store, self.store.interactions_for_pair(ids[0], ids[1])
-            )
-        return {
-            "candidate": hypothesis,
-            "badge": _pair_badge(self.store, hypothesis),
-            "cards": self.store.cards(ids),
-            "interactions": interactions,
-            "results": self.store.results_for_candidate(str(hypothesis_id)),
-        }
 
     # -- HTML pages ---------------------------------------------------------
 
