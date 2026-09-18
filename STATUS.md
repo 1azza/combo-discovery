@@ -51,14 +51,21 @@ analogue transfer (`scripts/analogue_transfer.py`).
 - [x] Evaluation: `known_pair` / `contained_in_known` / `unmatched` / `missed`
       classification, precision@k / recall / F1, FP/miss diagnostics, Tier-A/B
       two-source novelty policy (never claims "novel" from one source).
-- [x] Store schema v6, append-only (WAL, no UPDATE/DELETE).
+- [x] Store schema v7, append-only (WAL, no UPDATE/DELETE).
 - [x] TUI (omarchy-styled): Corpus, Experiments, Candidates, Card Lab, Activity.
+- [x] **Web console** (`uv run combo-web`): a local, read-only, stdlib-only
+      server — a live feed of witness runs and a run page whose star is a
+      per-step **state graph** drawn from `witness_observations`, where a repeated
+      board is drawn as a highlighted back-edge coloured by verdict. Wording is
+      plain English for Magic players; internal detail lives in a collapsed
+      "Technical details" section. Store v7 streams per-step observations,
+      evidence and diagnostics live.
 
 ### Witness verifier
 
 - [x] Scenario-driven witness search: inject a board, drive decisions with a
       choice-aware policy, detect structural recurrence + resource growth.
-- [x] **Six false-positive / structural classes found and fixed** (each
+- [x] **Seven false-positive / structural classes found and fixed** (each
       live-reproduced, each guarded by the acceptance matrix below):
       1. the pre-iteration baseline pair certified a loop;
       2. cross-turn recurrence treated as a loop;
@@ -68,7 +75,12 @@ analogue transfer (`scripts/analogue_transfer.py`).
       6. monotonic zone counts (`graveyard`/`library`/`hand`) sat in the
          structural signature, so loops whose discard/draw grows the graveyard
          never recurred (`Fear of Missing Out + Helm of the Host`); they are now
-         tracked resources, with the durable-resource requirement kept.
+         tracked resources, with the durable-resource requirement kept;
+      7. a bit-identical consecutive state certified a loop with no requirement
+         that anything happened between the samples — a **stall**, not a loop
+         (`The Fire Crystal + Captain of the Mists`); the degenerate branch now
+         requires durable growth, so genuine loops are certified by the
+         recurrence branch instead.
 - [x] Automatic abilities/triggers are credited to their link (the harness
       already broadcasts every stack push as `SpellCast`), and observations are
       sampled per trigger and at phase/turn boundaries, with a sticky duplicate
@@ -93,6 +105,11 @@ analogue transfer (`scripts/analogue_transfer.py`).
       analogues of known partners. 49 uncatalogued pairs → 4 loops → after
       independent triage **1 uncatalogued pair survives**
       (`Splinter Twin + Giant-Sized Flying Ant`, a 2026-set card).
+- [x] Recent-engine sweeps (`scripts/recent_engines.py`): the copy class (3 recent
+      engines) and the tap-cost class (101 engines) crossed with untappers, on an
+      interleaved fair sample — **0 loops in both**, 60 runs. The sweeps also
+      exposed and fixed three generator leaks (mana lands, mana rocks with riders,
+      and partner-outer sampling that tested one partner 30 times).
 - [x] Honest result: **no genuinely novel mechanic has been found.** Every
       near-miss was either documented elsewhere (Reddit / TappedOut / MTG
       Salvation) or exposed as a verifier bug.

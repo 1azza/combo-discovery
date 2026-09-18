@@ -179,6 +179,20 @@ Together: triggered-engine recall 3% -> **21%**, overall 35% -> **46%**, activat
 46% -> **55%**, and undecided runs fell from 51 to 14 — with no false positive
 reintroduced.
 
+## What we built to see it
+
+A local web console (`combo-web`) renders every run as a state graph: nodes are
+sampled boards, a repeated board is drawn as a highlighted back-edge, coloured by
+the verdict and labelled with what grew — *"the board came back to the same state
+while Tokens and Permanents kept growing."* All the jargon sits in a collapsed
+*Technical details* section, so a Magic player can read a run in five seconds.
+
+And when we widened the generator — recent copy engines, recent tap-cost engines,
+crossed with untappers on a fair interleaved sample — the answer was the same:
+**zero loops**, plus three generator leaks found and fixed along the way (mana
+lands and mana rocks were being counted as "engines", and the sampling was
+testing one partner thirty times).
+
 ## Future work
 
 1. **Candidate quality** — new-card focus and more drivable engine archetypes.
