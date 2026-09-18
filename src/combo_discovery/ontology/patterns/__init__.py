@@ -12,10 +12,10 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from .base import (
+    PATTERN_BASE,
     AbilityLink,
     CardView,
     Edge,
-    PATTERN_BASE,
     PatternDef,
     score_edge,
 )

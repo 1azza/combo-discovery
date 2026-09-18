@@ -21,8 +21,8 @@ Design constraints:
 
 from __future__ import annotations
 
-import hashlib
 import gzip
+import hashlib
 import json
 import re
 import sqlite3
@@ -31,13 +31,13 @@ import unicodedata
 import urllib.request
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from ..cards import utc_now as _utc_now
 from .. import store as store_module
+from ..cards import utc_now as _utc_now
 from ..store import ExperimentStore
 from . import parser as corpus_parser
 from .parser import ParsedCard
@@ -384,7 +384,8 @@ class ImportReport:
             f"faces            : {self.faces}",
             f"abilities (K)    : {self.abilities}",
             f"effects          : {self.effects}"
-            f"  [trigger {self.triggers} / static {self.statics} / replacement {self.replacements}]",
+            f"  [trigger {self.triggers} / static {self.statics}"
+            f" / replacement {self.replacements}]",
             f"svars            : {self.svars}",
             f"aliases          : {self.aliases}",
             f"scryfall matched : {self.scryfall_matched}",

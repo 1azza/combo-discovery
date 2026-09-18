@@ -16,8 +16,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..cards import utc_now as _utc_now
 from .. import store as store_module
+from ..cards import utc_now as _utc_now
 from ..store import ExperimentStore
 
 

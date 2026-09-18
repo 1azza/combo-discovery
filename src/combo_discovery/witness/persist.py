@@ -79,7 +79,7 @@ def observation_recorder(store: Any, run_id: int) -> Callable[[Observation], Non
             event_seq=observation.event_seq,
         )
         try:
-            setattr(observation, "_persisted", True)
+            observation._persisted = True
         except Exception:  # pragma: no cover - dataclasses are mutable
             logger.debug("could not mark observation persisted", exc_info=True)
 
@@ -108,7 +108,7 @@ def persist_observations(store: Any, run_id: int, result: WitnessResult) -> int:
             event_seq=observation.event_seq,
         )
         try:
-            setattr(observation, "_persisted", True)
+            observation._persisted = True
         except Exception:  # pragma: no cover - dataclasses are mutable
             logger.debug("could not mark observation persisted", exc_info=True)
         written += 1

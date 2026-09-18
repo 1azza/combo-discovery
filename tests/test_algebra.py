@@ -24,11 +24,9 @@ from combo_discovery.corpus.spellbook import (
     DEFAULT_FORGE_EDITIONS,
     DEFAULT_VINTAGE_FORMAT,
     VintageLegality,
-    load_forge_editions,
 )
 from combo_discovery.ontology.budget import (
     BudgetExceeded,
-    SearchBudget,
     preflight,
 )
 from combo_discovery.ontology.builder import _combo_cards_legal
@@ -209,7 +207,11 @@ def _sig(
 
 
 def _copy_port(restriction: str | None = None, defined: str = "") -> Port:
-    spec = parse_restriction(restriction).to_dict() if restriction else parse_restriction("").to_dict()
+    spec = (
+        parse_restriction(restriction).to_dict()
+        if restriction
+        else parse_restriction("").to_dict()
+    )
     return Port("copy_permanent", {
         "restriction": spec, "defined": defined, "predicate": "COPIES_CREATURE",
     })
@@ -364,7 +366,7 @@ class TestCyclesAndQueries:
         # build_graph link ordering is deterministic too.
         g1 = build_graph(cycle)
         g2 = build_graph(cycle)
-        assert [l.key() for l in g1.links] == [l.key() for l in g2.links]
+        assert [link.key() for link in g1.links] == [link.key() for link in g2.links]
 
     def test_graph_is_card_level_with_ability_links(self, algebra):
         graph = build_graph(algebra["sigs"])

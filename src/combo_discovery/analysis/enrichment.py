@@ -43,13 +43,14 @@ import random
 import sqlite3
 import time
 from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Protocol, Sequence
+from typing import Any, Protocol
 
-from ..cards import utc_now as _utc_now
 from .. import store as store_module
+from ..cards import utc_now as _utc_now
 from ..corpus.names import pair_hash
 from ..corpus.spellbook import DEFAULT_VINTAGE_FORMAT, VintageLegality
 from ..store import ExperimentStore
@@ -496,7 +497,7 @@ def _load_full_known_name_pairs(
         uses[int(row["combo_id"])].append(str(row["name"] or ""))
     pairs: list[tuple[str, str]] = []
     for names in uses.values():
-        unique = sorted(set(n for n in names if n))
+        unique = sorted({n for n in names if n})
         if len(unique) == 2:
             pairs.append((unique[0], unique[1]))
     return pairs

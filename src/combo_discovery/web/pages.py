@@ -12,8 +12,9 @@ with Javascript disabled.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Sequence
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from typing import Any
 
 from .assets import CSS, JS
 from .db import parse_json
@@ -61,7 +62,7 @@ def _nav(active: str) -> str:
 
 
 def _foot(db_path: str) -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
     return (
         '<footer class="foot">'
         f"<span>read-only · {esc(db_path)}</span>"
@@ -592,7 +593,8 @@ def page_candidates(
     <select name="pattern" class="pill" style="padding:6px 8px">{''.join(options)}</select>
     <input type="search" name="q" value="{esc(search)}"
       placeholder="search by card…" class="pill"
-      style="padding:6px 10px;min-width:220px;flex:1;background:var(--surface);color:var(--text);border:1px solid var(--border)">
+      style="padding:6px 10px;min-width:220px;flex:1;background:var(--surface);
+             color:var(--text);border:1px solid var(--border)">
     <button type="submit" class="copy">filter</button>
   </form>
   <div class="table-wrap"><table>

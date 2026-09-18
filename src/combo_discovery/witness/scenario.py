@@ -454,7 +454,7 @@ def build_scenario(
     mana_map = (
         {str(k): int(v) for k, v in mana.items()}
         if mana is not None
-        else {color: DEFAULT_MANA_PER_COLOR for color in DEFAULT_MANA_COLORS}
+        else dict.fromkeys(DEFAULT_MANA_COLORS, DEFAULT_MANA_PER_COLOR)
     )
     # Graveyard-gated combos (delirium) need a supporting graveyard or their
     # condition can never hold; only stage one when the caller did not supply

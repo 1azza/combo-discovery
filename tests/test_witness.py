@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import pytest
 
@@ -11,17 +11,17 @@ from combo_discovery.env import GameNotActiveError
 from combo_discovery.generated import forge_env_pb2 as pb
 from combo_discovery.runner import DecisionContext
 from combo_discovery.witness import (
-    CardSpec,
-    Candidate,
     DEFAULT_GRAVEYARD,
     GAME_STATE_GROWTH_KEYS,
     GROWTH_KEYS,
-    LinkPlan,
     MAX_FORCED_PASSES,
     MAX_PREGAME_DECISIONS,
+    SPIN_THRESHOLD,
+    Candidate,
+    CardSpec,
+    LinkPlan,
     Observation,
     PlayerScenario,
-    SPIN_THRESHOLD,
     Scenario,
     WitnessPolicy,
     _absolute_deck_paths,
@@ -35,7 +35,6 @@ from combo_discovery.witness import (
     synthetic_cycle,
     witness_signature,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -278,7 +277,9 @@ class TestGraveyardGating:
 
     def test_detects_generic_graveyard_marker(self):
         assert is_graveyard_gated(["four or more card types among cards in your graveyard"]) is True
-        assert is_graveyard_gated(["Return two target cards in your graveyard to your hand."]) is True
+        assert is_graveyard_gated(
+            ["Return two target cards in your graveyard to your hand."]
+        ) is True
 
     def test_ordinary_text_is_not_gated(self):
         assert is_graveyard_gated(["Flying, haste", "Whenever this attacks, untap it."]) is False
@@ -676,7 +677,9 @@ class TestWitnessPolicy:
 # ---------------------------------------------------------------------------
 
 
-def make_state(*, mana: int = 0, life: tuple[int, int] = (20, 20), hash_: str = "H") -> pb.FullState:
+def make_state(
+    *, mana: int = 0, life: tuple[int, int] = (20, 20), hash_: str = "H"
+) -> pb.FullState:
     state = pb.FullState(game_id=1, turn=1, phase="Main1", active_player=0, state_hash=hash_)
     state.life.extend(life)
     state.typed_mana_pools.add(colorless=mana)
@@ -868,9 +871,24 @@ class TestDetectLoop:
         # attacks) reproduces the signature across turns while a resource grows.
         # That is ordinary play, not an infinite loop.
         observations = [
-            Observation(iteration=1, signature="same", resources={"mana": 0, "tokens": 1, "life": 40}, turn=1),
-            Observation(iteration=3, signature="same", resources={"mana": 0, "tokens": 2, "life": 34}, turn=3),
-            Observation(iteration=5, signature="same", resources={"mana": 0, "tokens": 3, "life": 28}, turn=5),
+            Observation(
+                iteration=1,
+                signature="same",
+                resources={"mana": 0, "tokens": 1, "life": 40},
+                turn=1,
+            ),
+            Observation(
+                iteration=3,
+                signature="same",
+                resources={"mana": 0, "tokens": 2, "life": 34},
+                turn=3,
+            ),
+            Observation(
+                iteration=5,
+                signature="same",
+                resources={"mana": 0, "tokens": 3, "life": 28},
+                turn=5,
+            ),
         ]
         verdict, evidence = detect_loop(observations)
         assert verdict == "no_loop"
@@ -1621,7 +1639,7 @@ class TestPersistObservations:
 
         client = FakeWitnessClient()
         result = run_witness(
-            client, build_scenario(combo_ab()), 
+            client, build_scenario(combo_ab()),
             WitnessPolicy(links=[LinkPlan("A", "B"), LinkPlan("B", "A")], player=0),
             seeds=[1], max_iterations=2,
         )

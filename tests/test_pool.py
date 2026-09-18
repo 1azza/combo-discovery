@@ -14,7 +14,6 @@ from combo_discovery.env import (
 )
 from combo_discovery.generated import forge_env_pb2 as pb
 from combo_discovery.pool import WorkerPool
-from combo_discovery.runner import GameResult
 
 
 def good_client(game_id=1):

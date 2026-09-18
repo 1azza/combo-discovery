@@ -422,7 +422,7 @@ class TestStoreBinding:
 
     def test_candidate_queries(self, tmp_path):
         path = tmp_path / "exp.sqlite"
-        run_id = _seed_store(path)
+        _seed_store(path)
         binding = StoreBinding(path)
 
         candidates = binding.list_candidates()

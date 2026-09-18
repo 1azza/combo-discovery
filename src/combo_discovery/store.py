@@ -668,7 +668,7 @@ class ExperimentStore:
     def record_game(
         self,
         run_id: str,
-        result: "GameResult",
+        result: GameResult,
         decks: list[tuple[str, str]],
         seed: int,
         player_types: Sequence[int],
@@ -704,7 +704,7 @@ class ExperimentStore:
     def record_decision(
         self,
         game_row: int,
-        ctx: "DecisionContext | DecisionRef",
+        ctx: DecisionContext | DecisionRef,
         answer: Any,
         accepted: bool = True,
     ) -> None:
@@ -713,8 +713,8 @@ class ExperimentStore:
         concern. ``ctx`` may be a DecisionContext or a DecisionRef."""
         if not accepted:
             return
-        decision_id = int(getattr(ctx, "decision_id"))
-        dtype = getattr(ctx, "decision_type")
+        decision_id = int(ctx.decision_id)
+        dtype = ctx.decision_type
         player = int(getattr(ctx, "player", -1))
         type_name = _enum_name(pb.DecisionType, dtype) if isinstance(dtype, int) else str(dtype)
         with _DB_LOCK:

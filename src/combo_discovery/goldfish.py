@@ -89,7 +89,7 @@ def _is_land_option(option: pb.Option) -> bool:
     return bool(_LAND_RE.search(option.description))
 
 
-def _fallback(ctx: "DecisionContext") -> "Answer":
+def _fallback(ctx: DecisionContext) -> Answer:
     """Deferred import: runner imports this module, so importing it at module
     load would create a cycle. At call time runner is fully initialized."""
     from .runner import default_policy
@@ -111,7 +111,7 @@ class GoldfishPolicy:
         """Reset per-game state. run_game calls this at each game start."""
         self.mulligans = 0
 
-    def __call__(self, ctx: "DecisionContext") -> "Answer":
+    def __call__(self, ctx: DecisionContext) -> Answer:
         decision = ctx.decision_type
         if decision == pb.DECISION_TYPE_PRIORITY:
             return self._priority(ctx)
@@ -130,7 +130,7 @@ class GoldfishPolicy:
 
     # -- PRIORITY -----------------------------------------------------------
 
-    def _priority(self, ctx: "DecisionContext") -> "Answer":
+    def _priority(self, ctx: DecisionContext) -> Answer:
         options = ctx.options
         if not options:
             raise ValueError("PRIORITY decision with no options")
@@ -148,7 +148,7 @@ class GoldfishPolicy:
 
     # -- MULLIGAN_KEEP ------------------------------------------------------
 
-    def _mulligan_keep(self, ctx: "DecisionContext") -> "Answer":
+    def _mulligan_keep(self, ctx: DecisionContext) -> Answer:
         hand_size = len(ctx.candidates)
         if hand_size > KEEP_HAND_SIZE:
             self.mulligans += 1

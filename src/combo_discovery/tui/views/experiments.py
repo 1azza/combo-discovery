@@ -19,8 +19,8 @@ from ..data import (
     POLICY_LABELS,
     ActiveRun,
     CancellablePolicy,
-    RunConfig,
     RunCancelled,
+    RunConfig,
     StoreBinding,
     build_pool,
     build_run_config,
@@ -300,7 +300,10 @@ class ExperimentsView(Vertical):
             )
         count = len(rows)
         self.query_one("#exp-results-count", Static).update(
-            Text(f"run {short_id(run_id)} · {count} game{'s' if count != 1 else ''}", style=pal.FAINT)
+            Text(
+                f"run {short_id(run_id)} · {count} game{'s' if count != 1 else ''}",
+                style=pal.FAINT,
+            )
         )
         self._toggle_results_empty(count == 0)
 

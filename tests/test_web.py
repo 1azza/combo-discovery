@@ -17,10 +17,10 @@ from pathlib import Path
 import pytest
 
 from combo_discovery.store import ExperimentStore
+from combo_discovery.web import theme as web_theme
 from combo_discovery.web.app import create_server
 from combo_discovery.web.db import ReadOnlyStore, open_read_only
 from combo_discovery.web.render import CYCLE_MARKER
-from combo_discovery.web import theme as web_theme
 
 SIG_A = "a" * 64
 SIG_B = "b" * 64

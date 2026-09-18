@@ -50,7 +50,9 @@ def sacrifice_recursion(views: dict[int, CardView]) -> Iterator[Edge]:
                 + (" (recursion runs both ways)." if mutual else ".")
             )
             outlet_spec = _spec_from_params(_pred_params(outlet, vocab.SACRIFICE_OUTLET), "target")
-            recur_spec = _spec_from_params(_pred_params(recur, vocab.RECURS_FROM_GRAVEYARD), "target")
+            recur_spec = _spec_from_params(
+                _pred_params(recur, vocab.RECURS_FROM_GRAVEYARD), "target"
+            )
             verified = bool(
                 (outlet_spec is not None and not outlet_spec.unknown)
                 or (recur_spec is not None and not recur_spec.unknown)

@@ -53,7 +53,8 @@ def mana_engine(views: dict[int, CardView]) -> Iterator[Edge]:
             mechanism = (
                 f"{producer.name} produces mana"
                 + (f" ({amount})" if amount else "")
-                + f"; {spender.name} converts that mana into value (X-cost / artifact mana scaling)."
+                + f"; {spender.name} converts that mana into value "
+                f"(X-cost / artifact mana scaling)."
             )
             yield _make_edge(
                 "mana_engine", producer, spender, mechanism,

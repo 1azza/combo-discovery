@@ -351,7 +351,14 @@ def build_run_config(
     if timeout is not None and timeout < 0:
         errors.append("timeout must be >= 0")
 
-    if errors or deck_a is None or deck_b is None or count is None or workers is None or port is None:
+    if (
+        errors
+        or deck_a is None
+        or deck_b is None
+        or count is None
+        or workers is None
+        or port is None
+    ):
         return None, errors
     return (
         RunConfig(
@@ -530,7 +537,7 @@ class WorkerProbe:
         return len(self.results)
 
     def status_for(self, port: int) -> str:
-        for p, ok, detail in self.results:
+        for p, ok, _detail in self.results:
             if p == port:
                 return "reachable" if ok else "unreachable"
         return "unknown"
@@ -567,7 +574,7 @@ def best_contiguous_run(ports: Sequence[int]) -> tuple[int, int] | None:
     built over a contiguous range. Picking the longest run means the pool uses
     the most live workers without waiting on absent ones.
     """
-    ordered = sorted(set(int(p) for p in ports))
+    ordered = sorted({int(p) for p in ports})
     if not ordered:
         return None
     best = [ordered[0]]
@@ -1252,7 +1259,7 @@ class StoreBinding:
     def ground_truth_states(self, pair_hashes: Iterable[str]) -> dict[str, str]:
         """``pair_hash -> known | contained | unknown`` from ``known_combo_pairs``."""
         hashes = sorted({str(h) for h in pair_hashes if h})
-        out = {h: "unknown" for h in hashes}
+        out = dict.fromkeys(hashes, "unknown")
         if not hashes or not self.has_table("known_combo_pairs"):
             return out
         for chunk in _chunks(hashes):

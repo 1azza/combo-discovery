@@ -7,10 +7,10 @@ from collections.abc import Iterator
 from .. import vocabulary as vocab
 from ..restrictions import check_compatibility
 from .base import (
+    _IMPACT_PREDICATES,
     CardView,
     Edge,
     PatternDef,
-    _IMPACT_PREDICATES,
     _evidence,
     _make_edge,
     _same_ability,

@@ -22,8 +22,9 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 _NON_ALNUM = re.compile(r"[^a-z0-9 ]+")
 DFC_SEP = " // "

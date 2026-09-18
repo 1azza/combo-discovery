@@ -13,8 +13,8 @@ Run with::
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from combo_discovery.corpus.names import normalize_card_name
 from combo_discovery.evaluation import PairVerdict, classify_pairs, metrics
@@ -22,6 +22,7 @@ from combo_discovery.ontology.builder import QUERY_PREFIX
 from combo_discovery.ontology.patterns import PATTERNS
 from combo_discovery.ontology.queries import QUERIES
 from combo_discovery.store import ExperimentStore
+
 KIKI = "Kiki-Jiki, Mirror Breaker"
 LEGACY_NAMES = tuple(pattern.name for pattern in PATTERNS)
 ALGEBRA_NAMES = tuple(f"{QUERY_PREFIX}{query.name}" for query in QUERIES)

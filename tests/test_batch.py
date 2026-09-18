@@ -19,7 +19,7 @@ from combo_discovery.witness import WitnessResult
 class FakeClient:
     """A leased client that records concurrent use; never shared in tests."""
 
-    instances: list["FakeClient"] = []
+    instances: list[FakeClient] = []
     ports: list[int] = []
 
     def __init__(self, host: str, port: int):

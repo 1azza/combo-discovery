@@ -259,7 +259,11 @@ class TestSpellbookImport:
             store._conn.execute(
                 "SELECT is_full_variant FROM known_combo_pairs WHERE id = ?", (r["id"],)
             ).fetchone()["is_full_variant"] == 0
-            for r in _rows(store, "SELECT id FROM known_combo_pairs WHERE combo_id = ?", (row["id"],))
+            for r in _rows(
+                store,
+                "SELECT id FROM known_combo_pairs WHERE combo_id = ?",
+                (row["id"],),
+            )
         )
 
     def test_dfc_front_face_stored(self, gt_store):
@@ -307,7 +311,10 @@ class TestSpellbookImport:
 
     def test_aliases_written(self, gt_store):
         store, _import_id, _report = gt_store
-        aliases = {r["alias_id"]: r["canonical_id"] for r in _rows(store, "SELECT alias_id, canonical_id FROM known_aliases")}
+        aliases = {
+            r["alias_id"]: r["canonical_id"]
+            for r in _rows(store, "SELECT alias_id, canonical_id FROM known_aliases")
+        }
         assert aliases == {"v-kiki-exarch--alias": "v-kiki-exarch", "orphan-alias": None}
 
 
@@ -422,7 +429,14 @@ class TestEvaluation:
         store, import_id, _report = gt_store
         report = metrics(self._classified(store, import_id))
         run_id = persist_evaluation(store, report, [], card_filter="Kiki-Jiki, Mirror Breaker")
-        assert _rows(store, "SELECT COUNT(*) AS n FROM evaluation_runs WHERE id = ?", (run_id,))[0]["n"] == 1
+        assert (
+            _rows(
+                store,
+                "SELECT COUNT(*) AS n FROM evaluation_runs WHERE id = ?",
+                (run_id,),
+            )[0]["n"]
+            == 1
+        )
         scopes = {
             r["scope"] for r in _rows(
                 store, "SELECT scope FROM evaluation_results WHERE run_id = ?", (run_id,)
@@ -440,7 +454,10 @@ class TestNoveltyPolicy:
     def test_known_vs_needs_second_source(self, gt_store):
         store, _import_id, _report = gt_store
         assert novelty_status(store, ("Kiki-Jiki, Mirror Breaker", "Deceiver Exarch")) == "known"
-        assert novelty_status(store, ("Kiki-Jiki, Mirror Breaker", "Grizzly Bears")) == "needs_second_source"
+        assert (
+            novelty_status(store, ("Kiki-Jiki, Mirror Breaker", "Grizzly Bears"))
+            == "needs_second_source"
+        )
 
     def test_never_returns_novel(self, gt_store):
         store, _import_id, _report = gt_store
@@ -460,8 +477,18 @@ class TestNoveltyPolicy:
             cards=["Kiki-Jiki, Mirror Breaker", "Grizzly Bears", "Fog Bank"],
         )
         assert deck_id > 0
-        assert _rows(store, "SELECT COUNT(*) AS n FROM observed_deck_cards WHERE deck_id = ?", (deck_id,))[0]["n"] == 3
-        assert _rows(store, "SELECT COUNT(*) AS n FROM observed_pairs WHERE deck_id = ?", (deck_id,))[0]["n"] == 3
+        n_deck_cards = _rows(
+            store,
+            "SELECT COUNT(*) AS n FROM observed_deck_cards WHERE deck_id = ?",
+            (deck_id,),
+        )[0]["n"]
+        n_observed_pairs = _rows(
+            store,
+            "SELECT COUNT(*) AS n FROM observed_pairs WHERE deck_id = ?",
+            (deck_id,),
+        )[0]["n"]
+        assert n_deck_cards == 3
+        assert n_observed_pairs == 3
         assert novelty_status(store, ("Kiki-Jiki, Mirror Breaker", "Grizzly Bears")) == "observed"
 
     def test_tier_a_and_b_are_separate(self, gt_store):

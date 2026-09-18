@@ -282,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_decisions=256,
                 candidate_builder=_known_candidate,
             )
-            for (combo_id, a, b), rec in zip(batch, records):
+            for (combo_id, a, b), rec in zip(batch, records, strict=True):
                 record = {
                     "combo_id": combo_id,
                     "cards": [display.get(a, a), display.get(b, b)],

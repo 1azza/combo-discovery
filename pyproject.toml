@@ -33,7 +33,26 @@ dev = [
     "grpcio-tools>=1.83.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.8",
 ]
+
+[tool.ruff]
+# 100 is wide enough for the research scripts' f-strings without a repo-wide reflow.
+line-length = 100
+# requires-python is >=3.14 and the venv is 3.14; ruff supports py314.
+target-version = "py314"
+# Machine-generated protobuf stubs: excluded from all lint rules.
+extend-exclude = ["src/combo_discovery/generated"]
+
+[tool.ruff.lint]
+# Baseline that catches real defects (F: pyflakes; E/W: pycodestyle; B: bugbear;
+# I: import order; UP: pyupgrade; C4: comprehensions) without style churn.
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+
+[tool.ruff.lint.per-file-ignores]
+# Embedded CSS/JS asset strings: their lines are the asset's own formatting,
+# not Python code, so wrapping them would only obfuscate the stylesheet.
+"src/combo_discovery/web/assets.py" = ["E501"]
 
 [tool.pytest.ini_options]
 markers = [

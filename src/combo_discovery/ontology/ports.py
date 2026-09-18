@@ -99,7 +99,7 @@ class Port:
         return {"kind": self.kind, "params": self.params}
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "Port":
+    def from_dict(cls, data: Mapping[str, Any]) -> Port:
         return cls(str(data.get("kind") or "other"), dict(data.get("params") or {}))
 
     @property
@@ -248,7 +248,7 @@ def _cost_ports(cost: str | None) -> list[Port]:
     ports: list[Port] = []
     if _TAP_COST_RE.search(text):
         ports.append(Port("tap", {"self": True, "predicate": "TAPS_COST"}))
-    colors = set(ch for ch in text.upper() if ch in _MANA_LETTER)
+    colors = {ch for ch in text.upper() if ch in _MANA_LETTER}
     generic = sum(int(t) for t in re.findall(r"(?<![A-Za-z])(\d+)(?![A-Za-z])", text))
     has_braces = bool(re.search(r"\{.*?\}", text))
     x_cost = "X" in text.upper()

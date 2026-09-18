@@ -147,7 +147,7 @@ class WorkerPool:
         base_port: int,
         host: str = "localhost",
         startup_timeout: float = 120.0,
-    ) -> "WorkerPool":
+    ) -> WorkerPool:
         procs = [cls._spawn(cmd_template, base_port + i) for i in range(n)]
         deadline = time.monotonic() + startup_timeout
         for i in range(n):
@@ -157,11 +157,13 @@ class WorkerPool:
                 try:
                     client.connect()
                     break
-                except HarnessConnectionError:
+                except HarnessConnectionError as exc:
                     if time.monotonic() > deadline:
                         for p in procs:
                             cls._kill_proc(p)
-                        raise HarnessConnectionError(f"harness on port {port} never came up")
+                        raise HarnessConnectionError(
+                            f"harness on port {port} never came up"
+                        ) from exc
                     time.sleep(0.5)
             client.close()
         pool = cls(n_workers=n, base_port=base_port, host=host)
@@ -210,7 +212,7 @@ class WorkerPool:
         # Per-seed accounting: how many full rounds of the healthy set have
         # failed this seed, and which workers it has already been tried on in
         # the current round.
-        seed_rounds: dict[int, int] = {s: 0 for s in seeds}
+        seed_rounds: dict[int, int] = dict.fromkeys(seeds, 0)
         seed_tried: dict[int, set[int]] = {s: set() for s in seeds}
         self._attempts_consumed = 0
         # Q2: each worker gets at most one probe re-admission per call.

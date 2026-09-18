@@ -32,9 +32,9 @@ import os
 import sqlite3
 import sys
 from collections import Counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
 
 from combo_discovery import batch as B
 from combo_discovery import witness as W
@@ -435,7 +435,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_decisions=256,
                 candidate_builder=_recent_candidate,
             )
-            for (engine, partner), rec in zip(pairs, records):
+            for (engine, partner), rec in zip(pairs, records, strict=True):
                 record = {
                     "engine_class": args.engine_class,
                     "engine": engine,

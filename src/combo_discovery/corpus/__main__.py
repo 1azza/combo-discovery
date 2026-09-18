@@ -46,7 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Scryfall cache directory (default: ~/.cache/combo-discovery/scryfall)",
     )
-    parser.add_argument("--limit", type=int, default=None, help="import at most N scripts (testing)")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="import at most N scripts (testing)"
+    )
     return parser
 
 

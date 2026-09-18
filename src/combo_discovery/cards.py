@@ -19,9 +19,8 @@ import gzip
 import json
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable, Mapping
 
 # ---------------------------------------------------------------------------
 # Untap shapes
@@ -258,7 +257,7 @@ def known_pair_hashes(conn: sqlite3.Connection) -> set[str]:
 
 def utc_now() -> str:
     """The current UTC time as an ISO-8601 string."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 #: Verdict strength ordering: lower is stronger.

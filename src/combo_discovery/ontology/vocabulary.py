@@ -133,13 +133,27 @@ EXTRACTION_RULES: tuple[PredicateRule, ...] = (
                                 "or verb='Token' whose TokenScript is a Treasure."),
     PredicateRule(UNTAPS, "verb in {Untap, TapOrUntap, UntapAll} (Defined$/ValidTgts$/Amount$)."),
     PredicateRule(TAPS_COST, "activated ability (AB/ST) whose Cost$ contains the tap symbol T."),
-    PredicateRule(COPIES_CREATURE, "verb='CopyPermanent' (ValidTgts$/Defined$/AddKeywords$/AtEOT$)."),
+    PredicateRule(
+        COPIES_CREATURE,
+        "verb='CopyPermanent' (ValidTgts$/Defined$/AddKeywords$/AtEOT$).",
+    ),
     PredicateRule(COPIES_SPELL, "verb in {CopySpellAbility, CopySpell, CopySpellMay}."),
-    PredicateRule(ETB_TRIGGER, "trigger ChangesZone with Destination$=Battlefield and ValidCard$ containing Self."),
-    PredicateRule(DIES_TRIGGER, "trigger ChangesZone Origin$=Battlefield Destination$=Graveyard ValidCard$ Self."),
+    PredicateRule(
+        ETB_TRIGGER,
+        "trigger ChangesZone with Destination$=Battlefield and ValidCard$ "
+        "containing Self.",
+    ),
+    PredicateRule(
+        DIES_TRIGGER,
+        "trigger ChangesZone Origin$=Battlefield Destination$=Graveyard "
+        "ValidCard$ Self.",
+    ),
     PredicateRule(SACRIFICE_OUTLET, "verb in {Sacrifice, SacrificeAll} not restricted to Self, "
                                     "or Cost$ containing Sac<...> of another permanent."),
-    PredicateRule(SACRIFICES_SELF, "verb Sacrifice* with SacValid$/Defined$=Self, or Cost$ Sac<...CARDNAME>."),
+    PredicateRule(
+        SACRIFICES_SELF,
+        "verb Sacrifice* with SacValid$/Defined$=Self, or Cost$ Sac<...CARDNAME>.",
+    ),
     PredicateRule(MOVES_ZONE, "verb in {ChangeZone, ChangeZoneAll} (Origin$/Destination$)."),
     PredicateRule(DEALS_DAMAGE, "verb in {DealDamage, DamageAll, DamageEach, DamageMultiEffect}."),
     PredicateRule(GAINS_LIFE, "verb='GainLife'."),
@@ -153,7 +167,10 @@ EXTRACTION_RULES: tuple[PredicateRule, ...] = (
     PredicateRule(CASTS_FROM_GRAVEYARD, "verb='Effect' whose text says cast/play from graveyard; "
                                         "or static Continuous with AddKeyword$ containing Escape."),
     PredicateRule(STORM, "card keyword K:Storm (from the raw script)."),
-    PredicateRule(ADDS_COUNTERS, "verb in {PutCounter, PutCounterAll, PutCounterEach, AddCounter}."),
+    PredicateRule(
+        ADDS_COUNTERS,
+        "verb in {PutCounter, PutCounterAll, PutCounterEach, AddCounter}.",
+    ),
     PredicateRule(DESTROYS, "verb in {Destroy, DestroyAll, DestroyAllEffect}."),
     PredicateRule(EXILES, "verb Exile* or ChangeZone with Destination$=Exile."),
     PredicateRule(RECURS_FROM_GRAVEYARD, "ChangeZone* with Origin$ containing Graveyard and "
@@ -161,7 +178,11 @@ EXTRACTION_RULES: tuple[PredicateRule, ...] = (
     PredicateRule(MILLS, "verb in {Mill, MillAll}."),
     PredicateRule(SETS_COLOR, "static Continuous with AddColor$."),
     PredicateRule(CARDS_FROM_LIFE, "ChangeZone with Cost$ PayLife<...> and Defined$ TopOfLibrary."),
-    PredicateRule(TUTORS, "verb in {RearrangeTopOfLibrary, ChangeZone} searching the library to library/hand."),
+    PredicateRule(
+        TUTORS,
+        "verb in {RearrangeTopOfLibrary, ChangeZone} searching the library "
+        "to library/hand.",
+    ),
     PredicateRule(OTHER, "fallback for a typed effect that matched no rule above."),
 )
 

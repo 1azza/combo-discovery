@@ -18,8 +18,9 @@ Nothing here is hand-tuned per card: every check is structural and goes through
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from . import vocabulary as vocab
 from .budget import SearchBudget
@@ -112,7 +113,10 @@ def _restriction_types(spec: Restriction | None) -> frozenset[str]:
 def _copy_predicate(port: Port) -> CardPredicate:
     return CardPredicate(
         card_id=0, face_index=0, predicate=vocab.COPIES_CREATURE,
-        params={"copy": port.params.get("restriction"), "defined": port.params.get("defined") or ""},
+        params={
+            "copy": port.params.get("restriction"),
+            "defined": port.params.get("defined") or "",
+        },
     )
 
 
@@ -364,7 +368,7 @@ class LinkOptions:
     closure_depth: int = 3  # scoped build: 2 = 2-card cycles only, 3 = one hop out
 
     @classmethod
-    def safe(cls, **overrides: Any) -> "LinkOptions":
+    def safe(cls, **overrides: Any) -> LinkOptions:
         """The recommended full-corpus preset: tight, bounded, depth-2.
 
         This is the "safe default" the builder and the demo use.  The full
@@ -466,9 +470,10 @@ def build_links(
             links.setdefault(link.key(), link)
 
     def result() -> list[Link]:
-        return sorted(links.values(), key=lambda l: (
-            l.src.card_name, l.src.ability_ref, l.dst.card_name, l.dst.ability_ref,
-            l.kind, l.subkind, l.motif,
+        return sorted(links.values(), key=lambda link: (
+            link.src.card_name, link.src.ability_ref,
+            link.dst.card_name, link.dst.ability_ref,
+            link.kind, link.subkind, link.motif,
         ))
 
     # -- re_trigger ---------------------------------------------------------

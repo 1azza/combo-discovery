@@ -32,7 +32,9 @@ DECKS = [
 GOLDFISH = [pb.PLAYER_TYPE_GOLDFISH, pb.PLAYER_TYPE_GOLDFISH]
 
 
-def wait_for_game_over(client: ForgeEnvClient, game_id: int, deadline_s: float = 120.0) -> pb.GameOver:
+def wait_for_game_over(
+    client: ForgeEnvClient, game_id: int, deadline_s: float = 120.0
+) -> pb.GameOver:
     deadline = time.monotonic() + deadline_s
     while True:
         over = client.is_game_over(game_id)
@@ -48,7 +50,7 @@ def verify_seq(events: list[pb.GameEvent]) -> None:
         raise AssertionError("no events drained")
     if events[0].seq != 1:
         raise AssertionError(f"first event seq is {events[0].seq}, expected 1")
-    for prev, cur in zip(events, events[1:]):
+    for prev, cur in zip(events, events[1:], strict=False):
         if cur.seq <= prev.seq:
             raise AssertionError(f"seq not strictly increasing: {prev.seq} -> {cur.seq}")
 
@@ -103,8 +105,9 @@ def main() -> int:
         over = wait_for_game_over(client, active_game)
         if over.outcome != pb.OUTCOME_TURN_LIMIT or over.winner != -1:
             raise AssertionError(
-                f"expected OUTCOME_TURN_LIMIT with winner=-1, got outcome={outcome_name(over.outcome)} "
-                f"winner={over.winner} reason={over.reason!r}"
+                f"expected OUTCOME_TURN_LIMIT with winner=-1, got "
+                f"outcome={outcome_name(over.outcome)} winner={over.winner} "
+                f"reason={over.reason!r}"
             )
         print(
             f"OK: game over winner={over.winner} outcome={outcome_name(over.outcome)} "

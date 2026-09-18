@@ -16,8 +16,6 @@ from .persist import persist_witness, start_witness_recording
 from .policy import WitnessPolicy
 from .scenario import LinkPlan, build_scenario, synthetic_cycle
 
-
-
 # ---------------------------------------------------------------------------
 # Candidate loading + CLI
 # ---------------------------------------------------------------------------

@@ -13,9 +13,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Sequence
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 from urllib.parse import quote
 
 #: Resource keys the observation table always shows, in the requested order.

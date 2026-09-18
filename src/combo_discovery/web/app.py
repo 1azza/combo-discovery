@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -24,7 +24,6 @@ from .pages import (
     page_candidates,
     page_feed,
     page_run,
-    provenance_badge,
 )
 from .render import build_samples, find_cycles
 
@@ -61,7 +60,7 @@ def replay_command(
 
 
 def _iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _evidence(result: dict[str, Any]) -> Any:

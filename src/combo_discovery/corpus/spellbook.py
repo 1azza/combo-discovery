@@ -27,14 +27,15 @@ import time
 import urllib.request
 import uuid
 from collections import Counter
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any
 
 import ijson
 
-from ..cards import utc_now as _utc_now
 from .. import store as store_module
+from ..cards import utc_now as _utc_now
 from ..store import ExperimentStore
 from .names import (
     ResolvedCard,
@@ -179,7 +180,7 @@ class VintageLegality:
     @classmethod
     def from_forge_format(
         cls, path: str | Path, *, editions_dir: str | Path | None = None
-    ) -> "VintageLegality":
+    ) -> VintageLegality:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
         banned: set[str] = set()
         restricted: set[str] = set()
@@ -218,7 +219,7 @@ class VintageLegality:
         )
 
     @classmethod
-    def permissive(cls) -> "VintageLegality":
+    def permissive(cls) -> VintageLegality:
         return cls()
 
     def is_legal(
@@ -494,7 +495,11 @@ def import_spellbook(
 
     if vintage is None:
         fmt = Path(format_path) if format_path else DEFAULT_VINTAGE_FORMAT
-        vintage = VintageLegality.from_forge_format(fmt) if fmt.is_file() else VintageLegality.permissive()
+        vintage = (
+            VintageLegality.from_forge_format(fmt)
+            if fmt.is_file()
+            else VintageLegality.permissive()
+        )
 
     conn = store._conn
     counts: Counter[str] = Counter()
@@ -572,7 +577,7 @@ def import_spellbook(
                         counts["skipped_commander"] += 1
                         continue
                     illegal = False
-                    for use, res in resolved:
+                    for _use, res in resolved:
                         sf_leg = _scryfall_legalities(scryfall, res.raw_name)
                         if not vintage.is_legal(
                             res.raw_name, oracle_id=res.oracle_id,
@@ -588,7 +593,9 @@ def import_spellbook(
                 if not source_id or source_id in existing:
                     continue
 
-                resolved_names = sorted({r.normalized_name for _, r in resolved if r.normalized_name})
+                resolved_names = sorted(
+                    {r.normalized_name for _, r in resolved if r.normalized_name}
+                )
                 combo_row = (
                     "commander_spellbook", source_id, report.version, report.timestamp,
                     fetched_at, status, variant.get("bracketTag"), variant.get("identity"),

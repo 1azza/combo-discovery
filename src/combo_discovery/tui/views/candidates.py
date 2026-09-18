@@ -18,6 +18,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Input, OptionList, Select, Static
 from textual.widgets.option_list import Option
 
+from ...evaluation import novelty_status
 from .. import theme as pal
 from ..data import (
     StoreBinding,
@@ -28,7 +29,6 @@ from ..data import (
     pair_hash_for_names,
     status_color,
 )
-from ...evaluation import novelty_status
 from ..widgets import CandidateDetail, EmptyState
 
 if TYPE_CHECKING:  # pragma: no cover - typing only

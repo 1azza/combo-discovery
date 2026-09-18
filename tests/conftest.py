@@ -163,7 +163,10 @@ def seed_lab(path: Path) -> Path:
             " '{}', 1)"
         )
         interactions = [
-            (1, 1, LAB_KIKI, LAB_PESTERMITE, 0.97, ["TAPS_COST", "COPIES_CREATURE", "ETB_TRIGGER", "UNTAPS"]),
+            (
+                1, 1, LAB_KIKI, LAB_PESTERMITE, 0.97,
+                ["TAPS_COST", "COPIES_CREATURE", "ETB_TRIGGER", "UNTAPS"],
+            ),
             (2, 1, LAB_KIKI, LAB_SPLINTER, 0.90, ["TAPS_COST", "COPIES_CREATURE"]),
             (3, 1, LAB_KIKI, LAB_DECEIVER, 0.50, ["TAPS_COST", "PRODUCES_MANA"]),
         ]

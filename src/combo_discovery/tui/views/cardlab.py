@@ -20,8 +20,15 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
-from .. import theme as pal
 from ...corpus.names import normalize_card_name
+from ...evaluation import (
+    classify_pairs,
+    diagnostics,
+    metrics,
+    novelty_status,
+    persist_evaluation,
+)
+from .. import theme as pal
 from ..data import (
     StoreBinding,
     add_card_to_scratch_deck,
@@ -32,13 +39,6 @@ from ..data import (
     pattern_module_name,
     scratch_deck_path,
     status_color,
-)
-from ...evaluation import (
-    classify_pairs,
-    diagnostics,
-    metrics,
-    novelty_status,
-    persist_evaluation,
 )
 from ..widgets import EmptyState
 
@@ -319,7 +319,7 @@ class CardLabView(Vertical):
         observed = self.data.observed_hashes(real_hashes)
 
         self._proposals = []
-        for hypothesis, phash in zip(hypotheses, hashes):
+        for hypothesis, phash in zip(hypotheses, hashes, strict=True):
             badge = (
                 novelty_badge(states.get(phash, "unknown"), phash in observed)
                 if phash
@@ -437,7 +437,11 @@ class CardLabView(Vertical):
                 partner_norm = (
                     miss.target_name if miss.source_name == normalized else miss.source_name
                 )
-                ref = refs.get(partner_norm) or refs.get(miss.source_name) or refs.get(miss.target_name)
+                ref = (
+                    refs.get(partner_norm)
+                    or refs.get(miss.source_name)
+                    or refs.get(miss.target_name)
+                )
                 info = (
                     descriptions.get(int(miss.known_combo_id))
                     if miss.known_combo_id is not None

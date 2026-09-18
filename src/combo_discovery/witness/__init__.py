@@ -30,24 +30,9 @@ given, which is how the test-suite uses fakes.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import os
-import re
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
-from typing import Any
 
-from ..env import (
-    PROTOCOL_VERSION,
-    Answer,
-    ForgeEnvClient,
-    GameNotActiveError,
-    StaleDecisionError,
-)
-from ..generated import forge_env_pb2 as pb
-from ..runner import DecisionContext, DecisionTraceEntry, default_policy
+from ..env import PROTOCOL_VERSION
 from .cli import (
     Candidate,
     _names_for_ids,
@@ -98,13 +83,14 @@ from .persist import (
     start_witness_recording,
 )
 from .policy import (
-    WITNESS_POLICY_VERSION,
-    WitnessPolicy,
     _GENERIC_LINK_TOKENS,
     _TAP_WORD_RE,
     _UNTAP_RE,
+    WITNESS_POLICY_VERSION,
+    WitnessPolicy,
 )
 from .scenario import (
+    _PERMANENT_TYPE_TOKENS,
     DEFAULT_GRAVEYARD,
     DEFAULT_LIBRARY_LAND,
     DEFAULT_LIBRARY_SIZE,
@@ -116,7 +102,6 @@ from .scenario import (
     LinkPlan,
     PlayerScenario,
     Scenario,
-    _PERMANENT_TYPE_TOKENS,
     _ability_for,
     _assign_battlefield_ids,
     _combo_cards,
@@ -148,6 +133,8 @@ __all__ = [
     "DEFAULT_OPPONENT_LIFE",
     "DEFAULT_PLAYER_TYPES",
     "DEFAULT_WITNESS_DECKS",
+    "GAME_STATE_GROWTH_KEYS",
+    "GROWTH_KEYS",
     "LinkPlan",
     "MAX_FORCED_PASSES",
     "MAX_PREGAME_DECISIONS",
@@ -159,8 +146,39 @@ __all__ = [
     "WITNESS_POLICY_VERSION",
     "WitnessPolicy",
     "WitnessResult",
+    "_GENERIC_LINK_TOKENS",
+    "_PERMANENT_TYPE_TOKENS",
+    "_TAP_WORD_RE",
+    "_UNTAP_RE",
+    "_ability_for",
     "_absolute_deck_paths",
+    "_assign_battlefield_ids",
+    "_battlefield_entries",
+    "_combo_cards",
+    "_combo_oracle_texts",
+    "_default_library",
     "_drive_pregame",
+    "_game_state_grew",
+    "_grown_between",
+    "_is_attachment",
+    "_is_over",
+    "_link_plan",
+    "_must_be_cast",
+    "_names_for_ids",
+    "_non_token_battlefield_count",
+    "_oracle_text_for",
+    "_oracle_texts_for_ids",
+    "_parse_card_ids",
+    "_parse_decks",
+    "_parse_seeds",
+    "_pass_option",
+    "_policy_diagnostics",
+    "_resource_deltas",
+    "_run_witness_seed",
+    "_signature_hash",
+    "_type_line_for",
+    "_type_lines_for_ids",
+    "_zone_count",
     "build_observation",
     "build_scenario",
     "detect_loop",
@@ -174,6 +192,7 @@ __all__ = [
     "persist_witness",
     "resource_totals",
     "run_witness",
+    "start_witness_recording",
     "synthetic_cycle",
     "witness_signature",
 ]

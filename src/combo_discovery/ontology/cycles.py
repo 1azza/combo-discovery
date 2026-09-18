@@ -53,19 +53,18 @@ import math
 import sqlite3
 import time
 from collections import defaultdict
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from .budget import (
     DEFAULT_MAX_SECONDS,
     DEFAULT_MAX_STEPS,
-    MAX_SAFE_POOL,
     SearchBudget,
     estimate_cost,
     preflight,
 )
 from .links import (
-    HOSTILE_LIFT,
     Link,
     LinkOptions,
     _port_satisfies_gate,
@@ -75,7 +74,6 @@ from .links import (
 )
 from .ports import AbilitySig
 from .queries import ComboContext, Query, matching_queries
-
 
 # ---------------------------------------------------------------------------
 # Graph
@@ -165,8 +163,8 @@ def build_graph(
         by_card={cid: tuple(sorted(v, key=lambda s: s.ability_ref))
                  for cid, v in by_card.items()},
         names=names,
-        adjacency={cid: tuple(sorted(v, key=lambda l: (
-            l.dst.card_id, l.kind, l.subkind, l.motif)))
+        adjacency={cid: tuple(sorted(v, key=lambda link: (
+            link.dst.card_id, link.kind, link.subkind, link.motif)))
             for cid, v in adjacency.items()},
         re_triggers=re_triggers,
         truncated=budget.truncated,
@@ -210,9 +208,9 @@ class Combo:
             "mechanism": self.mechanism,
             "abilities": [a.ability_ref for a in self.abilities],
             "links": [
-                {"kind": l.kind, "subkind": l.subkind, "motif": l.motif,
-                 "src": l.src.card_name, "dst": l.dst.card_name}
-                for l in self.links
+                {"kind": link.kind, "subkind": link.subkind, "motif": link.motif,
+                 "src": link.src.card_name, "dst": link.dst.card_name}
+                for link in self.links
             ],
         }
 

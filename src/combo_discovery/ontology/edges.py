@@ -22,39 +22,32 @@ not the weights.
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from typing import Any
 
-from .extractor import CardContext, CardEffect, CardPredicate
-from .patterns import PATTERNS, get_pattern, iter_patterns
 from .patterns import (
+    PATTERNS,
     color_lock_mill,
     draw_engine,
     free_cast_loops,
+    get_pattern,
     infinite_etb_loop,
+    iter_patterns,
     mana_engine,
     sacrifice_recursion,
     storm_engine,
 )
 from .patterns.base import (
+    PATTERN_BASE,
     AbilityLink,
     CardView,
     Edge,
-    PATTERN_BASE,
     PatternDef,
-    _IMPACT_PREDICATES,
-    _ability_details,
-    _ability_refs,
-    _cost_has_mana,
-    _etb_refs,
-    _mana_linked,
-    _same_ability,
     check_ability_link,
     score_edge,
 )
 from .restrictions import (
     Alternative,
-    CompatResult,
     Compatibility,
+    CompatResult,
     Restriction,
     check_compatibility,
     engine_can_copy,
@@ -129,7 +122,9 @@ def build_edges(
     all_edges: list[Edge] = []
     for pattern in iter_patterns():
         name = pattern.name
-        source_cap, pattern_cap = DEFAULT_CAPS.get(name, (40, 20_000)) if apply_caps else (None, None)
+        source_cap, pattern_cap = (
+            DEFAULT_CAPS.get(name, (40, 20_000)) if apply_caps else (None, None)
+        )
         if max_per_source is not None:
             source_cap = max_per_source
         if max_per_pattern is not None:

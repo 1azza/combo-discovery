@@ -26,7 +26,6 @@ from combo_discovery.ontology.edges import (
     PATTERNS,
     CardView,
     build_edges,
-    check_compatibility,
     engine_can_copy,
     restriction_matches_card,
 )
@@ -96,8 +95,10 @@ KNOWN_COMBOS = [
     # gate (the engine must re-trigger the partner's ETB by copying it) that pair
     # is correctly out of scope for infinite_etb_loop.  Replaced with another
     # genuine copy-engine loop to keep this validation set at 11/12.
-    {"cards": ("Kiki-Jiki, Mirror Breaker", "Village Bell-Ringer"), "pattern": "infinite_etb_loop",
-     "reason": "Kiki copies Village Bell-Ringer; its ETB untaps all your creatures, untapping Kiki.",
+    {"cards": ("Kiki-Jiki, Mirror Breaker", "Village Bell-Ringer"),
+     "pattern": "infinite_etb_loop",
+     "reason": "Kiki copies Village Bell-Ringer; its ETB untaps all your "
+               "creatures, untapping Kiki.",
      "expected": True},
     {"cards": ("Dockside Extortionist", "Walking Ballista"), "pattern": "mana_engine",
      "reason": "Dockside makes Treasure; Ballista is an X-cost mana sink.", "expected": True},
@@ -291,7 +292,6 @@ class TestExtractorRules:
                           verb=verb, ability_type="AB", params=params)
 
     def test_mana_and_tap_cost(self):
-        ctx = CardContext(1, "X", "x", "1 U", "Artifact", "", "", ())
         effect = self._effect("Mana", Produced="U", Amount="2", Cost="T")
         predicates = {p for p, _ in classify_effect(effect)}
         assert {vocab.PRODUCES_MANA, vocab.TAPS_COST} <= predicates
@@ -383,7 +383,7 @@ class TestRestrictionParsing:
             ability_type="DB",
             params={"Amount": "2", "UntapType": "Land", "UntapUpTo": "True"},
         )
-        matches = {predicate: params for predicate, params in classify_effect(effect)}
+        matches = dict(classify_effect(effect))
         target = parse_restriction(matches[vocab.UNTAPS]["valid"])
         assert matches[vocab.UNTAPS]["valid"] == "Land"
         assert target.alternatives[0].types == frozenset({"LAND"})
@@ -477,7 +477,9 @@ def _engine_view(card_id=1, name="Engine", type_line="Legendary Creature",
                            {
                                vocab.TAPS_COST: _attach({"verb": "CopyPermanent"}, ability),
                                vocab.COPIES_CREATURE: _attach(
-                                   {"copy": parse_restriction(copy_restriction).to_dict()}, ability),
+                                   {"copy": parse_restriction(copy_restriction).to_dict()},
+                                   ability,
+                               ),
                            })
 
 
@@ -548,8 +550,14 @@ class TestAbilityLinking:
     def test_gates_propagate_down_the_chain(self):
         from combo_discovery.ontology.extractor import build_ability_links
 
-        root = self._effect(1, "trigger", "Attacks", line=8,
-                            params={"Execute": "TrigUntap", "FirstAttack": "True", "Delirium": "True"})
+        root = self._effect(
+            1, "trigger", "Attacks", line=8,
+            params={
+                "Execute": "TrigUntap",
+                "FirstAttack": "True",
+                "Delirium": "True",
+            },
+        )
         untap = self._effect(2, "ability", "Untap", is_svar=True, svar="TrigUntap", line=9)
         links = build_ability_links([root, untap])
         assert links[2]["chain_gates"] == {"first_attack": "True", "delirium": "True"}
@@ -726,7 +734,9 @@ class TestInfiniteLoopScoring:
                                       vocab.ADDS_COUNTERS: _attach({}, energy),
                                       vocab.UNTAPS: _attach(
                                           {"verb": "TapOrUntap",
-                                           "target": parse_restriction("Artifact,Creature").to_dict()},
+                                           "target": parse_restriction(
+                                               "Artifact,Creature"
+                                           ).to_dict()},
                                           untap),
                                   })
         assert len(list(infinite_etb_loop({1: engine, 2: partner}))) == 1
@@ -873,7 +883,9 @@ class TestKnownCombos:
 
     def test_negative_control_kiki_grizzly(self, ontology_db):
         db, _ = ontology_db
-        assert not _edge_exists(db, "Kiki-Jiki, Mirror Breaker", "Grizzly Bears", "infinite_etb_loop")
+        assert not _edge_exists(
+            db, "Kiki-Jiki, Mirror Breaker", "Grizzly Bears", "infinite_etb_loop"
+        )
         # And Grizzly Bears contributes no predicate at all.
         assert _query(
             db,
@@ -977,7 +989,10 @@ class TestSchemaAndPersistence:
     def test_migration_3_creates_tables(self, tmp_path):
         conn = sqlite3.connect(tmp_path / "raw.db")
         _migration_3(conn)
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
         conn.close()
         assert {"patterns", "card_predicates", "interactions", "combo_hypotheses"} <= tables
 

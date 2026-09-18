@@ -12,7 +12,8 @@ from __future__ import annotations
 import html
 import json
 import re
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 from urllib.parse import quote
 
 from .db import RESOURCE_COLUMNS, parse_json
@@ -553,7 +554,11 @@ def render_graph(
         growth_text = delta_label(grown, limit=4)
         board_text = f"back to the same board — {growth_text}"
         verdict_text = verdict_word(verdict)
-        from_step = "start" if samples[start]["iteration"] == 0 else f"step {samples[start]['iteration']}"
+        from_step = (
+            "start"
+            if samples[start]["iteration"] == 0
+            else f"step {samples[start]['iteration']}"
+        )
         title = (
             f"{verdict_text}: {board_text} "
             f"(from {from_step} to step {samples[end]['iteration']})"
@@ -590,7 +595,8 @@ def render_graph(
         f'<div class="graph-scroll">'
         f'<svg viewBox="0 0 {total_width} {row_y + NODE_H + 34}"'
         f' width="{total_width}" height="{row_y + NODE_H + 34}"'
-        f' role="img" aria-label="board snapshots, one per step, with {len(cycles)} repeated board(s)">'
+        f' role="img" aria-label="board snapshots, one per step, '
+        f'with {len(cycles)} repeated board(s)">'
         "<defs>"
         '<marker id="cycle-arrow" viewBox="0 0 10 10" refX="7.5" refY="5"'
         ' markerWidth="7" markerHeight="7" orient="auto-start-reverse">'

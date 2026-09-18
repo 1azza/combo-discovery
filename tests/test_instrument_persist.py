@@ -11,10 +11,11 @@ import importlib.util
 import sqlite3
 from pathlib import Path
 
+from test_witness import FakeWitnessClient
+
 from combo_discovery import cards as cards_mod
 from combo_discovery.generated import forge_env_pb2 as pb
 from combo_discovery.store import ExperimentStore
-from test_witness import FakeWitnessClient
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -44,7 +45,7 @@ class _FakeHarness:
     def __init__(self, *args, **kwargs):  # noqa: ARG002 - accepts host/port
         self._client = FakeWitnessClient()
 
-    def __enter__(self) -> "_FakeHarness":
+    def __enter__(self) -> _FakeHarness:
         return self
 
     def __exit__(self, *exc) -> bool:

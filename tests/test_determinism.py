@@ -1,6 +1,7 @@
+from unittest.mock import MagicMock
+
 import grpc
 import pytest
-from unittest.mock import MagicMock
 
 from combo_discovery.env import (
     DamageTarget,
@@ -234,7 +235,9 @@ class FakeClient:
         self.collected = self.collected[:length]
         self.answered = length
         self._next_seq = length + 1
-        marker = pb.GameEvent(seq=self._next_seq, type=SNAPSHOT_RESTORED_TYPE, detail_raw="restored")
+        marker = pb.GameEvent(
+            seq=self._next_seq, type=SNAPSHOT_RESTORED_TYPE, detail_raw="restored"
+        )
         self.collected.append(marker)
         self._next_seq += 1
         # Restore re-parks the decision at the snapshot point (client refetch).
@@ -325,7 +328,7 @@ class DeadlineFlakyClient(FakeClient):
         stream,
         fail_calls,
         code=grpc.StatusCode.DEADLINE_EXCEEDED,
-        error_cls: "type[ForgeEnvError]" = HarnessTimeoutError,
+        error_cls: type[ForgeEnvError] = HarnessTimeoutError,
     ):
         super().__init__([stream])
         self.fail_calls = fail_calls
@@ -454,9 +457,10 @@ class TestDefaultPolicy:
         answer = default_policy(ctx)
         arm, payload = answer
         assert arm == "damage"
-        assert [item.as_tuple() if isinstance(item, DamageTarget) else item for item in payload] == [
-            (30, None, 4)
-        ]
+        assert [
+            item.as_tuple() if isinstance(item, DamageTarget) else item
+            for item in payload
+        ] == [(30, None, 4)]
 
     def test_assign_combat_damage_to_player_when_unblocked(self):
         # No blockers: route damage to the defending player.
@@ -470,9 +474,10 @@ class TestDefaultPolicy:
         answer = default_policy(ctx)
         arm, payload = answer
         assert arm == "damage"
-        assert [item.as_tuple() if isinstance(item, DamageTarget) else item for item in payload] == [
-            (None, 1, 4)
-        ]
+        assert [
+            item.as_tuple() if isinstance(item, DamageTarget) else item
+            for item in payload
+        ] == [(None, 1, 4)]
 
     def test_order_blockers_unchanged(self):
         ctx = self._ctx(pb.DECISION_TYPE_ORDER_BLOCKERS, candidates=_candidates(40, 41, 42))

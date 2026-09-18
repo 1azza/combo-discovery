@@ -87,7 +87,8 @@ PROTOCOL_VERSION = 7
 #   already resolved:  "decision_id <id> was already resolved (timeout/abort); answer discarded"
 #   no outstanding:    "no decision outstanding for game_id <id>"
 #   wrong arm:         "... is a <TYPE> decision; answer must use <arm>"   [policy bug]
-#   option out of range: "option_id <id> is not among the <n> options of decision_id <id>"  [policy bug]
+#   option out of range: "option_id <id> is not among the <n> options of
+#     decision_id <id>"  [policy bug]
 #
 # A parallel Java lane is adding a "stale decision:" prefix to stale rejections,
 # so "stale decision" is the primary marker. Coordinate any wording change with
@@ -427,7 +428,7 @@ class ForgeEnvClient:
         self,
         decks: list[tuple[str, str]],
         seed: int,
-        player_types: list["pb.PlayerType"] | None = None,
+        player_types: list[pb.PlayerType] | None = None,
         max_turns: int = 0,
         timeout_seconds: int = 0,
         force_stop_active: bool = False,
@@ -532,7 +533,7 @@ class ForgeEnvClient:
         req = pb.RestoreRequest(game_id=game_id, token=token)
         self._call(self._ensure_stub().Restore, req)
 
-    def setup_scenario(self, game_id: int, scenario: "Scenario") -> tuple[str, int]:
+    def setup_scenario(self, game_id: int, scenario: Scenario) -> tuple[str, int]:
         """Inject a pre-configured board state into a running game (v7).
 
         ``scenario`` is a :class:`combo_discovery.witness.Scenario`; this builds
@@ -593,7 +594,7 @@ class ForgeEnvClient:
             self._channel = None
             self._stub = None
 
-    def __enter__(self) -> "ForgeEnvClient":
+    def __enter__(self) -> ForgeEnvClient:
         return self
 
     def __exit__(self, *exc) -> None:

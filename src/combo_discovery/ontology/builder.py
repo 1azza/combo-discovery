@@ -26,17 +26,18 @@ import json
 import sqlite3
 import time
 from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
+from .. import store as store_module
 from ..cards import utc_now as _utc_now
 from ..corpus.spellbook import (
     DEFAULT_FORGE_EDITIONS,
     DEFAULT_VINTAGE_FORMAT,
     VintageLegality,
 )
-from .. import store as store_module
 from ..store import ExperimentStore
 from .budget import DEFAULT_MAX_SECONDS, DEFAULT_MAX_STEPS
 from .cycles import (
@@ -317,8 +318,8 @@ def _pair_evidence(
     names: dict[int, str],
 ) -> tuple[str, list[dict[str, Any]]]:
     """Mechanism + evidence JSON items for one card pair of a cycle."""
-    links = [l for l in combo.links
-             if {l.src.card_id, l.dst.card_id} == {a, b}]
+    links = [link for link in combo.links
+             if {link.src.card_id, link.dst.card_id} == {a, b}]
     items: list[dict[str, Any]] = []
     mechanisms: list[str] = []
     for link in links:

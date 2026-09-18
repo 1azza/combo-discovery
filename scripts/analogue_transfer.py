@@ -24,8 +24,8 @@ import os
 import sqlite3
 import sys
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 from combo_discovery import batch as B
 from combo_discovery import witness as W
@@ -195,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_decisions=256,
                 candidate_builder=lambda e, p: _pair_candidate(e, p, type_lines),
             )
-            for (engine, partner), rec in zip(pairs, records):
+            for (engine, partner), rec in zip(pairs, records, strict=True):
                 record = {
                     "engine": engine, "partner": partner,
                     "verdict": rec["verdict"],

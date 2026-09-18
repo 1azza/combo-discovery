@@ -96,7 +96,7 @@ class Alternative:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Alternative":
+    def from_dict(cls, data: dict[str, Any]) -> Alternative:
         legendary = data.get("legendary")
         return cls(
             types=frozenset(data.get("types") or ()),
@@ -134,7 +134,7 @@ class Restriction:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "Restriction | None":
+    def from_dict(cls, data: dict[str, Any] | None) -> Restriction | None:
         if not data:
             return None
         return cls(
@@ -308,12 +308,12 @@ def _spec_from_params(params: dict[str, Any] | None, key: str) -> Restriction | 
     return Restriction.from_dict(params.get(key))
 
 
-def _pred_params(view: "CardView", predicate: str) -> dict[str, Any] | None:
+def _pred_params(view: CardView, predicate: str) -> dict[str, Any] | None:
     pred = view.first(predicate)
     return pred.params if pred is not None else None
 
 
-def _alternative_matches(alt: Alternative, card: "CardContext") -> bool:
+def _alternative_matches(alt: Alternative, card: CardContext) -> bool:
     """True when one restriction alternative can affect ``card``.
 
     Assumes the two paired cards are controlled by the same player, so an
@@ -341,7 +341,7 @@ def _alternative_matches(alt: Alternative, card: "CardContext") -> bool:
 
 
 def restriction_matches_card(
-    spec: Restriction | None, card: "CardContext"
+    spec: Restriction | None, card: CardContext
 ) -> CompatResult:
     """Check whether a target restriction can legally select ``card``."""
     if spec is None:
@@ -358,7 +358,7 @@ def restriction_matches_card(
     )
 
 
-def engine_can_copy(engine: "CardView", partner: "CardView") -> CompatResult:
+def engine_can_copy(engine: CardView, partner: CardView) -> CompatResult:
     """Check the engine's copy restriction against the partner card."""
     copy_pred = engine.first(vocab.COPIES_CREATURE)
     if copy_pred is None:
@@ -378,8 +378,8 @@ def engine_can_copy(engine: "CardView", partner: "CardView") -> CompatResult:
 
 
 def check_compatibility(
-    engine: "CardView",
-    partner: "CardView",
+    engine: CardView,
+    partner: CardView,
     *,
     target_predicate: str = vocab.UNTAPS,
 ) -> Compatibility:

@@ -322,9 +322,7 @@ class TestRecording:
         store = ExperimentStore(path)
         run_id = start_run(store, engine_commit="deadbeef", proto_version=6)
         client = FakeClient()
-        result = run_game(
-            client, DECKS, seed=7, player_types=REMOTE, store=store, run_id=run_id
-        )
+        run_game(client, DECKS, seed=7, player_types=REMOTE, store=store, run_id=run_id)
         assert client.stopped == 42
         store.close()
 
@@ -479,7 +477,9 @@ class TestConfig:
         cfg = load_config(p)
         assert (cfg.project, cfg.model, cfg.policy_version) == ("p", "m", "v9")
         assert (cfg.engine_commit, cfg.proto_version) == ("abc", 7)
-        assert (cfg.max_turns, cfg.timeout_seconds, cfg.n_workers, cfg.base_port) == (30, 5, 3, 6000)
+        assert (
+            cfg.max_turns, cfg.timeout_seconds, cfg.n_workers, cfg.base_port
+        ) == (30, 5, 3, 6000)
 
     def test_repo_research_toml_loads_real_values(self):
         cfg = load_config("research.toml")

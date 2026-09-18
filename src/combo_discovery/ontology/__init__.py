@@ -13,22 +13,22 @@ Public surface:
 
 from __future__ import annotations
 
+from .budget import (
+    DEFAULT_MAX_SECONDS,
+    DEFAULT_MAX_STEPS,
+    MAX_SAFE_CLOSURE_DEPTH,
+    MAX_SAFE_POOL,
+    BudgetExceeded,
+    SearchBudget,
+    estimate_cost,
+    preflight,
+)
 from .builder import (
     OntologyReport,
     build_ontology,
     ensure_query_patterns,
     latest_import_id,
     probe_interactions,
-)
-from .budget import (
-    BudgetExceeded,
-    DEFAULT_MAX_SECONDS,
-    DEFAULT_MAX_STEPS,
-    MAX_SAFE_CLOSURE_DEPTH,
-    MAX_SAFE_POOL,
-    SearchBudget,
-    estimate_cost,
-    preflight,
 )
 from .cycles import (
     Combo,

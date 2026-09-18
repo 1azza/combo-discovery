@@ -44,7 +44,7 @@ _IMPACT_PREDICATES: tuple[str, ...] = (
 )
 
 
-def score_edge(pattern: str, source: "CardView", target: "CardView", evidence_count: int) -> float:
+def score_edge(pattern: str, source: CardView, target: CardView, evidence_count: int) -> float:
     score = PATTERN_BASE.get(pattern, 0.2)
     score += 0.04 * min(4, evidence_count)
     if source.context.color_identity & target.context.color_identity:
@@ -61,8 +61,8 @@ class Edge:
     """One oriented interaction between two cards for a pattern."""
 
     pattern: str
-    source: "CardView"
-    target: "CardView"
+    source: CardView
+    target: CardView
     mechanism: str
     score: float
     evidence: list[dict[str, Any]] = field(default_factory=list)
@@ -88,7 +88,7 @@ class CardView:
         context: CardContext,
         predicates: list[CardPredicate],
         effects: Iterable[CardEffect] = (),
-    ) -> "CardView":
+    ) -> CardView:
         by_pred: dict[str, CardPredicate] = {}
         for predicate in predicates:
             by_pred.setdefault(predicate.predicate, predicate)

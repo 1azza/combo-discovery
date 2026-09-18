@@ -1,6 +1,7 @@
+from unittest.mock import MagicMock
+
 import grpc
 import pytest
-from unittest.mock import MagicMock
 
 from combo_discovery.env import (
     DamageTarget,
@@ -306,10 +307,17 @@ class TestEnvClient:
         client, stub = make_client()
         state = pb.FullState(game_id=9, state_hash="H1")
         state.typed_mana_pools.add(white=1, blue=2, black=3, red=4, green=5, colorless=6)
-        entry = state.stack.add(stack_index=0, sa_description="Bolt", card_name="Bolt", controller=1)
+        entry = state.stack.add(
+            stack_index=0, sa_description="Bolt", card_name="Bolt", controller=1
+        )
         state.exile.add(cards=[pb.CardRef(name="Exiled Card", count=1)])
         state.command.add(cards=[pb.CardRef(name="Commander", count=1)])
-        perm = pb.Permanent(id=1, card_name="Bear", typed_counters=[pb.TypedCounter(type="+1/+1", count=2)], damage=3)
+        perm = pb.Permanent(
+            id=1,
+            card_name="Bear",
+            typed_counters=[pb.TypedCounter(type="+1/+1", count=2)],
+            damage=3,
+        )
         stub.GetState.return_value = state
         got = client.get_state(9)
         assert got.typed_mana_pools[0].white == 1

@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
-import uuid
 from pathlib import Path
 
 import pytest
@@ -20,7 +19,6 @@ from combo_discovery.analysis.enrichment import (
     analyze_motifs,
     build_vocabulary,
     chi_square_2x2,
-    pattern_motif_view,
     persist_enrichment,
 )
 from combo_discovery.corpus.names import normalize_card_name, pair_hash

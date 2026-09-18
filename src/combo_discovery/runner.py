@@ -23,7 +23,6 @@ from typing import cast
 from .env import (
     Answer,
     DamageTarget,
-    ForgeEnvClient,
     GameNotActiveError,
     HarnessTimeoutError,
     StaleDecisionError,
@@ -404,7 +403,7 @@ def _record_game_result(
     result: GameResult,
     decks: list[tuple[str, str]],
     seed: int,
-    player_types: Sequence["pb.PlayerType"],
+    player_types: Sequence[pb.PlayerType],
     max_turns: int,
     drained: list[pb.GameEvent],
 ) -> int:
@@ -432,7 +431,7 @@ def run_game(
     max_turns: int = 0,
     timeout_seconds: int = 0,
     collect_events: bool = True,
-    player_types: Sequence["pb.PlayerType"] | None = None,
+    player_types: Sequence[pb.PlayerType] | None = None,
     force_stop_active: bool = False,
     store: ExperimentStore | None = None,
     run_id: str | None = None,
@@ -607,7 +606,7 @@ def run_games(
     policy: Callable[[DecisionContext], Answer] | None = None,
     max_turns: int = 0,
     timeout_seconds: int = 0,
-    player_types: Sequence["pb.PlayerType"] | None = None,
+    player_types: Sequence[pb.PlayerType] | None = None,
     force_stop_active: bool = False,
     store: ExperimentStore | None = None,
     run_id: str | None = None,
@@ -657,7 +656,7 @@ def compare_event_streams(
     """
     a = [_as_identity(x) for x in stream_a]
     b = [_as_identity(x) for x in stream_b]
-    for i, (x, y) in enumerate(zip(a, b)):
+    for i, (x, y) in enumerate(zip(a, b, strict=False)):
         if x != y:
             raise DeterminismError(f"event streams diverge at index {i}: first={x!r} second={y!r}")
     if len(a) != len(b):
@@ -675,7 +674,7 @@ def determinism_check(
     seed: int,
     max_turns: int = 0,
     timeout_seconds: int = 0,
-    player_types: Sequence["pb.PlayerType"] | None = None,
+    player_types: Sequence[pb.PlayerType] | None = None,
     divergent_seed: int | None = None,
 ) -> None:
     """Run the same game twice with the same (decks, seed) and require
@@ -756,7 +755,7 @@ def _compare_replay_suffixes(
     """
     rel_forward = [_relative_identity(x, base_forward) for x in forward]
     rel_replay = [_relative_identity(x, base_replay) for x in replay]
-    for i, (x, y) in enumerate(zip(rel_forward, rel_replay)):
+    for i, (x, y) in enumerate(zip(rel_forward, rel_replay, strict=False)):
         if x != y:
             raise DeterminismError(
                 f"snapshot replay suffix diverges at relative index {i} ({context}): "
@@ -775,7 +774,7 @@ def snapshot_replay_check(
     client,
     decks: list[tuple[str, str]],
     seed: int,
-    player_types: Sequence["pb.PlayerType"] | None = None,
+    player_types: Sequence[pb.PlayerType] | None = None,
     max_turns: int = 0,
     branch_action: Answer | Callable[[DecisionContext], Answer] | None = None,
     timeout_seconds: int = 0,

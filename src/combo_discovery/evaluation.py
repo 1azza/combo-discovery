@@ -26,12 +26,13 @@ import json
 import sqlite3
 import time
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-from .cards import utc_now as _utc_now
 from . import store as store_module
+from .cards import utc_now as _utc_now
 from .corpus.names import normalize_card_name, pair_hash
 from .store import ExperimentStore
 
@@ -169,7 +170,7 @@ def _load_missed(
         uses[int(row["combo_id"])].append(str(row["name"]))
     missed: list[PairVerdict] = []
     for combo_id, names in uses.items():
-        names = sorted(set(n for n in names if n))
+        names = sorted({n for n in names if n})
         if len(names) != 2:
             continue
         h = pair_hash(names[0], names[1])
@@ -491,7 +492,11 @@ def diagnostics(
                 except (ValueError, TypeError):
                     produces = []
                 for item in produces:
-                    feature = (item.get("feature") or {}).get("name") if isinstance(item, dict) else None
+                    feature = (
+                        (item.get("feature") or {}).get("name")
+                        if isinstance(item, dict)
+                        else None
+                    )
                     if feature:
                         miss_counter[f"produces: {feature}"] += 1
                 try:
@@ -499,7 +504,11 @@ def diagnostics(
                 except (ValueError, TypeError):
                     requires = []
                 for item in requires:
-                    template = (item.get("template") or {}).get("name") if isinstance(item, dict) else None
+                    template = (
+                        (item.get("template") or {}).get("name")
+                        if isinstance(item, dict)
+                        else None
+                    )
                     if template:
                         miss_counter[f"requires: {template}"] += 1
 

@@ -26,11 +26,11 @@ from textual.css.query import NoMatches
 from textual.widgets import ContentSwitcher, Tabs
 from textual.widgets._tabs import Tab
 
+from ..research_config import DEFAULT_CONFIG_PATH, load_config
+from ..store import ExperimentStore
 from . import theme as pal
 from .data import ActiveRun, StoreBinding, fmt_duration, pool_snapshot, short_id
-from ..research_config import DEFAULT_CONFIG_PATH, load_config
 from .screens import HelpScreen
-from ..store import ExperimentStore
 from .views import ActivityView, CandidatesView, CardLabView, CorpusView, ExperimentsView
 from .widgets import HeaderBar, StatusLine
 

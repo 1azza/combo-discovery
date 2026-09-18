@@ -484,7 +484,10 @@ class TestImporter:
 
     def test_resolve_cardsfolder(self, mini_corpus):
         assert resolve_cardsfolder(mini_corpus).name == "cardsfolder"
-        assert resolve_cardsfolder(mini_corpus / "forge-gui" / "res" / "cardsfolder").name == "cardsfolder"
+        resolved = resolve_cardsfolder(
+            mini_corpus / "forge-gui" / "res" / "cardsfolder"
+        )
+        assert resolved.name == "cardsfolder"
 
 
 class _FakeScryfall:
