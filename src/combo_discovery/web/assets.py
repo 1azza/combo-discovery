@@ -142,6 +142,33 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
 
 .cards-title { font-size: clamp(18px, 2.4vw, 23px); color: var(--accent); margin: 0; }
 
+/* -- verdict hero (run page) --------------------------------------------- */
+
+.verdict-hero { padding-bottom: 18px; }
+.verdict-title {
+  font-size: clamp(30px, 6vw, 46px);
+  line-height: 1.04;
+  letter-spacing: -0.01em;
+  margin: 0 0 10px;
+}
+.verdict-hero.loops .verdict-title { color: var(--ok); }
+.verdict-hero.no_loop .verdict-title,
+.verdict-hero.refuted .verdict-title { color: var(--warn); }
+.verdict-hero.inconclusive .verdict-title { color: var(--muted); }
+.verdict-hero.error .verdict-title { color: var(--err); }
+.verdict-cards { font-family: var(--mono); font-size: clamp(17px, 3vw, 23px); margin: 0 0 10px; color: var(--text); }
+.verdict-sentence { font-size: 16.5px; color: var(--text); max-width: 74ch; margin: 0 0 12px; }
+.verdict-meta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 0; }
+
+.card-link { color: var(--accent-hi); font-weight: 600; }
+.card-link:hover { color: var(--accent); }
+.cards-cell { white-space: nowrap; }
+.cards-cell .card-link { font-family: var(--mono); font-size: 15px; }
+.result-link { display: inline-block; }
+.result-link:hover { text-decoration: none; }
+
+.graph-caption { color: var(--muted); font-size: 13.5px; margin: 0 0 12px; max-width: 80ch; }
+
 /* -- panels -------------------------------------------------------------- */
 
 .panel {
@@ -292,12 +319,12 @@ button.copy:hover { color: var(--accent-hi); border-color: var(--border-hi); }
 .node .n-iter { fill: var(--accent); font-size: 13px; font-weight: 600; }
 .node.baseline .n-iter { fill: var(--accent-hi); }
 .node .n-meta { fill: var(--muted); font-size: 9.5px; }
-.node .n-sig { fill: var(--faint); font-size: 9.5px; }
+.node .n-phase { fill: var(--faint); font-size: 9.5px; }
 
 .edge line { stroke: var(--border); stroke-width: 1.4; }
 .edge.edge-progress line { stroke: var(--accent-dim); stroke-width: 1.7; }
 .edge.edge-idle line { stroke-dasharray: 3 4; opacity: 0.8; }
-.edge .e-label { font-family: var(--mono); font-size: 9px; }
+.edge .e-label { font-family: var(--mono); font-size: 8px; }
 .edge.edge-progress .e-label { fill: var(--muted); }
 .edge.edge-idle .e-label { fill: var(--faint); }
 
@@ -404,6 +431,53 @@ details.raw { margin-top: 14px; border: 1px solid var(--border); border-radius: 
 details.raw summary { cursor: pointer; padding: 9px 12px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
 details.raw pre { margin: 0; padding: 0 14px 14px; overflow-x: auto; font-family: var(--mono); font-size: 12px; color: var(--muted); }
 
+/* -- technical details (collapsed) --------------------------------------- */
+
+details.tech {
+  margin: 0 0 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
+}
+details.tech > summary {
+  cursor: pointer;
+  padding: 15px 18px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+details.tech > summary::before { content: "▸"; color: var(--accent); font-size: 11px; }
+details.tech[open] > summary::before { content: "▾"; }
+details.tech > summary::-webkit-details-marker { display: none; }
+details.tech > summary:hover { color: var(--text); }
+.tech-body { padding: 6px 18px 18px; border-top: 1px solid var(--border); }
+
+.sig-list { list-style: none; margin: 0; padding: 0; }
+.sig-list li {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+.sig-list li:last-child { border-bottom: none; }
+.sig-list .sig-step {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+  min-width: 54px;
+}
+.sig-list code { font-size: 11.5px; color: var(--muted); word-break: break-all; }
+
 .empty { padding: 26px 4px; color: var(--faint); font-size: 13.5px; }
 
 /* -- live dot ------------------------------------------------------------ */
@@ -449,6 +523,8 @@ details.raw pre { margin: 0; padding: 0 14px 14px; overflow-x: auto; font-family
   .timeline li { grid-template-columns: 44px 1fr; }
   .timeline .t-answer { grid-column: 1 / -1; }
   .meta { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+  .verdict-sentence { font-size: 15px; }
+  .cards-cell .card-link { font-size: 14px; }
 }
 
 @media (max-width: 380px) {
@@ -481,25 +557,29 @@ JS = """
     }
 
     function badge(verdict) {
-      var labels = { loops: "loops", no_loop: "no loop", refuted: "refuted",
-                     inconclusive: "inconclusive", error: "error" };
+      var labels = { loops: "Loop found", no_loop: "No loop", refuted: "No loop",
+                     inconclusive: "Couldn't test", error: "Error" };
       var key = String(verdict || "inconclusive");
-      return '<span class="badge ' + esc(key) + '">' + esc(labels[key] || key) + "</span>";
+      return '<span class="badge ' + esc(key) + '">' + esc(labels[key] || labels.inconclusive) + "</span>";
+    }
+
+    function cardLink(name) {
+      var href = "https://scryfall.com/search?q=" + encodeURIComponent('"' + name + '"');
+      return '<a class="card-link" href="' + href + '">' + esc(name) + "</a>";
+    }
+
+    function shortTime(value) {
+      return String(value || "\u2014").replace("T", " ").slice(0, 16);
     }
 
     function row(result) {
-      var cards = (result.cards || []).map(function (name) {
-        return '<span class="pill">' + esc(name) + "</span>";
-      }).join(" ");
+      var cards = (result.cards || []).map(cardLink).join(" + ");
       return '<tr data-id="' + esc(result.id) + '">' +
-        '<td class="mono-cell">' + cards + "</td>" +
-        "<td>" + badge(result.verdict) + "</td>" +
+        '<td class="cards-cell">' + cards + "</td>" +
+        '<td><a class="result-link" href="/run/' + esc(result.run_id) + '">' +
+          badge(result.verdict) + "</a></td>" +
         '<td class="num">' + esc(result.iterations) + "</td>" +
-        '<td class="num">' + esc(result.observation_count || 0) + "</td>" +
-        '<td class="mono-cell"><a href="/run/' + esc(result.run_id) + '">run ' +
-          esc(result.run_id) + '</a> <span class="faint">· result ' +
-          esc(result.id) + "</span></td>" +
-        '<td class="mono-cell faint">' + esc(result.created_at || "") + "</td>" +
+        '<td class="mono-cell faint">' + esc(shortTime(result.created_at)) + "</td>" +
         "</tr>";
     }
 

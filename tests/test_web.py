@@ -6,6 +6,7 @@ built through the real :class:`ExperimentStore`, then driven with ``urllib``.
 
 from __future__ import annotations
 
+import html
 import json
 import sqlite3
 import threading
@@ -118,6 +119,48 @@ def _seed_fallback_db(db_path: Path) -> int:
     return run_id
 
 
+def _seed_inconclusive_db(db_path: Path) -> int:
+    """A run the tester could not decide, with a 'policy' reason to translate."""
+    store = ExperimentStore(db_path)
+    try:
+        run_id = store.start_witness_run(
+            proto_version=7,
+            policy_version="witness-v4",
+            scenario_json="{}",
+            seeds=[1],
+        )
+        store.record_witness_observation(
+            run_id, 0, turn=1, phase="MAIN1", signature=SIG_A, resources={"tokens": 0}
+        )
+        store.record_witness_observation(
+            run_id, 1, turn=3, phase="MAIN1", signature=SIG_B, resources={"tokens": 0}
+        )
+        store.record_witness_result(
+            run_id,
+            candidate_kind="pair",
+            candidate_key="9",
+            card_names=["Tempestra, Dame of Games", "Bounding Krasis"],
+            verdict="inconclusive",
+            iterations=2,
+            signature=[SIG_A, SIG_B],
+            resource_deltas=[{"tokens": 0}, {"tokens": 0}],
+            evidence={
+                "reason": "policy never matched an offered option to a link source; "
+                "no loop action was executed"
+            },
+        )
+    finally:
+        store.close()
+    return run_id
+
+
+def _start_server(db_path: Path):
+    srv = create_server(str(db_path), host="127.0.0.1", port=0)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    return srv
+
+
 @pytest.fixture
 def server(tmp_path: Path):
     db_path = tmp_path / "research.db"
@@ -194,34 +237,114 @@ def test_run_page_has_verdict_and_cycle(server) -> None:
     status, content_type, body = _get(port, f"/run/{run_id}")
     assert status == 200
     assert "text/html" in content_type
-    # The verdict text and the highlighted cycle marker must both be present.
-    assert "loops" in body
+    # (a) the plain-English verdict leads the page.
+    assert "Loop found." in body
+    # The highlighted cycle marker and its arc must both be present.
     assert CYCLE_MARKER in body
     assert "cycle-back-edge" in body
-    # The reason travels with the cycle, never alone.
-    assert "signature recurred" in body
-    # Graph + observation table + timeline rendered.
-    assert "baseline" in body
-    assert "CHOOSE_TARGETS" in body
+    # Graph uses player words, not internal vocabulary.
+    assert "What the tester did, step by step" in body
+    assert "back to the same board" in body
+    assert "Step 1" in body and "Turn 1" in body and "Main" in body
+    # The timeline is friendly.
+    assert "Choose targets" in body
+
+
+def test_technical_details_present_and_collapsed(server) -> None:
+    """(c) the technical section exists but is collapsed by default."""
+    srv, run_id, _ = server
+    port = srv.server_address[1]
+    _, _, body = _get(port, f"/run/{run_id}")
+    assert 'class="tech"' in body
+    assert "<details" in body
+    assert "<summary>Technical details</summary>" in body
+    # Technical values are still present in the document.
+    assert "signature" in body.lower()
+    assert "policy version" in body.lower()
+
+
+def test_run_page_inconclusive_plain_reason(tmp_path: Path) -> None:
+    """(b) an inconclusive run shows the translated reason, not the raw string."""
+    db_path = tmp_path / "inconclusive.db"
+    run_id = _seed_inconclusive_db(db_path)
+    srv = _start_server(db_path)
+    try:
+        port = srv.server_address[1]
+        status, _, body = _get(port, f"/run/{run_id}")
+        assert status == 200
+        text = html.unescape(body)
+        assert "Couldn't test this one." in text
+        assert "The tester didn't know which move to make here" in text
+        # The raw reason is preserved, but only inside the technical section.
+        assert "policy never matched an offered option" in text
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        srv.store.close()
 
 
 def test_run_page_fallback_without_observations(tmp_path: Path) -> None:
     db_path = tmp_path / "legacy.db"
     run_id = _seed_fallback_db(db_path)
-    srv = create_server(str(db_path), host="127.0.0.1", port=0)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
+    srv = _start_server(db_path)
     try:
         port = srv.server_address[1]
         status, _, body = _get(port, f"/run/{run_id}")
         assert status == 200
-        assert "--persist" in body
-        assert CYCLE_MARKER in body
-        assert "no loop" in body
+        text = html.unescape(body)
+        assert "Older run" in text
+        assert CYCLE_MARKER in text
+        # no_loop reason is translated for the player.
+        assert "No loop." in text
+        assert "The board repeated, but nothing increased" in text
     finally:
         srv.shutdown()
         srv.server_close()
         srv.store.close()
+
+
+def test_feed_page_plain_and_scryfall(server) -> None:
+    srv, _, _ = server
+    port = srv.server_address[1]
+    status, _, body = _get(port, "/")
+    assert status == 200
+    assert "Combos being tested" in body
+    assert "Loop found" in body
+    assert "scryfall.com/search" in body
+    assert ">Cards<" in body and ">Result<" in body
+
+
+def test_verdict_wording_and_reason_mapping() -> None:
+    from combo_discovery.web.render import plain_reason, verdict_headline, verdict_word
+
+    assert verdict_headline("loops") == "Loop found."
+    assert verdict_headline("no_loop") == "No loop."
+    assert verdict_headline("refuted") == "No loop."
+    assert verdict_headline("inconclusive") == "Couldn't test this one."
+    assert verdict_headline("error") == "Something went wrong testing this."
+    assert verdict_word("loops") == "Loop found"
+    assert verdict_word("inconclusive") == "Couldn't test"
+
+    mapped = {
+        "signature recurred but no tracked resource grew":
+            "The board repeated, but nothing increased — so it isn't a loop.",
+        "recurrence only across turns":
+            "It only repeated over several turns. That's normal play, not an infinite loop.",
+        "recurrence consumes mana each pass":
+            "It uses up mana every time, so it can't keep going.",
+        "only policy-driven event counters grew":
+            "Nothing on the board changed — the tester was just going in circles.",
+        "policy never matched an offered option":
+            "The tester didn't know which move to make here, so this combo hasn't been tested yet.",
+        "need at least two post-baseline observations":
+            "The game ended before the tester could see enough.",
+        "no signature recurrence":
+            "The board never came back to the same state.",
+    }
+    for raw, plain in mapped.items():
+        assert plain_reason(raw, None) == plain
+    assert plain_reason(None, "degenerate") == "The same board appeared again."
+    assert plain_reason(None, "recurrence") == "The board repeated."
 
 
 def test_feed_page_has_live_hook(server) -> None:

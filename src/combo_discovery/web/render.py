@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from typing import Any, Sequence
+from urllib.parse import quote
 
 from .db import RESOURCE_COLUMNS, parse_json
 
@@ -42,6 +44,23 @@ VERDICT_LABELS = {
     "error": "error",
 }
 
+#: Friendlier labels for the decision types, used in the collapsed timeline.
+DECISION_PLAIN = {
+    1: "Priority",
+    2: "Keep hand",
+    3: "Tuck to bottom",
+    4: "Declare attackers",
+    5: "Declare blockers",
+    6: "Assign combat damage",
+    7: "Order blockers",
+    8: "Choose cards",
+    9: "Announce",
+    10: "Arrange scry",
+    11: "Choose targets",
+    12: "Choose a mode",
+    13: "Pay optional costs",
+}
+
 #: Verdict -> CSS class. Anything unknown is treated as inconclusive (grey).
 _VERDICT_CLASS = {
     "loops": "loops",
@@ -52,10 +71,10 @@ _VERDICT_CLASS = {
 }
 
 # Layout constants for the SVG (deliberately in user units, not screen px).
-NODE_W = 92
+NODE_W = 96
 NODE_H = 58
-GAP = 58
-MARGIN_X = 24
+GAP = 74
+MARGIN_X = 18
 ARC_BASE = 34
 ARC_STEP = 42
 
@@ -122,45 +141,226 @@ def grew_between(before: dict[str, Any], after: dict[str, Any]) -> dict[str, int
     }
 
 
-#: Short display aliases so an edge label fits the gap between two nodes.
-RESOURCE_ALIASES = {
-    "permanents": "perm",
-    "spells_resolved": "spells",
-    "extra_phases": "phases",
-    "graveyard": "grave",
-    "library": "lib",
-    "tokens": "tokens",
-    "casts": "casts",
-    "damage": "dmg",
-    "mana": "mana",
-    "life": "life",
-    "hand": "hand",
+#: Player-facing names for the resources the tester tracks.
+RESOURCE_LABELS = {
+    "tokens": "Tokens",
+    "permanents": "Permanents",
+    "mana": "Mana",
+    "life": "Life",
+    "casts": "Spells cast",
+    "spells_resolved": "Spells resolved",
+    "graveyard": "Cards in graveyard",
+    "library": "Cards in library",
+    "hand": "Cards in hand",
+    "damage": "Damage",
+    "extra_phases": "Extra phases",
+}
+
+#: Shorter forms for the tiny labels beside graph edges.
+RESOURCE_LABELS_SHORT = {
+    "tokens": "Tokens",
+    "permanents": "Permanents",
+    "mana": "Mana",
+    "life": "Life",
+    "casts": "Spells cast",
+    "spells_resolved": "Spells resolved",
+    "graveyard": "Graveyard",
+    "library": "Library",
+    "hand": "Hand",
+    "damage": "Damage",
+    "extra_phases": "Phases",
 }
 
 
-def alias(key: str) -> str:
-    return RESOURCE_ALIASES.get(key, key[:6])
+def resource_label(key: str) -> str:
+    return RESOURCE_LABELS.get(str(key), str(key).replace("_", " ").capitalize())
 
 
-def delta_label(delta: dict[str, int], limit: int = 3) -> str:
+def resource_label_short(key: str) -> str:
+    return RESOURCE_LABELS_SHORT.get(str(key), resource_label(key))
+
+
+def join_words(items: Sequence[Any]) -> str:
+    words = [str(item) for item in items if str(item)]
+    if not words:
+        return ""
+    if len(words) == 1:
+        return words[0]
+    if len(words) == 2:
+        return f"{words[0]} and {words[1]}"
+    return ", ".join(words[:-1]) + f" and {words[-1]}"
+
+
+def delta_label(delta: dict[str, int], limit: int = 4) -> str:
+    """Full Magic-word resource labels, for the cycle caption."""
     if not delta:
-        return "no growth"
+        return "nothing increased"
     items = sorted(delta.items(), key=lambda item: (-abs(item[1]), item[0]))
-    parts = [f"{alias(key)} {value:+d}" for key, value in items[:limit]]
+    parts = [f"{resource_label(key)} {value:+d}" for key, value in items[:limit]]
     if len(items) > limit:
-        parts.append(f"+{len(items) - limit} more")
-    return " · ".join(parts)
+        parts.append(f"and {len(items) - limit} more")
+    return ", ".join(parts)
 
 
 def delta_lines(delta: dict[str, int], limit: int = 2) -> list[str]:
-    """Compact, one-per-line edge labels (aliased so each fits the gap)."""
+    """Compact, one-per-line edge labels (short names so each fits the gap)."""
     if not delta:
-        return ["no growth"]
+        return ["no change"]
     items = sorted(delta.items(), key=lambda item: (-abs(item[1]), item[0]))
-    lines = [f"{alias(key)} {value:+d}" for key, value in items[:limit]]
+    lines = [f"{resource_label_short(key)} {value:+d}" for key, value in items[:limit]]
     if len(items) > limit:
         lines.append(f"+{len(items) - limit} more")
     return lines
+
+
+# -- plain-English translations ---------------------------------------------
+
+#: Raw internal reason -> a sentence a player can read cold.
+REASON_TEXT = (
+    (
+        "signature recurred but no tracked resource grew",
+        "The board repeated, but nothing increased — so it isn't a loop.",
+    ),
+    (
+        "recurrence only across turns",
+        "It only repeated over several turns. That's normal play, not an infinite loop.",
+    ),
+    (
+        "recurrence consumes mana each pass",
+        "It uses up mana every time, so it can't keep going.",
+    ),
+    (
+        "only policy-driven event counters grew",
+        "Nothing on the board changed — the tester was just going in circles.",
+    ),
+    (
+        "policy never matched an offered option",
+        "The tester didn't know which move to make here, so this combo hasn't been tested yet.",
+    ),
+    (
+        "need at least two post-baseline observations",
+        "The game ended before the tester could see enough.",
+    ),
+    (
+        "no signature recurrence",
+        "The board never came back to the same state.",
+    ),
+)
+
+#: Fallback translations for the evidence ``kind`` field.
+REASON_KIND_TEXT = {
+    "degenerate": "The same board appeared again.",
+    "recurrence": "The board repeated.",
+}
+
+
+def plain_reason(raw: Any, kind: Any = None) -> str:
+    """Translate an internal reason string; unknown text passes through unchanged."""
+    text = str(raw or "")
+    for needle, plain in REASON_TEXT:
+        if needle in text:
+            return plain
+    if kind:
+        for needle, plain in REASON_KIND_TEXT.items():
+            if needle in str(kind):
+                return plain
+    return text
+
+
+def verdict_headline(verdict: Any) -> str:
+    return {
+        "loops": "Loop found.",
+        "no_loop": "No loop.",
+        "refuted": "No loop.",
+        "inconclusive": "Couldn't test this one.",
+        "error": "Something went wrong testing this.",
+    }.get(str(verdict or "").lower(), "Couldn't test this one.")
+
+
+def verdict_word(verdict: Any) -> str:
+    """Short plain result, for badges and the feed."""
+    return {
+        "loops": "Loop found",
+        "no_loop": "No loop",
+        "refuted": "No loop",
+        "inconclusive": "Couldn't test",
+        "error": "Error",
+    }.get(str(verdict or "").lower(), "Couldn't test")
+
+
+PHASE_LABELS = {
+    "MAIN1": "Main",
+    "MAIN2": "Main",
+    "PRECOMBAT_MAIN": "Main",
+    "POSTCOMBAT_MAIN": "Main",
+    "BEGIN_COMBAT": "Combat",
+    "COMBAT": "Combat",
+    "DECLARE_ATTACKERS": "Combat",
+    "DECLARE_BLOCKERS": "Combat",
+    "COMBAT_DAMAGE": "Combat",
+    "END_COMBAT": "Combat",
+    "UPKEEP": "Upkeep",
+    "DRAW": "Draw",
+    "BEGINNING": "Start",
+    "END": "End",
+    "CLEANUP": "Cleanup",
+}
+
+
+def plain_phase(phase: Any) -> str:
+    """Short, player-readable phase word (``COMBAT_DECLARE_ATTACKERS`` -> Combat)."""
+    text = str(phase or "").strip()
+    if not text:
+        return ""
+    upper = text.upper()
+    if upper in PHASE_LABELS:
+        return PHASE_LABELS[upper]
+    if "MAIN" in upper:
+        return "Main"
+    if any(word in upper for word in ("COMBAT", "ATTACK", "BLOCK", "DAMAGE")):
+        return "Combat"
+    if "UPKEEP" in upper:
+        return "Upkeep"
+    if "DRAW" in upper:
+        return "Draw"
+    if "CLEANUP" in upper:
+        return "Cleanup"
+    if "END" in upper:
+        return "End"
+    if "BEGIN" in upper:
+        return "Start"
+    return text.replace("_", " ").title()
+
+
+_MOTIF_RE = re.compile(r"\s*\([^)]*[~/:][^)]*\)")
+_SYNTH_RE = re.compile(r"\s*\[synthetic\]")
+
+
+def strip_motifs(text: Any) -> str:
+    """Drop internal motif codes such as ``(COPIES_CREATURE~ETB_TRIGGER)``."""
+    cleaned = _MOTIF_RE.sub("", str(text or ""))
+    cleaned = re.sub(r"\s+([;,.]|$)", r"\1", cleaned)
+    return " ".join(cleaned.split())
+
+
+def plain_link(link: Any) -> str:
+    """A diagnostics link in player words: ``A -> B [synthetic]`` -> ``A → B``."""
+    return strip_motifs(_SYNTH_RE.sub("", str(link or ""))).replace("->", "→")
+
+
+def scryfall_url(name: Any) -> str:
+    return "https://scryfall.com/search?q=" + quote(f'"{name}"')
+
+
+def card_link(name: Any, *, css: str = "card-link") -> str:
+    return f'<a class="{esc(css)}" href="{esc(scryfall_url(name))}">{esc(name)}</a>'
+
+
+def short_time(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return "—"
+    return text.replace("T", " ")[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -266,24 +466,21 @@ def _node_svg(
     iteration = sample["iteration"]
     baseline = index == 0 and iteration == 0
     classes = "node baseline" if baseline else "node"
-    iter_text = "baseline" if baseline else f"it {iteration}"
+    step_text = "Start" if baseline else f"Step {iteration}"
     if per_step and sample.get("turn") is not None:
-        phase = sample.get("phase") or ""
-        meta = f"T{sample['turn']}"
-        if phase:
-            meta += f" · {phase}"
+        turn_text = f"Turn {sample['turn']}"
+        phase_text = plain_phase(sample.get("phase")) or "—"
     else:
-        meta = "no turn/phase"
-    signature = sample.get("signature") or ""
-    resources = sample.get("resources") or {}
-    title = f"iteration {iteration} · signature {sig_short(signature, 16)} · {pretty_json(resources)}"
+        turn_text = "—"
+        phase_text = "—"
+    title = f"{step_text} · {turn_text} · {phase_text}"
     return (
         f'<g class="{classes}" transform="translate({x}, {y})">'
         f"<title>{esc(title)}</title>"
         f'<rect width="{NODE_W}" height="{NODE_H}" rx="9"/>'
-        f'<text class="n-iter" x="11" y="19">{esc(iter_text)}</text>'
-        f'<text class="n-meta" x="11" y="34">{esc(meta)}</text>'
-        f'<text class="n-sig" x="11" y="48">{esc(sig_short(signature))}</text>'
+        f'<text class="n-iter" x="11" y="19">{esc(step_text)}</text>'
+        f'<text class="n-meta" x="11" y="34">{esc(turn_text)}</text>'
+        f'<text class="n-phase" x="11" y="48">{esc(phase_text)}</text>'
         "</g>"
     )
 
@@ -353,11 +550,13 @@ def render_graph(
             samples[start].get("resources") or {},
             samples[end].get("resources") or {},
         )
-        grown_text = delta_label(grown, limit=3)
-        verdict_text = f"cycle · {verdict_label(verdict)}"
+        growth_text = delta_label(grown, limit=4)
+        board_text = f"back to the same board — {growth_text}"
+        verdict_text = verdict_word(verdict)
+        from_step = "start" if samples[start]["iteration"] == 0 else f"step {samples[start]['iteration']}"
         title = (
-            f"cycle: iteration {samples[start]['iteration']} -> "
-            f"{samples[end]['iteration']}; {grown_text}; verdict {verdict_label(verdict)}"
+            f"{verdict_text}: {board_text} "
+            f"(from {from_step} to step {samples[end]['iteration']})"
         )
         if reason:
             title += f"; reason: {reason}"
@@ -366,10 +565,12 @@ def render_graph(
             f'<text class="c-label" x="{(x_from + x_to) / 2:.1f}"'
             f' y="{apex_y - 10:.1f}" text-anchor="middle">{esc(verdict_text)}</text>',
             f'<text class="c-grown" x="{(x_from + x_to) / 2:.1f}"'
-            f' y="{apex_y + 5:.1f}" text-anchor="middle">{esc(grown_text)}</text>',
+            f' y="{apex_y + 5:.1f}" text-anchor="middle">{esc(board_text)}</text>',
         ]
         if vclass in {"no_loop", "refuted"} and reason:
-            short_reason = reason if len(reason) <= 96 else reason[:93] + "…"
+            short_reason = plain_reason(reason)
+            if len(short_reason) > 96:
+                short_reason = short_reason[:93] + "…"
             labels.append(
                 f'<text class="c-reason" x="{(x_from + x_to) / 2:.1f}"'
                 f' y="{apex_y + 20:.1f}" text-anchor="middle">{esc(short_reason)}</text>'
@@ -389,7 +590,7 @@ def render_graph(
         f'<div class="graph-scroll">'
         f'<svg viewBox="0 0 {total_width} {row_y + NODE_H + 34}"'
         f' width="{total_width}" height="{row_y + NODE_H + 34}"'
-        f' role="img" aria-label="witness state graph with {len(cycles)} cycle(s)">'
+        f' role="img" aria-label="board snapshots, one per step, with {len(cycles)} repeated board(s)">'
         "<defs>"
         '<marker id="cycle-arrow" viewBox="0 0 10 10" refX="7.5" refY="5"'
         ' markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
@@ -404,10 +605,10 @@ def render_graph(
 def render_legend() -> str:
     return (
         '<div class="legend">'
-        '<span><i class="ok"></i> cycle · loops</span>'
-        '<span><i class="warn"></i> cycle · no loop / refuted (reason shown)</span>'
-        '<span><i></i> cycle · inconclusive</span>'
-        '<span><i class="idle"></i> step with no resource growth</span>'
+        '<span><i class="ok"></i> loop found</span>'
+        '<span><i class="warn"></i> board repeated, but no loop</span>'
+        '<span><i></i> board repeated, couldn\'t decide</span>'
+        '<span><i class="idle"></i> step where nothing changed</span>'
         "</div>"
     )
 
@@ -427,36 +628,63 @@ def _resource_columns(samples: Sequence[dict[str, Any]]) -> list[str]:
 
 
 def render_observation_table(
-    samples: Sequence[dict[str, Any]], *, per_step: bool
+    samples: Sequence[dict[str, Any]],
+    *,
+    per_step: bool,
+    include_signature: bool = False,
 ) -> str:
     if not samples:
         return '<p class="empty">No observations recorded for this run.</p>'
     columns = _resource_columns(samples)
-    head = (
-        "<tr><th>iter</th><th>turn</th><th>phase</th><th>sig</th>"
-        + "".join(f'<th class="num">{esc(col)}</th>' for col in columns)
-        + "</tr>"
+    head = "<tr><th>Step</th><th>Turn</th><th>Phase</th>"
+    if include_signature:
+        head += "<th>Signature</th>"
+    head += "".join(
+        f'<th class="num">{esc(resource_label(col))}</th>' for col in columns
     )
+    head += "</tr>"
     rows: list[str] = []
     for index, sample in enumerate(samples):
         resources = sample.get("resources") or {}
         baseline = index == 0 and sample.get("iteration") == 0
-        iterator = "baseline" if baseline else esc(sample.get("iteration"))
+        step = "Start" if baseline else esc(sample.get("iteration"))
         turn = "—" if sample.get("turn") is None else esc(sample["turn"])
-        phase = esc(sample.get("phase") or "—")
+        phase = esc(plain_phase(sample.get("phase")) or "—")
         if not per_step:
             turn = phase = "—"
         cells = "".join(
             f'<td class="num">{esc(resources.get(col, ""))}</td>' for col in columns
         )
+        signature = (
+            f'<td class="mono-cell faint">{esc(sample.get("signature") or "—")}</td>'
+            if include_signature
+            else ""
+        )
         rows.append(
-            f"<tr><td class=\"mono-cell{' accent' if baseline else ''}\">{iterator}</td>"
+            f"<tr><td class=\"mono-cell{' accent' if baseline else ''}\">{step}</td>"
             f'<td class="mono-cell">{turn}</td>'
             f'<td class="mono-cell">{phase}</td>'
-            f'<td class="mono-cell faint">{esc(sig_short(sample.get("signature"), 10))}</td>'
-            f"{cells}</tr>"
+            f"{signature}{cells}</tr>"
         )
-    return f'<div class="table-wrap"><table><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
+    return (
+        '<div class="table-wrap"><table><thead>'
+        f'{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
+    )
+
+
+def render_signatures(samples: Sequence[dict[str, Any]]) -> str:
+    """Full fingerprints, for the collapsed technical section."""
+    if not samples:
+        return '<p class="empty">No observations recorded.</p>'
+    items: list[str] = []
+    for index, sample in enumerate(samples):
+        baseline = index == 0 and sample.get("iteration") == 0
+        step = "Start" if baseline else f"Step {sample.get('iteration')}"
+        items.append(
+            f'<li><span class="sig-step">{esc(step)}</span>'
+            f'<code>{esc(sample.get("signature") or "—")}</code></li>'
+        )
+    return f'<ul class="sig-list">{"".join(items)}</ul>'
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +694,8 @@ def render_observation_table(
 
 def format_answer(answer: Any) -> str:
     if isinstance(answer, (list, tuple)) and len(answer) == 2 and isinstance(answer[0], str):
-        return f"{answer[0]} {pretty_compact(answer[1])}"
+        key = {"option_id": "option"}.get(answer[0], answer[0])
+        return f"{key} {pretty_compact(answer[1])}"
     return pretty_compact(answer)
 
 
@@ -490,10 +719,12 @@ def render_timeline(trace: Any) -> str:
             )
             continue
         decision_id, decision_type, answer = entry[0], entry[1], entry[2]
-        name = DECISION_TYPES.get(_as_int(decision_type), f"TYPE_{decision_type}")
+        type_int = _as_int(decision_type)
+        name = DECISION_PLAIN.get(type_int, DECISION_TYPES.get(type_int, f"Type {type_int}"))
+        raw = DECISION_TYPES.get(type_int, type_int)
         items.append(
             f'<li><span class="t-id">#{esc(decision_id)}</span>'
-            f'<span class="t-type">{esc(name)}</span>'
+            f'<span class="t-type" title="{esc(raw)}">{esc(name)}</span>'
             f'<span class="t-answer">{esc(format_answer(answer))}</span></li>'
         )
     return f'<ul class="timeline">{"".join(items)}</ul>'
@@ -551,16 +782,16 @@ def _diagnostics_stats(diagnostics: dict[str, Any]) -> str:
         return sum(_as_int(v) for v in values)
 
     tiles = [
-        ("decisions", diagnostics.get("decisions")),
-        ("executed actions", diagnostics.get("executed_actions")),
-        ("iterations", diagnostics.get("iterations")),
-        ("link hits", total(link_hits)),
-        ("link misses", total(link_misses)),
-        ("trigger hits", total(trigger_hits)),
+        ("Moves", diagnostics.get("decisions")),
+        ("Actions", diagnostics.get("executed_actions")),
+        ("Repeats", diagnostics.get("iterations")),
+        ("Plan hits", total(link_hits)),
+        ("Plan misses", total(link_misses)),
+        ("Triggers", total(trigger_hits)),
     ]
     cells = "".join(
         f'<div class="stat"><div class="k">{esc(label)}</div>'
-        f'<div class="v{" warn" if label == "link misses" and _as_int(value) else ""}">'
+        f'<div class="v{" warn" if label == "Plan misses" and _as_int(value) else ""}">'
         f'{esc(value if value is not None else "—")}</div></div>'
         for label, value in tiles
     )
@@ -572,43 +803,33 @@ def render_mechanism_vs_executed(
     interactions: Sequence[dict[str, Any]],
     diagnostics: Any,
 ) -> str:
+    """The proposed plan vs what actually happened, in player words."""
     diag = diagnostics
     if isinstance(diag, str):
         diag = parse_json(diag, None)
     diag = diag if isinstance(diag, dict) else {}
 
-    # -- proposed line ------------------------------------------------------
+    # -- the plan -----------------------------------------------------------
     mechanism = ""
     if hypothesis:
-        mechanism = str(hypothesis.get("mechanism") or "").strip()
+        mechanism = strip_motifs(hypothesis.get("mechanism") or "")
     proposed: list[str] = []
     for row in interactions:
         source = row.get("source_name") or row.get("source_card_id")
         target = row.get("target_name") or row.get("target_card_id")
-        score = row.get("score")
-        score_text = f"{float(score):.3f}" if isinstance(score, (int, float)) else "—"
-        predicates = [
-            str(item.get("predicate"))
-            for item in (row.get("evidence") or [])
-            if isinstance(item, dict) and item.get("predicate")
-        ]
-        tags = "".join(
-            f'<span class="pill">{esc(p)}</span>' for p in predicates[:4]
-        )
         proposed.append(
             f'<li><span class="link">{esc(source)} → {esc(target)}</span>'
-            f'<div class="tags"><span class="pill">{esc(row.get("pattern") or "—")}</span>'
-            f'<span class="pill">{esc(row.get("direction") or "—")}</span>'
-            f'<span class="pill">score {esc(score_text)}</span>{tags}</div></li>'
+            f'<div class="muted" style="font-size:12.5px;margin-top:2px">'
+            "these two are supposed to set each other off</div></li>"
         )
-    mechanism_html = f'<p class="mech">{esc(mechanism)}</p>' if mechanism else ""
-    proposed_html = (
+    plan_html = f'<p class="mech">{esc(mechanism)}</p>' if mechanism else ""
+    plan_html += (
         f'<ul class="plan-list">{"".join(proposed)}</ul>'
         if proposed
         else '<p class="empty">No proposed interactions recorded for these cards.</p>'
     )
 
-    # -- executed line ------------------------------------------------------
+    # -- what actually happened --------------------------------------------
     links = diag.get("links") or []
     link_hits = diag.get("link_hits") or []
     link_misses = diag.get("link_misses") or []
@@ -617,37 +838,68 @@ def render_mechanism_vs_executed(
     for index, link in enumerate(links):
         hits = _as_int(link_hits[index]) if index < len(link_hits) else 0
         misses = _as_int(link_misses[index]) if index < len(link_misses) else 0
-        # A link that never fired is as much a divergence as one that missed.
         diverged = misses > 0 or hits == 0
-        state = "ok" if not diverged else "warn"
         if diverged:
             any_miss = True
+        if hits:
+            outcome = f"happened {hits} time{'s' if hits != 1 else ''}"
+        else:
+            outcome = "never happened"
         executed.append(
-            f'<li><span class="link">{esc(link)}</span>'
-            f'<div class="tags"><span class="badge {state}">'
-            f'{"hit" if hits else "never fired"} · {hits} hit / {misses} miss</span></div></li>'
+            f'<li><span class="link">{esc(plain_link(link))}</span>'
+            f'<div class="tags"><span class="badge {"warn" if diverged else "ok"}">'
+            f"{esc(outcome)}</span></div></li>"
         )
     executed_html = (
         f'<ul class="plan-list">{"".join(executed)}</ul>'
         if executed
-        else '<p class="empty">No link execution diagnostics recorded.</p>'
+        else '<p class="empty">No record of what happened here.</p>'
     )
 
     if any_miss:
-        chip = '<span class="badge warn">diverged · a proposed link missed</span>'
+        chip = '<span class="badge warn">didn\'t go as planned</span>'
     elif links:
-        chip = '<span class="badge ok">executed as planned</span>'
+        chip = '<span class="badge ok">went as planned</span>'
     else:
-        chip = '<span class="badge neutral">no link plan</span>'
+        chip = '<span class="badge neutral">no plan recorded</span>'
 
     return (
         f'<div class="grid halves">'
-        f'<div><div class="panel-title" style="margin-top:0">Proposed line'
-        f" {chip}</div>{mechanism_html}{proposed_html}</div>"
-        f'<div><div class="panel-title" style="margin-top:0">Executed'
+        f'<div><div class="panel-title" style="margin-top:0">The plan'
+        f" {chip}</div>{plan_html}</div>"
+        f'<div><div class="panel-title" style="margin-top:0">What actually happened'
         f"</div>{_diagnostics_stats(diag)}{executed_html}</div>"
         f"</div>"
     )
+
+
+def render_interaction_detail(interactions: Sequence[dict[str, Any]]) -> str:
+    """Full interaction internals, for the collapsed technical section."""
+    if not interactions:
+        return '<p class="empty">No interactions recorded.</p>'
+    items: list[str] = []
+    for row in interactions:
+        source = row.get("source_name") or row.get("source_card_id")
+        target = row.get("target_name") or row.get("target_card_id")
+        predicates = [
+            str(item.get("predicate"))
+            for item in (row.get("evidence") or [])
+            if isinstance(item, dict) and item.get("predicate")
+        ]
+        tags = "".join(f'<span class="pill">{esc(p)}</span>' for p in predicates)
+        items.append(
+            f'<li><span class="link">{esc(source)} → {esc(target)}</span>'
+            f'<div class="tags"><span class="pill">{esc(row.get("pattern") or "—")}</span>'
+            f'<span class="pill">{esc(row.get("direction") or "—")}</span>'
+            f'<span class="pill">score {esc(_fmt_number(row.get("score")))}</span>{tags}</div></li>'
+        )
+    return f'<ul class="plan-list">{"".join(items)}</ul>'
+
+
+def _fmt_number(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    return f"{float(value):.3f}"
 
 
 def render_verdict_badge(verdict: Any) -> str:
@@ -657,26 +909,41 @@ def render_verdict_badge(verdict: Any) -> str:
 
 __all__ = [
     "CYCLE_MARKER",
+    "DECISION_PLAIN",
     "DECISION_TYPES",
-    "RESOURCE_ALIASES",
-    "alias",
+    "RESOURCE_LABELS",
+    "RESOURCE_LABELS_SHORT",
     "build_samples",
+    "card_link",
     "delta_label",
     "delta_lines",
     "esc",
     "find_cycles",
     "format_answer",
     "grew_between",
+    "join_words",
+    "plain_link",
+    "plain_phase",
+    "plain_reason",
     "pretty_json",
     "render_evidence",
     "render_graph",
+    "render_interaction_detail",
     "render_legend",
     "render_mechanism_vs_executed",
     "render_observation_table",
+    "render_signatures",
     "render_timeline",
     "render_verdict_badge",
+    "resource_label",
+    "resource_label_short",
+    "scryfall_url",
+    "short_time",
     "sig_short",
     "signed_delta",
+    "strip_motifs",
     "verdict_class",
+    "verdict_headline",
     "verdict_label",
+    "verdict_word",
 ]
