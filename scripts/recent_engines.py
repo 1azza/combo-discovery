@@ -101,6 +101,12 @@ _TAP_ACTIVATED = re.compile(r"\{t\}\s*:", re.IGNORECASE)
 #: Ability boundaries used to tell whether ``{T}`` is the first cost component.
 _ABILITY_BOUNDARY = re.compile(r'[."\u2014\u2022]')
 
+#: The start of the next activated ability on a line (any ``{...}`` cost then
+#: ``:``).  Used to slice an ability's *own* effect text: a mana land such as
+#: ``"{T}: Add {C}. {T}: Add {R} or {W}."`` must judge each ``{T}`` ability on
+#: its own text rather than letting one ability's verbs leak into another's.
+_NEXT_ABILITY = re.compile(r"\{[^{}\n]*\}[^:\n]{0,60}:")
+
 #: An activated ability this class excludes: per-turn / activation limits cannot
 #: loop.  Applied to the ability text (cost + effect).
 _TAP_LIMIT = re.compile(r"activate only|once each turn|only once", re.IGNORECASE)
@@ -176,7 +182,11 @@ def _tap_only_effects(oracle_text: str) -> list[str]:
                 cut = boundary.end()
             if prefix[cut:].strip():
                 continue  # another cost (e.g. {2}{W}, ) sits before the tap
-            effects.append(line[match.end():].strip())
+            rest = low[match.end():]
+            # Stop at the next activated ability so each ``{T}`` ability is
+            # judged on its own effect text, not the rest of the line.
+            nxt = _NEXT_ABILITY.search(rest)
+            effects.append((rest[: nxt.start()] if nxt else rest).strip())
     return effects
 
 
@@ -185,21 +195,35 @@ def is_pure_mana_ability(effect: str) -> bool:
     return bool(_MANA_EFFECT.match(effect or "")) and not _NON_MANA_VERB.search(effect)
 
 
-def is_tap_engine(oracle_text: str) -> bool:
+def _is_mana_ability_text(effect: str) -> bool:
+    """True when an ability's text adds mana (a mana ability, whatever else it says)."""
+    return bool(_MANA_EFFECT.match(effect or ""))
+
+
+def is_tap_engine(oracle_text: str, type_line: str = "") -> bool:
     """True for a free ``{T}:`` activated engine that can loop with an untapper.
 
-    Qualifies when the card has a ``{T}``-only-cost ability that is not pure
-    mana, not a token-copy ability (the copy class covers those) and has no
-    per-turn/activation limit.  Triggered abilities never match (no ``{T}:``).
+    Qualifies when the card has a ``{T}``-only-cost ability whose *own* text
+    carries a non-mana effect verb (``_NON_MANA_VERB``), is not a token-copy
+    ability (the copy class covers those) and has no per-turn/activation limit.
+    Triggered abilities never match (no ``{T}:``).
+
+    Belt and braces: a card whose ``{T}`` abilities are *all* mana abilities is
+    ramp, not an engine — this covers mana lands and pure-mana artifacts whose
+    mana clause carries a rider such as ``deals 1 damage to you`` (the Talismans),
+    which would otherwise trip the non-mana verb heuristic.
     """
-    for effect in _tap_only_effects(oracle_text):
+    effects = _tap_only_effects(oracle_text)
+    if effects and all(_is_mana_ability_text(effect) for effect in effects):
+        return False
+    for effect in effects:
         if not effect:
             continue
-        if is_pure_mana_ability(effect):
+        if _TAP_LIMIT.search(effect):
+            continue
+        if not _NON_MANA_VERB.search(effect):
             continue
         if _TAP_COPY_EFFECT.search(effect):
-            continue
-        if _TAP_LIMIT.search(effect):
             continue
         return True
     return False
@@ -237,14 +261,15 @@ def select_recent_engines(
     Newest first, then by name, so the cap in :func:`build_pairs` favours the
     freshest sets.
     """
-    predicate = (
-        is_activated_copy_engine if engine_class == "copy" else is_tap_engine
-    )
     out: list[Card] = []
     for card in cards:
         if not is_legal(card.name):
             continue
-        if not predicate(card.oracle_text):
+        if engine_class == "copy":
+            qualifies = is_activated_copy_engine(card.oracle_text)
+        else:
+            qualifies = is_tap_engine(card.oracle_text, card.type_line)
+        if not qualifies:
             continue
         year = _release_year(releases.get(card.normalized_name))
         if year is None or year < since:
@@ -310,15 +335,28 @@ def build_pairs(
 ) -> list[tuple[str, str]]:
     """Uncatalogued engine x partner pairs in a deterministic, balanced order.
 
-    Partner-outer iteration gives every engine coverage before the cap fills
-    with one engine's partners.  ``max_pairs=None`` returns the whole product.
+    Engine-major round-robin: the engines cycle in order while the partner
+    advances one step each time, so a capped sweep samples *both* sides instead
+    of exhausting one engine (or one partner) first.  With ``E`` engines,
+    ``P`` partners and round ``d`` the pairs are ``(engine[j], partner[(j+d)%P])``
+    for ``j`` in ``0..E-1``; over ``d`` in ``0..P-1`` every engine meets every
+    partner exactly once.  ``pair_hash`` known pairs are skipped, duplicates are
+    dropped, and ``max_pairs=None`` returns the whole (deduped) product.
     """
     pairs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for partner in partners:
-        pn = normalize_card_name(partner)
-        for engine in engines:
+    n_engines = len(engines)
+    n_partners = len(partners)
+    if n_engines == 0 or n_partners == 0:
+        return pairs
+    limit = n_engines * n_partners if max_pairs is None else max(0, max_pairs)
+    round_no = 0
+    while len(pairs) < limit and round_no < n_partners:
+        for j in range(n_engines):
+            engine = engines[j]
+            partner = partners[(j + round_no) % n_partners]
             en = normalize_card_name(engine)
+            pn = normalize_card_name(partner)
             if not en or not pn or en == pn:
                 continue
             key = (en, pn)
@@ -328,8 +366,9 @@ def build_pairs(
                 continue
             seen.add(key)
             pairs.append((engine, partner))
-            if max_pairs is not None and len(pairs) >= max_pairs:
-                return pairs
+            if len(pairs) >= limit:
+                break
+        round_no += 1
     return pairs
 
 
@@ -543,6 +582,15 @@ def main(argv: list[str] | None = None) -> int:
             store.close()
 
     loops = [r for r in results if r["verdict"] == "loops"]
+    tested_engines = sorted({r["engine"] for r in results})
+    tested_partners = sorted({r["partner"] for r in results})
+    print(
+        f"\nSAMPLE engine_class={args.engine_class} "
+        f"engines={len(tested_engines)}/{len(engines)} "
+        f"partners={len(tested_partners)}/{len(partners)}"
+    )
+    print(f"  tested engines ({len(tested_engines)}): {', '.join(tested_engines)}")
+    print(f"  tested partners ({len(tested_partners)}): {', '.join(tested_partners)}")
     print(
         f"\nSUMMARY engine_class={args.engine_class} n={len(results)} "
         f"{dict(Counter(r['verdict'] for r in results))}"

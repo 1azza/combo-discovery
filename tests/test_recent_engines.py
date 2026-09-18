@@ -86,6 +86,18 @@ LIMITED_ENGINE = _card(
     "Limited Engine", "Artifact",
     "{T}: Draw a card. Activate only once each turn.",
 )
+#: A multi-ability mana land: every {T} ability is mana, so it is ramp, not an
+#: engine, even though it is a ``Land`` with two ``{T}:`` abilities.
+MANA_LAND = _card(
+    "Test Mana Land", "Land",
+    "{T}: Add {C}. {T}: Add {R} or {W}.",
+)
+#: A pure-mana artifact whose mana clause carries a rider (the Talisman shape);
+#: it must not count as an engine just because "deals 1 damage" looks like a verb.
+MANA_ARTIFACT = _card(
+    "Test Mana Artifact", "Artifact",
+    "{T}: Add {C}. {T}: Add {W} or {U}. Test Mana Artifact deals 1 damage to you.",
+)
 #: An activated (non-ETB) untapper: any-shape partner for the tap class.
 ACTIVATED_UNTAPPER = _card(
     "Test Activated Untapper", "Artifact", "{1}: Untap target creature."
@@ -106,8 +118,9 @@ RELEASES = {
 }
 
 TAP_ALL = [
-    TAP_ENGINE, MANA_DORK, LIMITED_ENGINE, ACTIVATED_UNTAPPER, ATTACK_UNTAPPER,
-    UNTAPPER,
+    TAP_ENGINE, MANA_DORK, LIMITED_ENGINE, MANA_LAND, MANA_ARTIFACT,
+    ACTIVATED_UNTAPPER,
+    ATTACK_UNTAPPER, UNTAPPER,
 ]
 TAP_RELEASES = {card.normalized_name: "2025-01-01" for card in TAP_ALL}
 
@@ -190,6 +203,10 @@ def test_tap_engine_pairs_with_untapper_in_tap_mode():
 
 def test_tap_class_excludes_pure_mana_ability():
     assert not re_mod.is_tap_engine(MANA_DORK.oracle_text)
+    # A pure-mana artifact with a rider ("deals 1 damage to you") is not an engine.
+    assert not re_mod.is_tap_engine(MANA_ARTIFACT.oracle_text, MANA_ARTIFACT.type_line)
+    # A mana land with several mana abilities is not an engine either.
+    assert not re_mod.is_tap_engine(MANA_LAND.oracle_text, MANA_LAND.type_line)
     names = {
         c.name
         for c in re_mod.select_recent_engines(
@@ -197,6 +214,40 @@ def test_tap_class_excludes_pure_mana_ability():
         )
     }
     assert "Mana Dork" not in names
+
+
+def test_tap_class_excludes_multi_ability_mana_land():
+    # Both {T} abilities add mana, so the land is ramp — not a tap engine.
+    assert not re_mod.is_tap_engine(MANA_LAND.oracle_text, MANA_LAND.type_line)
+    names = {
+        c.name
+        for c in re_mod.select_recent_engines(
+            TAP_ALL, TAP_RELEASES, since=SINCE, is_legal=_legal, engine_class="tap"
+        )
+    }
+    assert "Test Mana Land" not in names
+
+    # A {T}: ... engine with a real effect still qualifies (the Land guard only
+    # fires when every {T} ability is a mana ability).
+    assert re_mod.is_tap_engine(TAP_ENGINE.oracle_text, TAP_ENGINE.type_line)
+    real_land = _card("Test Utility Land", "Land", "{T}: Draw a card.")
+    assert re_mod.is_tap_engine(real_land.oracle_text, real_land.type_line)
+
+
+def test_pair_order_interleaves_engines_and_partners():
+    engines = ["E0", "E1", "E2"]
+    partners = ["P0", "P1", "P2", "P3"]
+
+    capped = re_mod.build_pairs(engines, partners, set(), max_pairs=3)
+    assert [engine for engine, _ in capped] == ["E0", "E1", "E2"]
+    assert len({partner for _, partner in capped}) == 3
+
+    # The uncapped product still covers every engine x partner combination.
+    full = re_mod.build_pairs(engines, partners, set(), max_pairs=None)
+    assert len(full) == len(engines) * len(partners)
+    assert {(e, p) for e, p in full} == {
+        (e, p) for e in engines for p in partners
+    }
 
 
 def test_tap_class_excludes_limited_ability():
