@@ -1740,6 +1740,8 @@ def _run_witness_seed(
         triggers_seen = 0  # watermark over the policy's total trigger credit
         spin_samples = 0  # consecutive no-progress observations
         forced_passes = 0  # phase-advancing passes forced by the spin guard
+        phase_seen = False  # Phase/TurnStarted event since the last sample
+        last_was_phase = False  # previous appended sample came from the phase path
 
         def _trigger_total() -> int:
             """Current total trigger credit (0 for policies without the field)."""
@@ -1759,12 +1761,17 @@ def _run_witness_seed(
             game state.  Only ``SpellCast``/``SpellResolved`` events from the
             combo player are credited via ``note_card_event``: automatic
             abilities and triggers never pass through a PRIORITY decision, so
-            this is the only signal that they executed.
+            this is the only signal that they executed.  A ``Phase`` or
+            ``TurnStarted`` event in the batch also raises the ``phase_seen``
+            flag, which the decision loop turns into a phase/turn-boundary
+            sample (see below).
             """
-            nonlocal event_cursor, cast_count, spells_resolved
+            nonlocal event_cursor, cast_count, spells_resolved, phase_seen
             note_event = getattr(policy, "note_card_event", None)
             batch = client.poll_events(game_id, event_cursor)
             for event in batch.events:
+                if event.type in ("Phase", "TurnStarted"):
+                    phase_seen = True
                 if event.type not in ("SpellCast", "SpellResolved"):
                     continue
                 if event.type == "SpellCast":
@@ -1776,7 +1783,9 @@ def _run_witness_seed(
             event_cursor = int(batch.next_cursor)
             return _trigger_total()
 
-        def capture_observation(label: int) -> None:
+        def capture_observation(
+            label: int, *, skip_duplicate_hash: bool = False
+        ) -> bool:
             """Sample the (quiescent) state + new events into observations.
 
             Called once *before* the loop (baseline), once per completed
@@ -1784,8 +1793,20 @@ def _run_witness_seed(
             line still records the "before" and "after" samples the detector
             needs.  Also advances the ``triggers_seen`` watermark and tracks
             the run of no-progress samples that flags a pilot spin.
+
+            With ``skip_duplicate_hash`` (used by the phase/turn-boundary path)
+            a sample whose non-empty ``state_hash`` repeats the immediately
+            previous sample is dropped: consecutive bit-identical samples from
+            a phase boundary would otherwise feed ``detect_loop``'s degenerate
+            branch and certify a loop the engine never made.  The same guard
+            also applies to a *later* sample that repeats the phase-boundary
+            sample it follows (a policy iteration that completed without
+            changing the board): a phase boundary must never leave a duplicate
+            in its wake.  Policy-iteration samples that repeat another
+            policy-iteration sample are left untouched, exactly as before.
+            Returns True when a sample was appended.
             """
-            nonlocal triggers_seen, spin_samples
+            nonlocal triggers_seen, spin_samples, phase_seen, last_was_phase
             state = client.get_state(game_id, view_as_player=view_as_player)
             triggers_seen = credit_events()
             observation = build_observation(
@@ -1795,7 +1816,16 @@ def _run_witness_seed(
                 spells_resolved=spells_resolved,
                 event_seq=event_cursor,
             )
+            duplicate = bool(
+                observation.state_hash
+                and observations
+                and observations[-1].state_hash == observation.state_hash
+            )
+            if duplicate and (skip_duplicate_hash or last_was_phase):
+                phase_seen = False
+                return False
             observations.append(observation)
+            last_was_phase = bool(skip_duplicate_hash)
             # A spin is a consecutive pair with an unchanged (non-empty)
             # structural signature and no game-state resource growth.  Only the
             # event counters may grow; a genuine loop grows tokens/mana/life/...
@@ -1809,6 +1839,8 @@ def _run_witness_seed(
                     spin_samples += 1
                 else:
                     spin_samples = 0
+            phase_seen = False
+            return True
 
         # Pre-loop baseline sample.
         capture_observation(0)
@@ -1881,6 +1913,24 @@ def _run_witness_seed(
                 if credit_events() > triggers_seen:
                     iterations_done += 1
                     capture_observation(iterations_done)
+
+            # Phase/turn boundary: poll once per decision so a phase or turn
+            # change that arrives *after* the policy has stopped completing
+            # iterations is still observed.  Deliberately not gated on
+            # ``iteration_seen``: the run this fixes completes its iterations
+            # and then stops advancing, so the trigger boundary never fires and
+            # the judge was left with a single post-baseline sample.  The
+            # duplicate guard drops a sample whose non-empty ``state_hash``
+            # repeats the previous one (a phase boundary that did not change the
+            # board), which keeps consecutive identical samples out of
+            # ``detect_loop``.  Bounded by ``max_iterations`` like every other
+            # observation boundary.
+            if iterations_done < max_iterations:
+                credit_events()
+                if phase_seen and capture_observation(
+                    iterations_done + 1, skip_duplicate_hash=True
+                ):
+                    iterations_done += 1
 
         # Post-loop sample only when the loop recorded no completed iteration:
         # a zero-iteration run still carries two observations (best-effort: a

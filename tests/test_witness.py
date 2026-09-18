@@ -1141,6 +1141,145 @@ class FakeProgressClient(FakeWitnessClient):
         return super().submit_decision(game_id, decision_id, answer)
 
 
+class FakePhaseBoundaryClient(FakeWitnessClient):
+    """Policy completes one iteration, then stalls; a Phase event fires after.
+
+    The first two submitted decisions offer the link options so the policy
+    completes exactly one iteration (the wrap).  After that the only option
+    matches no link, so the policy stops completing iterations.  A single
+    ``Phase`` event is armed for the poll after the next decision request —
+    the phase/turn-boundary poll the driver added.
+    """
+
+    def __init__(self, *, duplicate: bool = False):
+        super().__init__()
+        self.duplicate = bool(duplicate)
+        self.submits = 0
+        self._emit_phase = False
+        self._phase_emitted = False
+
+    def get_decision(self, game_id):
+        if self.submits >= 2 and not self._emit_phase and not self._phase_emitted:
+            # Two link decisions have been answered (one completed iteration);
+            # arm the Phase event for the upcoming boundary poll.
+            self._emit_phase = True
+        if self.submits < 2:
+            return super().get_decision(game_id)
+        # No link option is offered any more: the policy cannot advance.
+        self.decision_seq += 1
+        return pb.DecisionRequest(
+            game_id=game_id,
+            decision_id=self.decision_seq,
+            player=0,
+            turn=1,
+            phase="Main1",
+            decision_type=pb.DECISION_TYPE_PRIORITY,
+            options=[pb.Option(id=0, kind="activate", card_name="C")],
+        )
+
+    def submit_decision(self, game_id, decision_id, answer):
+        self.submits += 1
+        return super().submit_decision(game_id, decision_id, answer)
+
+    def poll_events(self, game_id, cursor=0):
+        if self._emit_phase and not self._phase_emitted:
+            self._phase_emitted = True
+            return pb.EventBatch(
+                events=[
+                    pb.GameEvent(
+                        seq=cursor + 1,
+                        game_id=game_id,
+                        type="Phase",
+                        turn=1,
+                        phase="Combat",
+                        player=0,
+                    )
+                ],
+                next_cursor=cursor + 1,
+            )
+        return super().poll_events(game_id, cursor)
+
+    def get_state(self, game_id, view_as_player=0):
+        self.view_players.append(view_as_player)
+        if self.duplicate:
+            # Bit-identical to the previous sample on purpose: the phase
+            # boundary must be dropped by the duplicate guard.
+            return make_state(mana=2, hash_="HCONST")
+        state = make_state(mana=self.mana, hash_=f"H{self.mana}")
+        if self._phase_emitted:
+            # The engine advanced a phase: a genuinely changed state.
+            state.phase = "Combat"
+            state.state_hash = f"H{self.mana}-combat"
+        return state
+
+
+class FakePhaseThenIterationClient(FakeWitnessClient):
+    """A phase sample is followed by a policy iteration with the same state.
+
+    Decision 1 offers the link options (no completed iteration); decision 2
+    offers no link option and fires the Phase event (the phase-boundary
+    sample); decision 3 offers the link options and completes an iteration
+    without changing the state.  The duplicate guard must drop that policy
+    sample so the phase boundary leaves no identical successor (the live
+    Keldon Overseer / Elven Raft-Steerer / Firbolg Flutist regression).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._submits = 0
+        self._emit_phase = False
+        self._phase_emitted = False
+
+    def get_decision(self, game_id):
+        if self._submits == 1 and not self._phase_emitted:
+            self._emit_phase = True
+        self.decision_seq += 1
+        if self._submits == 1:
+            options = [pb.Option(id=0, kind="activate", card_name="C")]
+        else:
+            options = [
+                pb.Option(id=0, kind="activate", card_name="A"),
+                pb.Option(id=1, kind="activate", card_name="B"),
+            ]
+        return pb.DecisionRequest(
+            game_id=game_id,
+            decision_id=self.decision_seq,
+            player=0,
+            turn=1,
+            phase="Main1",
+            decision_type=pb.DECISION_TYPE_PRIORITY,
+            options=options,
+        )
+
+    def submit_decision(self, game_id, decision_id, answer):
+        self._submits += 1
+        return super().submit_decision(game_id, decision_id, answer)
+
+    def poll_events(self, game_id, cursor=0):
+        if self._emit_phase and not self._phase_emitted:
+            self._phase_emitted = True
+            return pb.EventBatch(
+                events=[
+                    pb.GameEvent(
+                        seq=cursor + 1,
+                        game_id=game_id,
+                        type="Phase",
+                        turn=1,
+                        phase="Combat",
+                        player=0,
+                    )
+                ],
+                next_cursor=cursor + 1,
+            )
+        return super().poll_events(game_id, cursor)
+
+    def get_state(self, game_id, view_as_player=0):
+        self.view_players.append(view_as_player)
+        # Only the first submit changes the board; every later sample is
+        # bit-identical (hash frozen at H1).
+        return make_state(mana=0, hash_="H0" if self._submits == 0 else "H1")
+
+
 class TestSpinGuard:
     def _policy(self):
         # One link whose action is always offered: every decision completes an
@@ -1379,6 +1518,66 @@ class TestRunWitness:
         assert results[0]["id"] == result_id
         assert results[0]["verdict"] == result.verdict
         assert results[0]["iterations"] == result.iterations
+
+
+class TestPhaseBoundarySampling:
+    """The driver samples phase/turn boundaries even after the policy stalls."""
+
+    def _policy(self):
+        return WitnessPolicy(links=[LinkPlan("A", "B"), LinkPlan("B", "A")], player=0)
+
+    def test_phase_boundary_after_policy_stops_is_sampled(self):
+        client = FakePhaseBoundaryClient()
+        policy = self._policy()
+        result = run_witness(
+            client, build_scenario(combo_ab()), policy, seeds=[1],
+            max_iterations=4, max_decisions=4,
+        )
+        # The policy completed exactly one iteration and then stalled: the old
+        # driver left the judge with a single post-baseline sample.
+        assert policy.iterations == 1
+        # Baseline + the completed iteration + the phase-boundary sample.
+        assert len(result.observations) == 3
+        assert result.iterations == 2
+        # A verdict was reached instead of the "need at least two post-baseline
+        # observations" bail-out.
+        assert (
+            "need at least two post-baseline observations"
+            not in result.evidence.get("reason", "")
+        )
+        # The phase boundary changed the board, so no signature recurs.
+        assert result.verdict == "no_loop"
+
+    def test_phase_boundary_duplicate_hash_is_skipped(self):
+        client = FakePhaseBoundaryClient(duplicate=True)
+        result = run_witness(
+            client, build_scenario(combo_ab()), self._policy(), seeds=[1],
+            max_iterations=4, max_decisions=4,
+        )
+        # The Phase event fired, but its sample repeated the previous
+        # state_hash and was dropped: only the baseline and the completed
+        # iteration remain, so the judge cannot certify a degenerate loop.
+        assert len(result.observations) == 2
+        assert result.verdict == "inconclusive"
+        assert "need at least two post-baseline observations" in result.evidence["reason"]
+
+    def test_iteration_repeating_a_phase_sample_is_skipped(self):
+        # Regression for the live false positives (Keldon Overseer / Elven
+        # Raft-Steerer / Firbolg Flutist): a phase-boundary sample must not be
+        # immediately followed by a policy-iteration sample with the same
+        # state_hash, which detect_loop's degenerate branch would certify as a
+        # loop.  (A policy sample repeating an earlier *policy* sample is left
+        # untouched, which is what the genuine Kiki-Jiki loop relies on.)
+        client = FakePhaseThenIterationClient()
+        policy = self._policy()
+        result = run_witness(
+            client, build_scenario(combo_ab()), policy, seeds=[1],
+            max_iterations=4, max_decisions=4,
+        )
+        assert policy.iterations == 1
+        assert len(result.observations) == 2
+        assert result.verdict != "loops"
+        assert result.verdict == "inconclusive"
 
 
 # ---------------------------------------------------------------------------
