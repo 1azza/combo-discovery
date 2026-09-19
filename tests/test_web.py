@@ -258,7 +258,7 @@ def test_gallery_home_renders_board(server) -> None:
     text = html.unescape(body)
     assert "The Gallery" in text
     assert 'id="gallery-board"' in text
-    for heading in ("Queued", "Playing", "Loop found", "Refuted", "Couldn't decide"):
+    for heading in ("Queued", "Playing", "Loop found", "No loop", "Couldn't decide"):
         assert heading in text, heading
     assert "Kiki-Jiki, Mirror Breaker" in text
     assert "scryfall.com/search" in text
@@ -289,7 +289,7 @@ def test_gallery_maps_verdicts_to_columns(server) -> None:
     by_key = {column["key"]: column for column in payload["columns"]}
     text = {key: html.unescape(column["html"]) for key, column in by_key.items()}
     assert "Loop found" in text["loops"]
-    assert "Refuted" in text["refuted"]
+    assert "No loop" in text["refuted"]
     assert "Couldn't decide" in text["indecided"]
     assert "Splinter Twin" in text["playing"]
     assert by_key["queued"]["showing"] >= 1
@@ -308,13 +308,16 @@ def test_gallery_dedupes_pairing_and_shows_attempts(server) -> None:
     refuted = by_key["refuted"]["html"]
     assert refuted.count("Kiki-Jiki, Mirror Breaker</a> + <a") == 1
     assert refuted.count("2 attempts") == 1
-    # Disagreement is surfaced, not hidden.
-    assert "mixed results" in refuted
-    # Both attempts link to their runs.
+    # Disagreement is surfaced as an annotation, not a sixth status chip.
+    assert "results disagree" in refuted
+    assert "chip-mixed" not in refuted
+    # Both attempts link to their runs, and the link verb is the unified one.
     assert f"/run/{ids['loops']}" in refuted
     assert f"/run/{ids['mixed']}" in refuted
+    assert "Open run →" in refuted
+    assert "Open latest run" not in refuted
     # Headline verdict is the latest attempt.
-    assert "Refuted" in refuted
+    assert "No loop" in refuted
 
 
 def test_gallery_orphan_result_uses_card_names(server) -> None:
@@ -341,7 +344,9 @@ def test_gallery_pages_queued_in_sql(server) -> None:
     assert queued["page"] == 1 and queued["pages"] == 2
     assert queued["start"] == 1 and queued["end"] == PAGE_SIZE
     assert queued["next_href"].endswith("page=2")
-    assert "showing 1\u201312 of 15" in queued["html"].replace(",", "")
+    assert "showing 1\u201312 of 15" in queued["html"]
+    # The pager is in the column header, above the tiles.
+    assert queued["html"].index("col-head-page") < queued["html"].index("board-body")
 
     page2 = _payload(port, "/api/gallery?page=2")
     queued2 = next(c for c in page2["columns"] if c["key"] == "queued")
@@ -358,10 +363,78 @@ def test_gallery_pager_is_server_rendered(server) -> None:
     port = srv.server_address[1]
     _, _, body = _get(port, "/?page=2")
     text = html.unescape(body)
-    assert 'data-active="playing"' in text  # default tab, page preserved in links
-    assert "showing 13" in text
+    # The pager sits in the column header, so it is visible without scrolling.
+    queued_start = text.index('data-col="queued"')
+    header_at = text.index("col-head-page", queued_start)
+    body_at = text.index('data-body="queued"', queued_start)
+    assert header_at < body_at
+    assert "showing 13\u201315 of 15" in text[header_at:body_at]
+    assert 'data-active="playing"' in text
     # Paging is a plain link, so it survives with JS disabled.
-    assert 'href="/?tab=playing&amp;page=1"' in text or 'page=1' in text
+    assert "page=1" in text
+
+
+def test_pager_header_and_count_formatter() -> None:
+    from combo_discovery.web.gallery import render_column, render_tabs
+
+    column = {
+        "key": "queued",
+        "label": "Queued",
+        "empty": "Waiting.",
+        "count": 468040,
+        "showing": 12,
+        "page": 2,
+        "pages": 39004,
+        "start": 13,
+        "end": 24,
+        "body_html": "",
+        "prev_href": "/?page=1",
+        "next_href": "/?page=3",
+    }
+    html_out = render_column(column)
+    assert html_out.index("col-head-page") < html_out.index("board-body")
+    assert "showing 13\u201324 of 468,040" in html_out
+    assert "page 2 of 39,004" in html_out
+    assert 'href="/?page=1"' in html_out and 'href="/?page=3"' in html_out
+
+    tabs = render_tabs(
+        [
+            {"key": "queued", "label": "Queued", "count": 468040,
+             "href": "/?tab=queued", "active": True},
+            {"key": "loops", "label": "Loop found", "count": 4,
+             "href": "/?tab=loops", "active": False},
+        ]
+    )
+    assert ">468,040</span>" in tabs
+    assert ">4</span>" in tabs
+
+
+def test_link_verbs_are_unified(server) -> None:
+    srv, _, _ = server
+    body = _get(srv.server_address[1], "/")[2]
+    assert "Open run →" in body       # any tile with a run
+    assert "Open pairing →" in body   # queued tiles with no run
+    assert "Open latest run" not in body
+    assert "Watch →" not in body
+
+
+def test_every_tile_has_the_why_row(server) -> None:
+    srv, _, _ = server
+    body = _get(srv.server_address[1], "/")[2]
+    tiles = body.count('<article class="tile')
+    assert tiles > 0
+    assert body.count("<summary>Why these two?</summary>") == tiles
+
+
+def test_mixed_note_is_not_a_status_chip(server) -> None:
+    srv, _, _ = server
+    refuted = next(
+        c for c in _payload(srv.server_address[1])["columns"] if c["key"] == "refuted"
+    )["html"]
+    assert "tested 2 times" in refuted and "results disagree" in refuted
+    assert "chip-mixed" not in refuted
+    # The status chip remains the only chip on the tile.
+    assert "chip chip-refuted" in refuted
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +458,8 @@ def test_gallery_tabs_are_get_links_with_counts(server) -> None:
     assert set(tabs) == {"queued", "playing", "loops", "refuted", "indecided"}
     assert tabs["loops"]["count"] == 1
     assert tabs["loops"]["href"] == "/?tab=loops"
+    # Plain symmetrical label; the internal key stays "refuted".
+    assert tabs["refuted"]["label"] == "No loop"
     assert 'data-tab-count="loops"' in _get(srv.server_address[1], "/")[2]
 
 
@@ -437,13 +512,36 @@ def test_card_role_is_specific() -> None:
             "type_line": "Legendary Creature Goblin"}
     untapper = {"oracle_text": "When this enters, untap target permanent.",
                 "type_line": "Creature Cleric"}
+    untap_another = {"oracle_text": "When this creature enters, untap another target creature.",
+                     "type_line": "Creature Bear"}
+    mana = {"oracle_text": "{T}: Add one mana of any color.",
+            "type_line": "Creature Elf Druid"}
     combat = {"oracle_text": "After this phase, there is an additional combat phase.",
               "type_line": "Enchantment Aura"}
     blank = {"oracle_text": "Flying.", "type_line": "Creature Bear"}
     assert card_role(kiki) == "copy engine"
     assert card_role(untapper) == "enters-the-battlefield untapper"
+    assert card_role(untap_another) == "enters-the-battlefield untapper"
+    assert card_role(mana) == "mana engine"
     assert card_role(combat) == "extra combats"
     assert card_role(blank) == ""
+
+
+def test_roles_idea_keeps_duplicate_roles_and_names_the_other() -> None:
+    from combo_discovery.web.gallery import _roles_idea
+
+    untapper = {"role": "enters-the-battlefield untapper", "type_line": "Creature"}
+    untapper2 = {"role": "enters-the-battlefield untapper", "type_line": "Creature"}
+    # Two of the same role still read as the pair, not "another piece".
+    assert _roles_idea([untapper, untapper2]) == (
+        "enters-the-battlefield untapper + enters-the-battlefield untapper"
+    )
+    # One engine role: name the other card honestly by its type.
+    engine = {"role": "copy engine", "type_line": "Legendary Creature"}
+    vanilla = {"role": "", "type_line": "Creature Bear"}
+    assert _roles_idea([engine, vanilla]) == "copy engine + creature"
+    # No roles at all: no invented idea.
+    assert _roles_idea([vanilla, dict(vanilla)]) == ""
 
 
 def test_card_colours() -> None:

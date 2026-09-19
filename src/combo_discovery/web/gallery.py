@@ -25,6 +25,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from ..cards import (
+    is_activated_copy_engine,
     is_etb_untapper,
     is_tap_engine,
     is_untapper,
@@ -41,7 +42,7 @@ COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("queued", "Queued", "Waiting to be checked."),
     ("playing", "Playing", "Nothing on the table right now."),
     ("loops", "Loop found", "No loops found yet."),
-    ("refuted", "Refuted", "Nothing refuted yet."),
+    ("refuted", "No loop", "Nothing refuted yet."),
     ("indecided", "Couldn't decide", "Nothing undecided yet."),
 )
 
@@ -104,11 +105,14 @@ _EXTRA_COMBAT = re.compile(r"additional combat phase")
 _EXTRA_TURN = re.compile(r"extra turn|additional turn")
 _SACRIFICE = re.compile(r"\bsacrifice (?:a|an|another|one or more)\b")
 _RECURSION = re.compile(r"graveyard[^.]{0,40}(?:to the battlefield|your hand)")
-_MANA_ADD = re.compile(r"add \{")
+_MANA_ADD = re.compile(r"\badd (?:one|two|three|four|five|\{|that much|\d)")
 _DRAW = re.compile(r"draw (?:a|two|three|four|five|x|that many) cards?")
 _MILL = re.compile(r"\bmill\b")
 _TUTOR = re.compile(r"search your library")
 _LIFE_DRAIN = re.compile(r"lose[s]? \d* ?life|you gain .* life")
+#: Broader than the shared ``cards`` heuristic: catches "untap another target",
+#: "untap all", "untap up to ..." which the strict pattern misses.
+_UNTAP = re.compile(r"\buntap (?:another|target|it|that|all|each|up to)")
 
 
 # ---------------------------------------------------------------------------
@@ -232,11 +236,13 @@ def card_role(card: dict[str, Any]) -> str:
     oracle = card.get("oracle_text") or ""
     low = oracle.lower()
     type_line = card.get("type_line") or ""
-    if _COPY_TOKEN.search(low):
+    if is_activated_copy_engine(oracle) or _COPY_TOKEN.search(low):
         return "copy engine"
-    if is_etb_untapper(type_line, oracle):
+    if is_etb_untapper(type_line, oracle) or (
+        _UNTAP.search(low) and "enters" in low and "creature" in type_line.lower()
+    ):
         return "enters-the-battlefield untapper"
-    if is_untapper(type_line, oracle):
+    if is_untapper(type_line, oracle) or _UNTAP.search(low):
         return "untapper"
     if _EXTRA_COMBAT.search(low):
         return "extra combats"
@@ -261,14 +267,48 @@ def card_role(card: dict[str, Any]) -> str:
     return ""
 
 
-def _roles_idea(cards: Sequence[dict[str, Any]]) -> str:
-    roles = [card.get("role") for card in cards if card.get("role")]
-    unique = list(dict.fromkeys(roles))
-    if len(unique) >= 2:
-        return f"{unique[0]} + {unique[1]}"
-    if unique:
-        return f"{unique[0]} + another piece"
+#: Card-type order for naming the half of a pairing we cannot classify.
+_TYPE_WORDS = (
+    "Creature", "Planeswalker", "Artifact", "Enchantment", "Instant", "Sorcery", "Land",
+)
+
+
+def _type_word(card: dict[str, Any] | None) -> str:
+    if not card:
+        return ""
+    types = card_types(card.get("type_line"))
+    for word in _TYPE_WORDS:
+        if word in types:
+            return word.lower()
     return ""
+
+
+def _roles_idea(cards: Sequence[dict[str, Any]]) -> str:
+    """Pair the two cards' roles; name the other by type when only one is known.
+
+    Two cards that share a role still read as "untapper + untapper" (the pair
+    matters); the earlier version collapsed them to "another piece".
+    """
+    engines = [card.get("role") or "" for card in cards]
+    named = [role for role in engines if role]
+    if len(named) >= 2:
+        return f"{named[0]} + {named[1]}"
+    if len(named) == 1:
+        other = next(
+            (cards[index] for index, role in enumerate(engines) if not role),
+            None,
+        )
+        label = _type_word(other)
+        return f"{named[0]} + {label}" if label else f"{named[0]} + another card"
+    return ""
+
+
+def _count(value: Any) -> str:
+    """One formatter for every count on the board (columns, tabs, pager)."""
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return str(value)
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +609,7 @@ def _tile_from_group(
         "mixed": len(columns) > 1,
         "latest_id": latest.get("result_id"),
         "href": f"/run/{latest.get('run_id')}",
-        "href_label": "Open latest run" if len(views) > 1 else "Open run",
+        "href_label": "Open run",
         "when": short_time(latest.get("created_at")),
         "detail": strip_motifs(latest.get("mechanism") or ""),
     }
@@ -630,7 +670,7 @@ def _playing_tile(
         "mixed": False,
         "latest_id": 0,
         "href": f"/run/{row.get('run_id')}",
-        "href_label": "Watch",
+        "href_label": "Open run",
         "when": short_time(row.get("started_at")),
         "detail": "",
     }
@@ -705,14 +745,20 @@ def render_tile(tile: dict[str, Any]) -> str:
     card_names = " + ".join(
         card_link(card.get("name"), css="tile-card-link") for card in tile["cards"]
     )
-    mixed = '<span class="tile-mixed">mixed results</span>' if tile.get("mixed") else ""
-    detail = ""
-    if tile.get("detail"):
-        detail = (
-            '<details class="tile-more"><summary>Why these two?</summary>'
-            f'<p>{esc(tile["detail"])}</p>'
-            "</details>"
+    # An annotation, deliberately not a chip: the status chip stays the only
+    # status signal on the tile.
+    note = ""
+    if tile.get("mixed"):
+        note = (
+            f'<p class="tile-note">tested {esc(tile.get("count", 0))} times '
+            "&mdash; results disagree</p>"
         )
+    # Every tile has the same anatomy: the why-row is always present.
+    why = tile.get("detail") or "No notes were recorded for this pairing."
+    detail = (
+        '<details class="tile-more"><summary>Why these two?</summary>'
+        f'<p>{esc(why)}</p></details>'
+    )
     when = f'<time class="tile-when">{esc(tile["when"])}</time>' if tile.get("when") else ""
     thumbs = "".join(_card_thumb(card) for card in tile["cards"])
     return (
@@ -721,27 +767,28 @@ def render_tile(tile: dict[str, Any]) -> str:
         '<div class="tile-body">'
         f'<p class="tile-cards">{card_names}</p>'
         f'<p class="tile-idea">{esc(tile["idea"])}</p>'
-        f"{_attempts_html(tile)}{detail}</div>"
+        f"{note}{_attempts_html(tile)}{detail}</div>"
         '<footer class="tile-foot">'
         f'<span class="chip chip-{esc(status)}">{esc(tile["status_label"])}</span>'
-        f"{mixed}{when}"
+        f"{when}"
         f'<a class="tile-open" href="{esc(tile["href"])}">{esc(tile["href_label"])} →</a>'
         "</footer>"
         "</article>"
     )
 
 
-def _pager_html(column: dict[str, Any]) -> str:
+def _pager_inner(column: dict[str, Any]) -> str:
+    """The ``showing N of M`` line and prev/next, for the column header."""
     count = column.get("count") or 0
     if count <= 0:
-        return ""
+        return '<span class="col-showing">none yet</span>'
     start, end = column.get("start", 0), column.get("end", 0)
     pages = max(1, column.get("pages", 1))
     page = column.get("page", 1)
     showing = (
-        f"showing {start}\u2013{end} of {count:,}"
+        f"showing {_count(start)}\u2013{_count(end)} of {_count(count)}"
         if count > (column.get("showing") or 0)
-        else f"showing {count:,}"
+        else f"showing {_count(count)}"
     )
     nav = ""
     if pages > 1:
@@ -757,9 +804,9 @@ def _pager_html(column: dict[str, Any]) -> str:
         )
         nav = (
             f'<span class="col-page-nav">{prev}'
-            f'<span class="col-page-num">page {page} of {pages:,}</span>{nxt}</span>'
+            f'<span class="col-page-num">page {_count(page)} of {_count(pages)}</span>{nxt}</span>'
         )
-    return f'<div class="col-page"><span class="col-showing">{showing}</span>{nav}</div>'
+    return f'<span class="col-showing">{showing}</span>{nav}'
 
 
 def render_column(column: dict[str, Any]) -> str:
@@ -769,12 +816,14 @@ def render_column(column: dict[str, Any]) -> str:
         body = f'<p class="col-empty">{esc(column.get("empty", "Nothing here yet."))}</p>'
     count = column.get("count") or 0
     return (
-        f'<header class="col-head">'
+        '<header class="col-head">'
+        '<div class="col-head-top">'
         f'<h2 class="col-title" id="col-{esc(key)}-title">{esc(column["label"])}</h2>'
-        f'<span class="col-count" data-count="{esc(key)}">{count:,}</span>'
+        f'<span class="col-count" data-count="{esc(key)}">{_count(count)}</span>'
+        "</div>"
+        f'<div class="col-head-page">{_pager_inner(column)}</div>'
         "</header>"
         f'<div class="board-body" data-body="{esc(key)}">{body}</div>'
-        f"{_pager_html(column)}"
     )
 
 
@@ -801,7 +850,7 @@ def render_tabs(tabs: Sequence[dict[str, Any]]) -> str:
             f'{current}><span class="tab-mark" aria-hidden="true"></span>'
             f'<span class="tab-label">{esc(tab["label"])}</span>'
             f'<span class="tab-count" data-tab-count="{esc(tab["key"])}">'
-            f'{int(tab.get("count") or 0):,}</span></a>'
+            f'{_count(tab.get("count"))}</span></a>'
         )
     return f'<nav class="status-tabs" aria-label="Status">{"".join(parts)}</nav>'
 

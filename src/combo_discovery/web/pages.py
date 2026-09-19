@@ -170,7 +170,7 @@ def page_gallery(payload: dict[str, Any], db_path: str) -> str:
 </form>
 <div class="board-status">
   <span id="gallery-live" class="live"><span class="dot"></span> live</span>
-  <span class="count-tag faint" id="gallery-updated"></span>
+  <span class="count-tag" id="gallery-updated"></span>
 </div>
 {render_tabs(payload["tabs"])}
 <section class="board-wrap" aria-label="Pairings by status">

@@ -20,6 +20,9 @@ __ROOT__  --mono: ui-monospace, "SFMono-Regular", "SF Mono", "JetBrains Mono",
   --radius: 10px;
   --radius-sm: 6px;
   --maxw: 1200px;
+  /* A brighter warm grey for secondary text that must stay readable on the
+     near-black ground (the TUI's --faint is too dim for body copy). */
+  --soft: #b6ad9c;
 }
 
 * { box-sizing: border-box; }
@@ -172,7 +175,7 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
   font-size: clamp(21px, 3.2vw, 30px);
   color: var(--text);
 }
-.hero .lede { color: var(--muted); max-width: 72ch; margin: 0; }
+.hero .lede { color: var(--soft); max-width: 72ch; margin: 0; }
 .hero .lede strong { color: var(--accent); font-weight: 600; }
 
 .cards-title { font-size: clamp(18px, 2.4vw, 23px); color: var(--accent); margin: 0; }
@@ -247,12 +250,13 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
 }
 .col-head {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 7px;
   padding: 11px 14px;
   border-bottom: 1px solid var(--border);
   border-top: 3px solid var(--border);
 }
+.col-head-top { display: flex; align-items: center; gap: 8px; }
 .col-title {
   margin: 0;
   font-family: var(--mono);
@@ -276,15 +280,26 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
   margin-left: auto;
   font-family: var(--mono);
   font-size: 12px;
-  color: var(--faint);
+  color: var(--soft);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 1px 9px;
 }
 .col-count.bump { animation: bump 0.5s ease-out; }
+/* The pager lives in the header, so it is visible without scrolling. */
+.col-head-page {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--soft);
+}
 .board-body { display: flex; flex-direction: column; gap: 12px; padding: 12px; }
-.col-empty { margin: 0; padding: 8px 2px; color: var(--faint); font-size: 12.5px; }
+.col-empty { margin: 0; padding: 8px 2px; color: var(--muted); font-size: 12.5px; }
 
 /* Status is encoded by shape *and* colour, never colour alone. */
 .col-loops .col-head { border-top-color: var(--ok); }
@@ -310,7 +325,7 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
   font-size: 11px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--soft);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -318,10 +333,17 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
   white-space: nowrap;
 }
 .status-tab:hover { color: var(--text); border-color: var(--border-hi); text-decoration: none; }
-.status-tab.active { color: var(--text); border-color: var(--border-hi); background: var(--panel-hi); }
+/* Active is unmistakable without the inactive ones looking active: it alone
+   gets the raised fill, the brighter border and the strongest text colour. */
+.status-tab.active {
+  color: var(--text);
+  border-color: var(--border-hi);
+  background: var(--panel-hi);
+  box-shadow: inset 0 0 0 1px var(--border-hi);
+}
 .tab-count {
   font-size: 10px;
-  color: var(--faint);
+  color: var(--soft);
   background: var(--panel);
   border-radius: 999px;
   padding: 0 6px;
@@ -410,17 +432,14 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
 }
 .tile-more p { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
 .tile-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.tile-when { font-family: var(--mono); font-size: 10px; color: var(--faint); margin-left: auto; }
+.tile-when { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-left: auto; }
 .tile-open { font-family: var(--mono); font-size: 11px; color: var(--accent); white-space: nowrap; }
-.tile-mixed {
-  font-family: var(--mono);
-  font-size: 9.5px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--warn);
-  border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent);
-  border-radius: 999px;
-  padding: 1px 7px;
+.tile-note {
+  margin: 8px 0 0;
+  padding-left: 9px;
+  border-left: 2px solid var(--warn);
+  font-size: 11.5px;
+  color: var(--soft);
 }
 
 /* Attempts: one pairing, several tests. */
@@ -466,27 +485,15 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
 .chip-queued::before { background: transparent; border: 1.5px dashed currentColor; }
 .chip-playing { color: var(--accent); }
 
-/* -- gallery: pager ------------------------------------------------------ */
+/* -- gallery: pager (lives in the column header) ------------------------- */
 
-.col-page {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-  padding: 9px 12px 11px;
-  border-top: 1px solid var(--border);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--faint);
-}
 .col-page-nav { display: inline-flex; align-items: center; gap: 8px; }
-.col-page-num { color: var(--muted); }
+.col-page-num { color: var(--soft); }
 .page-link { color: var(--accent); white-space: nowrap; }
-.page-link.disabled { color: var(--faint); opacity: 0.5; }
+.page-link.disabled { color: var(--muted); opacity: 0.75; }
 .page-link.disabled:hover { text-decoration: none; }
 
-.board-note { color: var(--faint); font-size: 12px; margin: 10px 2px 0; }
+.board-note { color: var(--muted); font-size: 12px; margin: 10px 2px 0; }
 
 /* -- lightbox ------------------------------------------------------------ */
 
@@ -836,7 +843,7 @@ details.tech > summary:hover { color: var(--text); }
 .live.stale .dot { background: var(--warn); animation: none; }
 .live.stale { color: var(--warn); }
 
-.count-tag { font-family: var(--mono); font-size: 12px; color: var(--faint); }
+.count-tag { font-family: var(--mono); font-size: 12px; color: var(--soft); }
 
 /* -- footer -------------------------------------------------------------- */
 
@@ -920,6 +927,11 @@ JS = """
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
+  // One number formatter everywhere counts appear (matches the server's f"{:,}").
+  function num(value) {
+    return String(value == null ? 0 : value).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ",");
+  }
+
   var board = document.getElementById("gallery-board");
 
   // -- gallery: live board -------------------------------------------------
@@ -990,8 +1002,9 @@ JS = """
       // Tab counts tick with the board (the tab strip lives outside it).
       (payload.tabs || []).forEach(function (tab) {
         var counter = document.querySelector('[data-tab-count="' + tab.key + '"]');
-        if (counter && counter.textContent !== String(tab.count)) {
-          counter.textContent = tab.count;
+        var formatted = num(tab.count);
+        if (counter && counter.textContent !== formatted) {
+          counter.textContent = formatted;
         }
       });
 
