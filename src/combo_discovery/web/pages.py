@@ -257,6 +257,8 @@ def page_goldfish(payload: dict[str, Any], db_path: str) -> str:
       <span class="count-tag" id="gf-pb-count">{len(payload["events"])} moves</span>
     </div>
     <ol class="pb" id="pb-list">{rows}</ol>
+    <button type="button" class="pb-jump" id="pb-jump" hidden>Jump to newest
+      moves ↓</button>
   </section>
   <section class="panel gf-summary-panel" id="gf-summary-wrap"{summary_hidden}>
     <div class="panel-title">The run</div>

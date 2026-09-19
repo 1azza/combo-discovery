@@ -903,20 +903,38 @@ details.tech > summary:hover { color: var(--text); }
 .counter .k { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
 .counter .v { font-family: var(--mono); font-size: 20px; color: var(--text); margin-top: 2px; font-variant-numeric: tabular-nums; }
 .counter .v.bump { animation: bump 0.5s ease-out; }
+.counter-note { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); margin: 16px 0 8px; }
+.counter-raw { margin-top: 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.counter-raw > summary { cursor: pointer; padding: 10px 12px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.counter-raw > summary:hover { color: var(--text); }
+.counter-raw[open] > summary { border-bottom: 1px solid var(--border); color: var(--soft); }
+.counter-raw .counters { margin: 0; padding: 12px; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+.counters-engine .counter { background: var(--panel); }
 
-.gf-grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 18px; }
-.gf-grid .panel { margin: 0 0 18px; }
+.gf-grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.gf-grid .panel { margin: 0; }
 
-.board-zone { margin-bottom: 14px; }
-.zone-title { font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); margin-bottom: 8px; }
+.gf-board-panel .board-note { margin: 0 0 16px; }
+.gf-board-panel .board-note strong { color: var(--text); }
+.board-zone { margin: 0 0 16px; }
+.zone-title { font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); margin-bottom: 10px; }
 .zone-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
 .perm { position: relative; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--panel-hi); }
-.perm.is-tapped { opacity: 0.62; }
-.perm.is-tapped .perm-thumb img { transform: rotate(90deg) scale(0.72); }
+/* Tapped is unmistakable: greyscale art plus a warning ribbon. */
+.perm.is-tapped { border-color: color-mix(in srgb, var(--warn) 60%, var(--border)); }
+.perm.is-tapped .perm-thumb img,
+.perm.is-tapped .perm-fallback { filter: grayscale(1) brightness(0.5); }
+.perm.is-tapped::after {
+  content: "TAPPED";
+  position: absolute; left: 0; right: 0; top: 0; z-index: 3;
+  font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.18em;
+  text-align: center; padding: 3px 0; color: var(--bg); background: var(--warn);
+  pointer-events: none;
+}
 .perm-thumb { aspect-ratio: 122 / 170; width: 100%; }
 .perm-fallback { aspect-ratio: 122 / 170; }
 .perm-count {
-  position: absolute; top: 5px; right: 5px; z-index: 2;
+  position: absolute; top: 5px; right: 5px; z-index: 4;
   font-family: var(--mono); font-size: 11px; color: var(--text);
   background: color-mix(in srgb, var(--bg) 78%, transparent);
   border: 1px solid var(--border); border-radius: 999px; padding: 0 7px;
@@ -939,18 +957,40 @@ details.tech > summary:hover { color: var(--text); }
   background: linear-gradient(180deg, rgba(122, 162, 247, 0.05), transparent 42%), var(--surface);
 }
 .loopgraph { display: block; width: 100%; height: auto; }
-.lg-edge path { fill: none; stroke: var(--accent-dim); stroke-width: 2; }
-.loopgraph.is-live .lg-edge.lg-flow path { stroke: var(--accent); stroke-dasharray: 7 7; animation: flow 1.1s linear infinite; }
-.lg-label { font-family: var(--mono); font-size: 10px; fill: var(--soft); paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
-.lg-node rect { fill: var(--panel); stroke: var(--border-hi); stroke-width: 1.2; }
-.lg-node.lg-hub rect { fill: var(--accent-dim); stroke: var(--accent); stroke-width: 1.6; }
+.lg-edge path { fill: none; stroke: var(--accent); stroke-width: 2.4; }
+.loopgraph.is-live .lg-edge.lg-flow path { stroke: var(--accent-hi); stroke-dasharray: 8 7; animation: flow 1.1s linear infinite; }
+.lg-num circle { fill: var(--surface); stroke: var(--accent); stroke-width: 1.4; }
+.lg-num text { font-family: var(--mono); font-size: 12px; font-weight: 600; fill: var(--accent-hi); }
+.lg-label { font-family: var(--mono); font-size: 12px; fill: var(--text); paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
+.lg-node rect { fill: var(--panel); stroke: var(--border-hi); stroke-width: 1.4; }
+.lg-node.lg-hub rect { fill: var(--accent-dim); stroke: var(--accent); stroke-width: 1.8; }
 .loopgraph.is-live .lg-node.lg-hub rect { animation: halo 1.8s ease-out infinite; }
-.lg-name { font-family: var(--mono); font-size: 11px; fill: var(--text); }
+.lg-name { font-family: var(--mono); font-size: 12px; fill: var(--text); }
 .lg-badge rect { fill: var(--ok); }
-.lg-badge text { font-family: var(--mono); font-size: 11px; font-weight: 600; fill: var(--bg); }
+.lg-badge text { font-family: var(--mono); font-size: 12px; font-weight: 600; fill: var(--bg); }
 .loop-caption { margin-top: 12px; }
 
-.pb { list-style: none; margin: 0; padding: 0; max-height: 540px; overflow-y: auto; }
+/* The narrow-width form of the diagram: a numbered cycle, always readable. */
+.looplist-wrap { display: none; }
+.looplist { list-style: none; margin: 0; padding: 6px 4px; }
+.looplist li { display: flex; align-items: baseline; gap: 9px; padding: 7px 2px; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); font-size: 14px; }
+.looplist li:last-child { border-bottom: none; }
+.looplist .loop-n { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--accent-hi); background: var(--accent-dim); border: 1px solid var(--accent); border-radius: 50%; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.looplist .loop-arrow { font-family: var(--mono); color: var(--faint); flex: none; }
+.looplist .loop-action { color: var(--text); }
+.looplist .loop-back .loop-action { color: var(--muted); }
+
+.gf-pb-panel { position: relative; }
+.pb { list-style: none; margin: 0; padding: 0; max-height: min(62vh, 560px); overflow-y: auto; }
+.pb-jump {
+  position: absolute; right: 16px; bottom: 16px; z-index: 5;
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+  color: var(--accent-hi); background: var(--surface);
+  border: 1px solid var(--border-hi); border-radius: 999px; padding: 7px 13px;
+  cursor: pointer; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.pb-jump:hover { color: var(--text); background: var(--panel-hi); }
+.pb-jump[hidden] { display: none; }
 .pb-row {
   display: grid; grid-template-columns: 74px 1fr; gap: 12px; align-items: baseline;
   padding: 6px 4px; font-size: 14px;
@@ -965,9 +1005,15 @@ details.tech > summary:hover { color: var(--text); }
 .pb-untap .pb-kind, .pb-activate .pb-kind, .pb-play_land .pb-kind { color: var(--accent); }
 .pb-verdict .pb-kind { color: var(--warn); }
 .pb-turnbreak { margin: 10px 0 4px; padding-top: 8px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
-.pb-pass { display: flex; align-items: center; gap: 10px; margin: 10px 0 2px; }
-.pb-pass-num { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); border: 1px solid var(--accent-dim); border-radius: 999px; padding: 1px 9px; }
+.pb-pass {
+  display: flex; align-items: center; gap: 10px;
+  margin: 14px 0 2px; padding: 6px 0 0;
+  border-top: 1px solid var(--accent-dim);
+}
+.pb-pass-num { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); border: 1px solid var(--accent-dim); border-radius: 999px; padding: 1px 9px; background: var(--surface); }
 .pb-pass-line { flex: 1; height: 1px; background: linear-gradient(to right, var(--accent-dim), transparent); }
+/* Alternate passes so the same actions repeating are obvious. */
+.pb-row.pb-even { background: color-mix(in srgb, var(--surface) 60%, transparent); }
 
 .run-list { list-style: none; margin: 0; padding: 0; }
 .run-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
@@ -1030,6 +1076,13 @@ details.tech > summary:hover { color: var(--text); }
   .board-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
 }
 
+@media (max-width: 620px) {
+  /* Below this width the SVG diagram would shrink below legibility, so the
+     numbered cycle list (rendered alongside it) takes over instead. */
+  .loopgraph-wrap { display: none; }
+  .looplist-wrap { display: block; }
+}
+
 @media (max-width: 560px) {
   body { font-size: 14px; }
   .wrap, .topbar-inner { padding-left: 12px; padding-right: 12px; }
@@ -1046,6 +1099,8 @@ details.tech > summary:hover { color: var(--text); }
   .nav-soon { font-size: 8.5px; }
   .pb-row { grid-template-columns: 58px 1fr; }
   .pass-badge { min-width: 96px; padding: 8px 12px; }
+  .zone-cards { grid-template-columns: repeat(auto-fill, minmax(146px, 1fr)); }
+  .pb-jump { right: 12px; bottom: 12px; }
   .run-row { grid-template-columns: minmax(0, 1fr) auto; }
   .run-meta { grid-column: 1 / -1; }
 }
@@ -1231,6 +1286,7 @@ JS = """
     var gfObs = parseInt(gf.getAttribute("data-obs") || "0", 10) || 0;
     var gfLive = gf.getAttribute("data-live") === "true";
     var gfList = document.getElementById("pb-list");
+    var gfJump = document.getElementById("pb-jump");
     var gfCount = document.getElementById("gf-pb-count");
     var gfStatus = document.getElementById("gf-status");
     var gfSummaryWrap = document.getElementById("gf-summary-wrap");
@@ -1244,17 +1300,38 @@ JS = """
       gfSigs[key] = sig;
     }
 
-    function nearBottom() {
+    function atBottom() {
       if (!gfList) { return true; }
       return gfList.scrollHeight - gfList.scrollTop - gfList.clientHeight < 120;
     }
 
+    function toBottom() {
+      if (!gfList) { return; }
+      gfList.scrollTop = gfList.scrollHeight;
+      if (gfJump) { gfJump.hidden = true; }
+    }
+
+    function updateJump() {
+      if (!gfJump || !gfList) { return; }
+      var overflow = gfList.scrollHeight > gfList.clientHeight + 8;
+      gfJump.hidden = !overflow || atBottom();
+    }
+
+    if (gfList) {
+      // Open on the newest move: the repetition that proves the loop is at the
+      // end of the log, not the start.
+      toBottom();
+      gfList.addEventListener("scroll", updateJump);
+      updateJump();
+    }
+    if (gfJump) { gfJump.addEventListener("click", toBottom); }
+
     function appendRows(html) {
       if (!gfList || !html) { return; }
-      var stick = nearBottom();
+      var stick = atBottom();
       gfList.insertAdjacentHTML("beforeend", html);
       while (gfList.children.length > 420) { gfList.removeChild(gfList.firstChild); }
-      if (stick) { gfList.scrollTop = gfList.scrollHeight; }
+      if (stick) { toBottom(); } else { updateJump(); }
     }
 
     function gfTick() {

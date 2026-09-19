@@ -86,7 +86,6 @@ _ENTER_SUFFIX = "enters the battlefield"
 _LEAVE_SUFFIX = "leaves the battlefield"
 _TAPPED_SUFFIX = "becomes tapped"
 _COUNTERS_SUFFIX = "gets counters"
-_MOVES_SUFFIX = " moves"
 
 #: Resource key -> (singular, plural) for the growth sentence. Deliberately not
 #: "Tokens +1": the counter row shows a number, this sentence says how much it
@@ -484,19 +483,58 @@ def render_loop_hero(growth: dict[str, Any], live: bool) -> str:
     )
 
 
+#: Counters rebuilt from the board itself (the growth story the board supports).
+BOARD_COUNTERS = ("tokens", "permanents")
+
+
+def _counter_cell(key: str, value: Any) -> str:
+    return (
+        f'<div class="counter"><div class="k">{esc(_resource_label(key))}</div>'
+        f'<div class="v" data-resource="{esc(key)}">{esc(value)}</div></div>'
+    )
+
+
 def render_counters(growth: dict[str, Any]) -> str:
-    """Every tracked resource as a named counter, never as a delta."""
+    """Board-tracked counters up front; engine tallies labelled and hidden away.
+
+    ``tokens``/``permanents`` are the ones the reconstructed board actually
+    supports. ``mana``/``life``/``casts``/``spells_resolved`` are the engine's
+    own tallies (a Kiki loop reports 76 "spells cast" while casting none), so
+    they are never shown as if read off the board — they sit behind a labelled
+    disclosure that says exactly what they are.
+    """
     resources = growth.get("resources") or {}
     if not resources:
         return '<p class="empty">No resources recorded yet.</p>'
-    keys = [key for key in COUNTER_ORDER if key in resources]
-    keys += sorted(key for key in resources if key not in COUNTER_ORDER)
-    cells = "".join(
-        f'<div class="counter"><div class="k">{esc(_resource_label(key))}</div>'
-        f'<div class="v" data-resource="{esc(key)}">{esc(resources[key])}</div></div>'
-        for key in keys
+
+    board_keys = [key for key in BOARD_COUNTERS if key in resources]
+    engine_keys = [
+        key for key in COUNTER_ORDER
+        if key in resources and key not in BOARD_COUNTERS
+    ]
+    engine_keys += sorted(
+        key for key in resources
+        if key not in COUNTER_ORDER and key not in BOARD_COUNTERS
     )
-    return f'<div class="counters">{cells}</div>'
+
+    parts: list[str] = []
+    if board_keys:
+        parts.append(
+            '<p class="counter-note">Tracked on the board — rebuilt from the '
+            "narration</p>"
+            f'<div class="counters counters-board">'
+            f'{"".join(_counter_cell(k, resources[k]) for k in board_keys)}</div>'
+        )
+    if engine_keys:
+        parts.append(
+            '<details class="counter-raw">'
+            "<summary>Also reported by the engine — not read off the board"
+            "</summary>"
+            f'<div class="counters counters-engine">'
+            f'{"".join(_counter_cell(k, resources[k]) for k in engine_keys)}</div>'
+            "</details>"
+        )
+    return "".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -509,20 +547,25 @@ def render_play_by_play(
     card_names: list[str],
     *,
     previous: dict[str, Any] | None = None,
+    start_pass: int | None = None,
 ) -> str:
     """The narration rows in order, with a turn/phase break when it changes.
 
     ``previous`` is the row just before this batch, so a live append can decide
-    whether the first new row needs a fresh turn heading.
+    whether the first new row needs a fresh turn heading. ``start_pass`` is the
+    pass number already in effect at the batch's start, so rows keep their
+    alternating shade when a poll appends in the middle of a pass.
     """
     rows: list[str] = []
     last_context: tuple[Any, Any] = (
         (previous.get("turn"), previous.get("phase")) if previous else (None, None)
     )
+    current_pass = start_pass
     for event in events:
         if event.get("kind") == "iteration":
             detail = event.get("detail") or {}
             number = _as_int(detail.get("iteration"))
+            current_pass = number
             rows.append(
                 '<li class="pb-pass"><span class="pb-pass-num">Pass '
                 f"{number}</span><span class=\"pb-pass-line\"></span></li>"
@@ -541,8 +584,9 @@ def render_play_by_play(
             last_context = context
         kind = str(event.get("kind") or "other")
         word = KIND_WORDS.get(kind, kind)
+        shade = " pb-even" if current_pass is not None and current_pass % 2 == 0 else ""
         rows.append(
-            f'<li class="pb-row pb-{esc(kind)}" data-seq="{esc(event.get("seq"))}">'
+            f'<li class="pb-row pb-{esc(kind)}{shade}" data-seq="{esc(event.get("seq"))}">'
             f'<span class="pb-kind">{esc(word)}</span>'
             f'<span class="pb-text">{_linkify(event.get("text"), card_names)}</span>'
             "</li>"
@@ -650,25 +694,29 @@ def build_loop_graph(events: list[dict[str, Any]], growth: dict[str, Any]) -> di
     if growth_node not in nodes:
         growth_node = hub
     tokens_now = _as_int((growth.get("resources") or {}).get("tokens"))
+    steps = [{**edge, "number": number} for number, edge in enumerate(edges, start=1)]
     return {
         "nodes": nodes,
         "edges": edges,
+        "steps": steps,
         "hub": hub,
         "growth_node": growth_node,
         "tokens": tokens_now,
-        "caption": _graph_caption(edges),
+        "chain": _graph_chain(steps),
     }
 
 
-def _graph_caption(edges: list[dict[str, Any]]) -> str:
-    if not edges:
+def _graph_chain(steps: list[dict[str, Any]]) -> str:
+    """The pass, in order, numbered to match the diagram: ``1 copies … → 2 …``."""
+    if not steps:
         return ""
-    return " → ".join(edge["label"] for edge in edges)
+    return " → ".join(f'{step["number"]} {step["label"]}' for step in steps)
 
 
 def _node_box(name: str, hub: str) -> tuple[float, float]:
-    """Half-width and half-height of a node rectangle."""
-    return (96.0, 24.0) if name == hub else (80.0, 24.0)
+    """Half-width and half-height of a node, sized to fit the whole card name."""
+    half_w = max(84.0, min(150.0, len(name) * 3.75 + 14.0))
+    return (half_w, 26.0 if name == hub else 24.0)
 
 
 def _rect_ray(half_w: float, half_h: float, ux: float, uy: float) -> float:
@@ -678,7 +726,38 @@ def _rect_ray(half_w: float, half_h: float, ux: float, uy: float) -> float:
     return min(tx, ty)
 
 
-def _wrap_label(text: str, width: int = 26) -> list[str]:
+def _trimmed(
+    p0: tuple[float, float],
+    p1: tuple[float, float],
+    box0: tuple[float, float],
+    box1: tuple[float, float],
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Endpoints pulled back to the two rectangles' edges along the chord."""
+    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    length = math.hypot(dx, dy) or 1.0
+    ux, uy = dx / length, dy / length
+    r0 = _rect_ray(*box0, ux, uy)
+    r1 = _rect_ray(*box1, ux, uy)
+    return (
+        (p0[0] + ux * r0, p0[1] + uy * r0),
+        (p1[0] - ux * r1, p1[1] - uy * r1),
+    )
+
+
+def _quad_point(
+    p0: tuple[float, float],
+    control: tuple[float, float],
+    p1: tuple[float, float],
+    t: float,
+) -> tuple[float, float]:
+    one = 1 - t
+    return (
+        one * one * p0[0] + 2 * one * t * control[0] + t * t * p1[0],
+        one * one * p0[1] + 2 * one * t * control[1] + t * t * p1[1],
+    )
+
+
+def _wrap_label(text: str, width: int = 28) -> list[str]:
     """Wrap an action label to at most two short lines so it stays legible."""
     words = str(text or "").split()
     lines: list[str] = []
@@ -698,105 +777,243 @@ def _wrap_label(text: str, width: int = 26) -> list[str]:
     return lines or [""]
 
 
-def render_loop_graph(graph: dict[str, Any], live: bool) -> str:
-    """Inline SVG: cards as nodes, the engine at the hub, actions as arrows."""
-    nodes = graph["nodes"]
-    edges = graph["edges"]
-    hub = graph["hub"]
-    if not nodes or not edges:
-        return (
-            '<p class="empty">No repeating action in the narration yet. '
-            "The loop appears here once a pass repeats.</p>"
-        )
+def _step_side(step: dict[str, Any], order: list[str], n: int) -> tuple:
+    """Group key for an edge: its side of a 2-card loop, or its node pair."""
+    src, dst = step["src"], step["dst"]
+    if src == dst:
+        return ("self", src)
+    if n <= 2:
+        si, di = order.index(src), order.index(dst)
+        # For a two-card loop, forward is hub->other (down the right side) and
+        # everything coming back travels up the left. Comparing indices by
+        # ``<`` (not modulo) matters: in a 2-cycle both directions are
+        # "consecutive", so modulo would put every edge on the same side.
+        return ("right" if si < di else "left",)
+    si, di = order.index(src), order.index(dst)
+    return ("pair", min(si, di), max(si, di))
 
-    width, height = 620, 520
-    cx, cy = width / 2, height / 2 - 10
-    others = [node for node in nodes if node != hub]
-    positions: dict[str, tuple[float, float]] = {hub: (cx, cy)}
-    if others:
-        radius = 190.0
-        for index, node in enumerate(others):
-            angle = math.pi / 2 + 2 * math.pi * index / len(others)
+
+def _graph_geometry(graph: dict[str, Any]) -> dict[str, Any]:
+    """Place nodes on a closed ring and each action on its own arc.
+
+    Two cards become a lens: the hub on top, the other card below, the
+    copy going down one side and the untap/trigger coming back up the other, so
+    the shape itself reads as one turn of the wheel. Three or more cards sit on
+    a circle with each action bowing outward from its own chord.
+    """
+    nodes = graph["nodes"]
+    hub = graph["hub"]
+    order: list[str] = []
+    if hub in nodes:
+        order.append(hub)
+    for node in nodes:
+        if node not in order:
+            order.append(node)
+    n = len(order)
+
+    positions: dict[str, tuple[float, float]]
+    if n == 1:
+        width, height, cx, cy = 460, 320, 230, 170
+        positions = {order[0]: (float(cx), float(cy))}
+    elif n == 2:
+        width, height = 760, 400
+        cx, cy, ry = 380.0, 180.0, 112.0
+        positions = {order[0]: (cx, cy - ry), order[1]: (cx, cy + ry)}
+    else:
+        width, height = 760, 520
+        cx, cy, radius = 380.0, 260.0, 150.0
+        positions = {}
+        for index, node in enumerate(order):
+            angle = -math.pi / 2 + 2 * math.pi * index / n
             positions[node] = (
                 cx + radius * math.cos(angle),
                 cy + radius * math.sin(angle),
             )
 
-    # Parallel edges share a key; opposite directions bow to opposite sides so
-    # the two halves of the wheel never sit on top of each other.
-    counts: dict[tuple[str, str], int] = {}
-    for edge in edges:
-        counts[(edge["src"], edge["dst"])] = counts.get((edge["src"], edge["dst"]), 0) + 1
-    lanes: dict[tuple[str, str], int] = {}
-    paths: list[str] = []
-    label_items: list[dict[str, Any]] = []
-    for edge in edges:
-        src, dst = edge["src"], edge["dst"]
-        key = (src, dst)
-        lane = lanes.get(key, 0)
-        lanes[key] = lane + 1
-        total = counts[key]
-        if src == dst:
-            path, lx, ly = _self_loop(positions[src], *_node_box(src, hub))
-        else:
-            sign = 1.0 if src <= dst else -1.0
-            base = 54.0 * sign
-            spread = (lane - (total - 1) / 2) * 46.0
-            label_t = 0.5 + (lane - (total - 1) / 2) * 0.17
-            path, lx, ly = _edge_curve(
-                positions[src],
-                positions[dst],
-                base + spread,
-                _node_box(src, hub),
-                _node_box(dst, hub),
-                label_t,
-            )
-        pulse = " lg-flow" if live else ""
-        paths.append(
-            f'<g class="lg-edge{pulse}"><title>{esc(edge["text"])}</title>'
-            f'<path d="{path}" marker-end="url(#lg-arrow)"/></g>'
+    groups: dict[tuple, list[dict[str, Any]]] = {}
+    for step in graph["steps"]:
+        groups.setdefault(_step_side(step, order, n), []).append(step)
+
+    seen: dict[tuple, int] = {}
+    placements: list[dict[str, Any]] = []
+    for step in graph["steps"]:
+        key = _step_side(step, order, n)
+        lane = seen.get(key, 0)
+        seen[key] = lane + 1
+        total = len(groups[key])
+        placements.append(
+            _place_step(step, key, lane, total, positions, (cx, cy), n, hub)
         )
-        lines = _wrap_label(edge["label"])
-        label_items.append(
-            {"x": lx, "y": ly, "lines": lines, "height": 12 * len(lines)}
+    return {
+        "width": width,
+        "height": height,
+        "positions": positions,
+        "placements": placements,
+    }
+
+
+def _place_step(
+    step: dict[str, Any],
+    key: tuple,
+    lane: int,
+    total: int,
+    positions: dict[str, tuple[float, float]],
+    center: tuple[float, float],
+    n: int,
+    hub: str,
+) -> dict[str, Any]:
+    src, dst = step["src"], step["dst"]
+    lines = _wrap_label(step["label"])
+    number = step["number"]
+
+    if src == dst:
+        x, y = positions[src]
+        half_w, _ = _node_box(src, hub if n == 1 else "")
+        path = (
+            f"M {x - half_w + 14:.1f},{y - 24:.1f} "
+            f"C {x - 130:.1f},{y - 150:.1f} {x + 130:.1f},{y - 150:.1f} "
+            f"{x + half_w - 14:.1f},{y - 24:.1f}"
+        )
+        return {
+            "number": number,
+            "path": path,
+            "arc": (x, y - 118 - lane * 26),
+            "label_x": x + half_w + 12,
+            "label_y": y - 96 - lane * 30,
+            "anchor": "start",
+            "lines": lines,
+            "text": step["text"],
+        }
+
+    # Node boxes only need the hub flag to pick a height; width follows the name.
+    boxes = {name: _node_box(name, hub) for name in (src, dst)}
+    start_point, end_point = _trimmed(
+        positions[src], positions[dst], boxes[src], boxes[dst]
+    )
+    if n <= 2:
+        normal = (1.0 if key[0] == "right" else -1.0, 0.0)
+    else:
+        mx = (start_point[0] + end_point[0]) / 2
+        my = (start_point[1] + end_point[1]) / 2
+        vx, vy = mx - center[0], my - center[1]
+        length = math.hypot(vx, vy) or 1.0
+        normal = (vx / length, vy / length)
+
+    base = 150.0 if n <= 2 else 64.0
+    lane_gap = 76.0 if n <= 2 else 42.0
+    bow = base + lane * lane_gap
+    control = (
+        (start_point[0] + end_point[0]) / 2 + normal[0] * bow,
+        (start_point[1] + end_point[1]) / 2 + normal[1] * bow,
+    )
+    t = 0.5
+    if total > 1:
+        t += (lane - (total - 1) / 2) * (0.34 if n <= 2 else 0.20)
+    t = min(0.78, max(0.22, t))
+    arc = _quad_point(start_point, control, end_point, t)
+
+    gap = 16.0
+    if abs(normal[0]) >= 0.35:
+        label_x = arc[0] + normal[0] * gap
+        label_y = arc[1]
+        anchor = "start" if normal[0] > 0 else "end"
+    else:
+        label_x = arc[0]
+        label_y = arc[1] + (normal[1] if normal[1] else 1.0) * gap
+        anchor = "middle"
+    path = (
+        f"M {start_point[0]:.1f},{start_point[1]:.1f} "
+        f"Q {control[0]:.1f},{control[1]:.1f} "
+        f"{end_point[0]:.1f},{end_point[1]:.1f}"
+    )
+    return {
+        "number": number,
+        "path": path,
+        "arc": arc,
+        "label_x": label_x,
+        "label_y": label_y,
+        "anchor": anchor,
+        "lines": lines,
+        "text": step["text"],
+    }
+
+
+def _render_loop_list(graph: dict[str, Any], aria: str) -> str:
+    """The narrow-width form: a numbered cycle, readable at 380px."""
+    items: list[str] = []
+    for index, step in enumerate(graph["steps"]):
+        lead = (
+            "" if index == 0
+            else '<span class="loop-arrow" aria-hidden="true">→</span>'
+        )
+        items.append(
+            f"<li>{lead}<span class=\"loop-n\">{step['number']}</span>"
+            f'<span class="loop-action">{esc(step["label"])}</span></li>'
+        )
+    items.append(
+        '<li class="loop-back">'
+        '<span class="loop-arrow" aria-hidden="true">→</span>'
+        '<span class="loop-n">1</span>'
+        '<span class="loop-action">back to step 1 — the board is where it started'
+        "</span></li>"
+    )
+    return (
+        f'<div class="looplist-wrap" role="img" aria-label="{esc(aria)}">'
+        f'<ol class="looplist">{"".join(items)}</ol></div>'
+    )
+
+
+def render_loop_graph(graph: dict[str, Any], live: bool) -> str:
+    """Inline SVG cycle plus a numbered fallback for narrow screens.
+
+    Nodes are cards; each action sits on its own numbered arc, with the arrow
+    head pointing the way the loop travels. The chain below the diagram is
+    numbered to match, so a label always maps to one arc.
+    """
+    nodes = graph.get("nodes") or []
+    steps = graph.get("steps") or []
+    hub = graph.get("hub") or ""
+    if not nodes or not steps:
+        return (
+            '<p class="empty">No repeating action in the narration yet. '
+            "The loop appears here once a pass repeats.</p>"
         )
 
-    # Long Magic sentences do not fit on the arcs, so labels are stacked and
-    # given room: a simple vertical de-overlap pass keeps every action legible
-    # (the label stroke masks the arcs that pass behind it).
-    if label_items:
-        ordered = sorted(label_items, key=lambda item: item["y"])
-        spacing = 7
-        total_h = sum(item["height"] for item in ordered) + spacing * (len(ordered) - 1)
-        center = sum(item["y"] for item in ordered) / len(ordered)
-        cursor = center - total_h / 2
-        for item in ordered:
-            item["y"] = cursor + item["height"] / 2
-            cursor += item["height"] + spacing
-        shift = 0.0
-        if ordered[0]["y"] - ordered[0]["height"] / 2 < 26:
-            shift = 26 - (ordered[0]["y"] - ordered[0]["height"] / 2)
-        if ordered[-1]["y"] + ordered[-1]["height"] / 2 + shift > height - 26:
-            shift = height - 26 - (ordered[-1]["y"] + ordered[-1]["height"] / 2)
-        for item in ordered:
-            item["y"] += shift
+    geometry = _graph_geometry(graph)
+    width, height = geometry["width"], geometry["height"]
 
+    edges: list[str] = []
+    numbers: list[str] = []
     labels: list[str] = []
-    for item in label_items:
-        for row, line in enumerate(item["lines"]):
+    for placement in geometry["placements"]:
+        flow = " lg-flow" if live else ""
+        edges.append(
+            f'<g class="lg-edge{flow}"><title>{esc(placement["text"])}</title>'
+            f'<path d="{placement["path"]}" marker-end="url(#lg-arrow)"/></g>'
+        )
+    for placement in geometry["placements"]:
+        ax, ay = placement["arc"]
+        numbers.append(
+            f'<g class="lg-num"><circle cx="{ax:.1f}" cy="{ay:.1f}" r="11"/>'
+            f'<text x="{ax:.1f}" y="{ay + 4:.1f}" text-anchor="middle">'
+            f'{placement["number"]}</text></g>'
+        )
+        lines = placement["lines"]
+        for row, line in enumerate(lines):
+            offset = (row - (len(lines) - 1) / 2) * 15
             labels.append(
-                f'<text class="lg-label" x="{item["x"]:.1f}"'
-                f' y="{item["y"] + (row - (len(item["lines"]) - 1) / 2) * 12:.1f}"'
-                f' text-anchor="middle">{esc(line)}</text>'
+                f'<text class="lg-label" x="{placement["label_x"]:.1f}"'
+                f' y="{placement["label_y"] + offset:.1f}"'
+                f' text-anchor="{placement["anchor"]}">{esc(line)}</text>'
             )
 
+    positions = geometry["positions"]
     node_markup: list[str] = []
     for node in nodes:
         x, y = positions[node]
         is_hub = node == hub
         half_w, half_h = _node_box(node, hub)
-        limit = int((half_w * 2 - 16) / 6.6)
-        display = node if len(node) <= limit else node[: limit - 1] + "…"
+        display = node if len(node) <= 30 else node[:29] + "…"
         node_markup.append(
             f'<g class="lg-node{" lg-hub" if is_hub else ""}">'
             f"<title>{esc(node)}</title>"
@@ -806,7 +1023,6 @@ def render_loop_graph(graph: dict[str, Any], live: bool) -> str:
             f"{esc(display)}</text></g>"
         )
 
-    # Growth badge on the card that grows: the tokens tick upward each pass.
     badge = ""
     growth_node = graph.get("growth_node")
     if growth_node and growth_node in positions and graph.get("tokens"):
@@ -815,77 +1031,39 @@ def render_loop_graph(graph: dict[str, Any], live: bool) -> str:
         count = graph["tokens"]
         text = f"{count} {_plural(count, 'token', 'tokens')}"
         badge = (
-            f'<g class="lg-badge"><rect x="{gx - 50:.1f}" y="{gy + half_h + 8:.1f}"'
-            f' width="100" height="22" rx="11"/><text x="{gx:.1f}"'
-            f' y="{gy + half_h + 23:.1f}" text-anchor="middle">{esc(text)}</text></g>'
+            f'<g class="lg-badge"><rect x="{gx - 52:.1f}" y="{gy + half_h + 10:.1f}"'
+            f' width="104" height="24" rx="12"/><text x="{gx:.1f}"'
+            f' y="{gy + half_h + 27:.1f}" text-anchor="middle">{esc(text)}</text></g>'
         )
 
+    chain = graph.get("chain") or ""
     aria = (
         f"Loop of {len(nodes)} cards: {hub} at the hub; "
-        f"{len(edges)} actions. {graph['caption']}"
+        f"{len(steps)} actions in order: {chain}, then it repeats."
     )
-    return (
+    svg = (
         '<div class="loopgraph-wrap">'
-        f'<svg class="loopgraph{" is-live" if live else ""}" viewBox="0 0 {width} {height}"'
-        f' role="img" aria-label="{esc(aria)}">'
+        f'<svg class="loopgraph{" is-live" if live else ""}"'
+        f' viewBox="0 0 {width} {height}" role="img" aria-label="{esc(aria)}">'
         "<defs>"
-        '<marker id="lg-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7"'
-        ' markerHeight="7" orient="auto-start-reverse">'
+        '<marker id="lg-arrow" viewBox="0 0 10 10" refX="7.5" refY="5"'
+        ' markerWidth="8" markerHeight="8" orient="auto-start-reverse">'
         '<path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker>'
         "</defs>"
-        + "".join(paths)
+        + "".join(edges)
+        + "".join(numbers)
         + "".join(labels)
         + "".join(node_markup)
         + badge
         + "</svg></div>"
-        + (
+    )
+    caption = ""
+    if chain:
+        caption = (
             f'<p class="graph-caption loop-caption">{esc(hub)} is the engine. '
-            f"One pass: {esc(graph['caption'])}.</p>"
-            if graph["caption"]
-            else ""
+            f"One pass, in order: {esc(chain)}, then it repeats.</p>"
         )
-    )
-
-
-def _edge_curve(
-    start: tuple[float, float],
-    end: tuple[float, float],
-    offset: float,
-    start_box: tuple[float, float],
-    end_box: tuple[float, float],
-    label_t: float = 0.5,
-) -> tuple[str, float, float]:
-    x1, y1 = start
-    x2, y2 = end
-    dx, dy = x2 - x1, y2 - y1
-    length = math.hypot(dx, dy) or 1.0
-    ux, uy = dx / length, dy / length
-    # Trim each end to the rectangle edge so the arrow leaves and lands on the
-    # node, never inside it or (worse) past it.
-    start_radius = _rect_ray(*start_box, ux, uy)
-    end_radius = _rect_ray(*end_box, ux, uy)
-    sx, sy = x1 + ux * start_radius, y1 + uy * start_radius
-    ex, ey = x2 - ux * end_radius, y2 - uy * end_radius
-    mx, my = (sx + ex) / 2, (sy + ey) / 2
-    px, py = -uy, ux
-    qx, qy = mx + px * offset, my + py * offset
-    t = min(0.85, max(0.15, label_t))
-    one = 1 - t
-    lx = one * one * sx + 2 * one * t * qx + t * t * ex
-    ly = one * one * sy + 2 * one * t * qy + t * t * ey - 4
-    return f"M {sx:.1f},{sy:.1f} Q {qx:.1f},{qy:.1f} {ex:.1f},{ey:.1f}", lx, ly
-
-
-def _self_loop(
-    position: tuple[float, float], half_w: float, half_h: float
-) -> tuple[str, float, float]:
-    x, y = position
-    path = (
-        f"M {x - half_w + 16:.1f},{y - half_h:.1f} "
-        f"C {x - 110:.1f},{y - 150:.1f} {x + 110:.1f},{y - 150:.1f} "
-        f"{x + half_w - 16:.1f},{y - half_h:.1f}"
-    )
-    return path, x, y - 116
+    return svg + _render_loop_list(graph, aria) + caption
 
 
 # ---------------------------------------------------------------------------

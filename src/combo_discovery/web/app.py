@@ -283,12 +283,25 @@ class WebHandler(BaseHTTPRequestHandler):
         after = _query_after(query, "after", 0)
         events = self.store.events_after(run_id, after)
         previous = None
+        start_pass = None
         if after and events:
             rows = self.store.query(
                 "SELECT * FROM witness_events WHERE run_id = ? AND seq = ?",
                 (run_id, after),
             )
             previous = rows[0] if rows else None
+            prior = self.store.one(
+                "SELECT detail_json FROM witness_events WHERE run_id = ?"
+                " AND kind = 'iteration' AND seq <= ? ORDER BY seq DESC LIMIT 1",
+                (run_id, after),
+            )
+            if prior:
+                detail = parse_json(prior.get("detail_json"), {}) or {}
+                raw_pass = detail.get("iteration")
+                try:
+                    start_pass = int(raw_pass) if raw_pass is not None else None
+                except (TypeError, ValueError):
+                    start_pass = None
         results = self.store.results_for_run(run_id)
         result = results[0] if results else None
         names = run_card_names(run, result)
@@ -302,7 +315,9 @@ class WebHandler(BaseHTTPRequestHandler):
             "cursor": cursor,
             "count": len(events),
             "total": _as_int((total_row or {}).get("n")),
-            "rows_html": render_play_by_play(events, names, previous=previous),
+            "rows_html": render_play_by_play(
+                events, names, previous=previous, start_pass=start_pass
+            ),
             "events": [
                 {
                     "id": row.get("id"),

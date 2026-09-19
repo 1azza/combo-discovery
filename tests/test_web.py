@@ -33,6 +33,8 @@ from combo_discovery.web.goldfish import (
     build_goldfish,
     build_loop_graph,
     reconstruct_board,
+    render_counters,
+    render_play_by_play,
 )
 from combo_discovery.web.images import warm_images
 
@@ -991,6 +993,109 @@ def test_goldfish_css_honours_reduced_motion() -> None:
     assert "@keyframes flow" in CSS
     assert "@keyframes halo" in CSS
     assert "flex-wrap: nowrap" in CSS  # the pager never wraps
+
+
+def test_graph_numbers_each_edge_and_closes_the_loop(gf_server) -> None:
+    srv, ids, _ = gf_server
+    payload = build_goldfish(srv.store, ids["loop"])
+    assert payload is not None
+    graph = payload["graph"]
+    assert [step["number"] for step in graph["steps"]] == [1, 2, 3]
+    assert graph["chain"].startswith("1 copies Deceiver Exarch")
+
+    body = _get(srv.server_address[1], f"/run/{ids['loop']}")[2]
+    text = _text(body)
+    # Each action is labelled on its own arc, numbered in order, and the
+    # caption matches that order; the cycle is explicitly closed.
+    assert 'class="lg-num"' in body
+    assert "1 copies Deceiver Exarch" in text
+    assert "2 triggers, targeting Kiki-Jiki, Mirror Breaker" in text
+    assert "3 untaps Kiki-Jiki, Mirror Breaker" in text
+    assert "then it repeats" in text
+    # The narrow-width form is a numbered cycle that returns to step 1.
+    assert 'class="looplist"' in body
+    assert "back to step 1" in text
+    assert 'class="looplist-wrap"' in body
+
+
+def test_graph_mobile_fallback_is_swapped_by_css() -> None:
+    from combo_discovery.web.assets import CSS
+
+    assert ".looplist-wrap { display: none; }" in CSS
+    assert "@media (max-width: 620px)" in CSS
+    narrow = CSS.split("@media (max-width: 620px)", 1)[1][:400]
+    assert ".loopgraph-wrap { display: none; }" in narrow
+    assert ".looplist-wrap { display: block; }" in narrow
+
+
+def test_counters_are_board_first_and_label_the_engine_tallies() -> None:
+    growth = {
+        "resources": {
+            "tokens": 38, "permanents": 40, "casts": 76,
+            "spells_resolved": 76, "mana": 48, "life": 40,
+        }
+    }
+    html_out = render_counters(growth)
+    board = html_out.split('<div class="counters counters-engine">', 1)[0]
+    # Tokens and permanents are the board-tracked growth story, shown plainly.
+    assert 'data-resource="tokens"' in board
+    assert 'data-resource="permanents"' in board
+    assert 'data-resource="casts"' not in board
+    assert 'data-resource="mana"' not in board
+    # The engine's own tallies are labelled as such and hidden behind a
+    # disclosure, never presented as read off the board.
+    assert '<details class="counter-raw">' in html_out
+    assert "Also reported by the engine — not read off the board" in html_out
+    engine = html_out.split('<div class="counters counters-engine">', 1)[1]
+    assert 'data-resource="casts"' in engine
+    assert 'data-resource="mana"' in engine
+
+
+def test_board_shows_tapped_unmistakably() -> None:
+    from combo_discovery.web.goldfish import _permanent_html as permanent_html
+
+    tap = {
+        "name": "Kiki-Jiki, Mirror Breaker", "count": 1, "tapped": True,
+        "token": False, "copy": False, "counters": 0, "type_line": "Creature",
+    }
+    html_out = permanent_html(tap)
+    assert "is-tapped" in html_out
+    assert "chip-tapped" in html_out and "tapped" in html_out
+    assert "is-tapped" not in permanent_html({**tap, "tapped": False})
+
+
+def test_tap_styling_is_visible() -> None:
+    from combo_discovery.web.assets import CSS
+
+    assert ".perm.is-tapped::after" in CSS
+    assert 'content: "TAPPED"' in CSS
+    assert "filter: grayscale(1)" in CSS
+
+
+def test_play_by_play_marks_and_shades_passes() -> None:
+    events = [
+        {"kind": "iteration", "detail": {"iteration": 1}, "seq": 1},
+        {"kind": "copy", "text": "Kiki copies Exarch", "seq": 2,
+         "turn": 1, "phase": "MAIN1"},
+        {"kind": "iteration", "detail": {"iteration": 2}, "seq": 3},
+        {"kind": "copy", "text": "Kiki copies Exarch", "seq": 4,
+         "turn": 1, "phase": "MAIN1"},
+    ]
+    html_out = render_play_by_play(events, ["Kiki", "Exarch"])
+    assert html_out.count('class="pb-pass"') == 2
+    assert "Pass 1" in html_out and "Pass 2" in html_out
+    assert "pb-even" in html_out  # alternate passes are shaded
+
+
+def test_goldfish_log_opens_on_the_newest_move(gf_server) -> None:
+    srv, ids, _ = gf_server
+    status, _, body = _get(srv.server_address[1], f"/run/{ids['loop']}")
+    assert status == 200
+    from combo_discovery.web.assets import JS
+
+    assert 'id="pb-jump"' in body
+    assert "scrollTop = gfList.scrollHeight" in JS  # opens at the tail
+    assert "pb-jump" in JS and "updateJump" in JS   # way back to the live tail
 
 
 # ---------------------------------------------------------------------------
