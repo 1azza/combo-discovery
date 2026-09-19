@@ -133,6 +133,42 @@ class ReadOnlyStore:
             row["resources"] = parse_json(row.get("resources_json"), {}) or {}
         return rows
 
+    def observations_after(
+        self, run_id: int, after_id: int, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        """Observations for a run with ``id`` greater than a cursor, oldest first."""
+        rows = self.query(
+            "SELECT * FROM witness_observations WHERE run_id = ? AND id > ?"
+            " ORDER BY id LIMIT ?",
+            (int(run_id), int(after_id), int(limit)),
+        )
+        for row in rows:
+            row["resources"] = parse_json(row.get("resources_json"), {}) or {}
+        return rows
+
+    def events(self, run_id: int) -> list[dict[str, Any]]:
+        """Card-level narration rows for a run, in ``seq`` order."""
+        rows = self.query(
+            "SELECT * FROM witness_events WHERE run_id = ? ORDER BY seq",
+            (int(run_id),),
+        )
+        for row in rows:
+            row["detail"] = parse_json(row.get("detail_json"), {}) or {}
+        return rows
+
+    def events_after(
+        self, run_id: int, after_seq: int, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        """Narration rows with ``seq`` greater than a cursor, in ``seq`` order."""
+        rows = self.query(
+            "SELECT * FROM witness_events WHERE run_id = ? AND seq > ?"
+            " ORDER BY seq LIMIT ?",
+            (int(run_id), int(after_seq), int(limit)),
+        )
+        for row in rows:
+            row["detail"] = parse_json(row.get("detail_json"), {}) or {}
+        return rows
+
     def list_runs(self, limit: int = 100) -> list[dict[str, Any]]:
         if not self.has_table("witness_runs"):
             return []
@@ -142,7 +178,11 @@ class ReadOnlyStore:
                    (SELECT COUNT(*) FROM witness_results wr WHERE wr.run_id = r.id)
                        AS result_count,
                    (SELECT COUNT(*) FROM witness_observations o WHERE o.run_id = r.id)
-                       AS observation_count
+                       AS observation_count,
+                   (SELECT MAX(created_at) FROM witness_events e WHERE e.run_id = r.id)
+                       AS last_event_at,
+                   (SELECT MAX(created_at) FROM witness_observations o WHERE o.run_id = r.id)
+                       AS last_observation_at
             FROM witness_runs r
             ORDER BY r.id DESC
             LIMIT ?
@@ -152,6 +192,7 @@ class ReadOnlyStore:
         for row in rows:
             row["seeds"] = parse_json(row.get("seeds_json"), []) or []
             row["params"] = parse_json(row.get("params_json"), {}) or {}
+            row["cards"] = parse_json(row.get("card_names_json"), []) or []
         return rows
 
     # -- candidates ---------------------------------------------------------

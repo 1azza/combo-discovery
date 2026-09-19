@@ -778,34 +778,39 @@ def render_tile(tile: dict[str, Any]) -> str:
 
 
 def _pager_inner(column: dict[str, Any]) -> str:
-    """The ``showing N of M`` line and prev/next, for the column header."""
+    """The ``showing ...`` line and prev/next, for the column header.
+
+    Kept to one line even for the widest count: the paged form drops the word
+    "showing" and the page nav is compact (``← 1/39,004 →``), because five
+    columns on a 1200px board leave the header very little room.
+    """
     count = column.get("count") or 0
     if count <= 0:
         return '<span class="col-showing">none yet</span>'
     start, end = column.get("start", 0), column.get("end", 0)
     pages = max(1, column.get("pages", 1))
     page = column.get("page", 1)
-    showing = (
-        f"showing {_count(start)}\u2013{_count(end)} of {_count(count)}"
-        if count > (column.get("showing") or 0)
-        else f"showing {_count(count)}"
-    )
-    nav = ""
     if pages > 1:
+        showing = f"{_count(start)}\u2013{_count(end)} of {_count(count)}"
         prev = (
-            f'<a class="page-link" rel="prev" href="{esc(column["prev_href"])}">← prev</a>'
+            f'<a class="page-link" rel="prev" aria-label="Previous page"'
+            f' title="Previous page" href="{esc(column["prev_href"])}">←</a>'
             if column.get("prev_href")
-            else '<span class="page-link disabled">← prev</span>'
+            else '<span class="page-link disabled" aria-hidden="true">←</span>'
         )
         nxt = (
-            f'<a class="page-link" rel="next" href="{esc(column["next_href"])}">next →</a>'
+            f'<a class="page-link" rel="next" aria-label="Next page"'
+            f' title="Next page" href="{esc(column["next_href"])}">→</a>'
             if column.get("next_href")
-            else '<span class="page-link disabled">next →</span>'
+            else '<span class="page-link disabled" aria-hidden="true">→</span>'
         )
         nav = (
             f'<span class="col-page-nav">{prev}'
-            f'<span class="col-page-num">page {_count(page)} of {_count(pages)}</span>{nxt}</span>'
+            f'<span class="col-page-num">{_count(page)}/{_count(pages)}</span>{nxt}</span>'
         )
+    else:
+        showing = f"showing all {_count(count)}"
+        nav = ""
     return f'<span class="col-showing">{showing}</span>{nav}'
 
 

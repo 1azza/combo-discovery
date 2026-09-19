@@ -1,9 +1,10 @@
 """Full-page composition for the web console.
 
 The product is The Gallery: a board of pairings being checked, written for a
-Magic player. The run and candidate pages remain only as detail bridges from a
-tile. Server-side HTML is the source of truth; the Gallery polls its JSON
-endpoint in :mod:`combo_discovery.web.assets` to advance while a sweep runs.
+Magic player. The Goldfish watches a single run: the play-by-play, the board
+rebuilt from it, the pass counter and what grew, and the loop drawn as cards and
+actions. Server-side HTML is the source of truth; both pages poll JSON and
+advance on their own while a run streams.
 """
 
 from __future__ import annotations
@@ -13,37 +14,19 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .assets import CSS, JS
-from .db import parse_json
 from .gallery import (
     COLOUR_FILTERS,
     TYPE_FILTERS,
     render_board,
     render_tabs,
 )
+from .goldfish import render_play_by_play
 from .render import (
-    build_samples,
     card_link,
     esc,
-    find_cycles,
-    grew_between,
-    join_words,
-    plain_reason,
-    pretty_json,
-    render_evidence,
-    render_graph,
     render_interaction_detail,
-    render_legend,
-    render_mechanism_vs_executed,
-    render_observation_table,
-    render_signatures,
-    render_timeline,
-    resource_label,
     short_time,
-    sig_short,
     strip_motifs,
-    verdict_class,
-    verdict_headline,
-    verdict_word,
 )
 
 BRAND = "combo-discovery"
@@ -52,7 +35,7 @@ TAGLINE = "combo loop tester"
 #: (key, href or None, title, subtitle). ``None`` href = not shipped yet.
 NAV_ITEMS: tuple[tuple[str, str | None, str, str], ...] = (
     ("gallery", "/", "The Gallery", "combos being checked"),
-    ("goldfish", None, "The Goldfish", "watch a combo being tested"),
+    ("goldfish", "/goldfish", "The Goldfish", "watch a combo being tested"),
 )
 
 
@@ -115,9 +98,31 @@ def layout(
 
 def _result_badge(verdict: Any) -> str:
     return (
-        f'<span class="badge {esc(verdict_class(verdict))}">'
-        f"{esc(verdict_word(verdict))}</span>"
+        f'<span class="badge {esc(_verdict_class(verdict))}">'
+        f"{esc(_verdict_word(verdict))}</span>"
     )
+
+
+def _verdict_class(verdict: Any) -> str:
+    mapping = {
+        "loops": "loops",
+        "no_loop": "no_loop",
+        "refuted": "refuted",
+        "inconclusive": "inconclusive",
+        "error": "error",
+    }
+    return mapping.get(str(verdict or "").lower(), "inconclusive")
+
+
+def _verdict_word(verdict: Any) -> str:
+    mapping = {
+        "loops": "Loop found",
+        "no_loop": "No loop",
+        "refuted": "No loop",
+        "inconclusive": "Couldn't test",
+        "error": "Error",
+    }
+    return mapping.get(str(verdict or "").lower(), "Couldn't test")
 
 
 def _card_links(names: Sequence[Any], *, css: str = "card-link") -> str:
@@ -187,288 +192,138 @@ test. Columns page 12 at a time and refresh on their own.</p>
 
 
 # ---------------------------------------------------------------------------
-# run page
+# goldfish: watch a combo being tested
 # ---------------------------------------------------------------------------
 
 
-def _format_ts(value: Any) -> str:
-    if not value:
-        return "—"
-    return str(value)
-
-
-def _fmt_score(value: Any) -> str:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return "—"
-    return f"{float(value):.3f}"
-
-
-def _meta(pairs: Sequence[tuple[str, Any]]) -> str:
-    cells = "".join(
-        f"<dt>{esc(key)}</dt><dd>{esc(value if value not in (None, '') else '—')}</dd>"
-        for key, value in pairs
-    )
-    return f'<dl class="meta">{cells}</dl>'
-
-
-def _raw_json(summary: str, value: Any) -> str:
-    return (
-        f'<details class="raw"><summary>{esc(summary)}</summary>'
-        f"<pre>{esc(pretty_json(value))}</pre></details>"
-    )
-
-
-def _growth_names(grown: dict[str, int], limit: int = 4) -> str:
-    ordered = sorted(grown.items(), key=lambda item: (-item[1], item[0]))
-    return join_words([resource_label(key) for key, _ in ordered[:limit]])
-
-
-def _cycle_note(
-    cycles: Sequence[dict[str, Any]],
-    verdict: Any,
-    reason_plain: str,
-    growth_names: str,
-    *,
-    in_progress: bool,
-) -> str:
-    if in_progress:
-        return (
-            '<p class="cycle-note">Still testing — the board snapshots below will '
-            "keep filling in until it finishes.</p>"
-        )
-    if not cycles:
-        return (
-            '<p class="cycle-note"><strong>The board never repeated.</strong> '
-            "Without a repeated board there is no loop to check.</p>"
-        )
-    cls = verdict_class(verdict)
-    if cls == "loops":
-        return (
-            '<p class="cycle-note ok"><strong>A repeated board is only a clue.</strong> '
-            f"The board came back to the same state while {esc(growth_names or 'resources')} "
-            "grew. The result at the top of this page is what decides whether it is "
-            "really an infinite combo.</p>"
-        )
-    if cls in {"no_loop", "refuted"}:
-        return (
-            '<p class="cycle-note warn"><strong>The board came back, but the '
-            f"tester ruled it out.</strong> {esc(reason_plain)}</p>"
-        )
-    return (
-        '<p class="cycle-note"><strong>The board came back, but the tester '
-        f"couldn't be sure.</strong> {esc(reason_plain)}</p>"
-    )
-
-
-def _technical_run(
-    *,
-    run: dict[str, Any],
-    result: dict[str, Any],
-    samples: Sequence[dict[str, Any]],
-    per_step: bool,
-    evidence: Any,
-    diagnostics: Any,
-    interactions: Sequence[dict[str, Any]],
-    raw_reason: str,
-    kind: str,
-    seeds_text: str,
-    params_text: str,
-    scenario_json: str,
-) -> str:
-    provenance = _meta(
-        [
-            ("engine commit", run.get("engine_commit") or "unversioned"),
-            ("proto version", run.get("proto_version")),
-            ("policy version", run.get("policy_version")),
-            ("started at", _format_ts(run.get("started_at"))),
-            ("seeds", seeds_text or "—"),
-            ("params", params_text),
-            ("candidate key", result.get("candidate_key") or "—"),
-            ("result id", result.get("id")),
-            ("iterations", result.get("iterations")),
-            ("state hash before", sig_short(result.get("state_hash_before"), 16)),
-            ("state hash after", sig_short(result.get("state_hash_after"), 16)),
-            ("events", f"{result.get('event_start_seq') or 0}–{result.get('event_end_seq') or 0}"),
-        ]
-    )
-    reason_block = (
-        f'<p class="mono">reason: {esc(raw_reason or "—")}<br>'
-        f'kind: {esc(kind or "—")}</p>'
-    )
-    return f"""
-<details class="tech">
-  <summary>Technical details</summary>
-  <div class="tech-body">
-    <div class="panel-title" style="margin-top:0">Provenance</div>
-    {provenance}
-    <div class="panel-title">Raw reason</div>
-    {reason_block}
-    <div class="panel-title">Board fingerprints (signatures)</div>
-    {render_signatures(samples)}
-    <div class="panel-title">Evidence</div>
-    {render_evidence(evidence)}
-    <div class="panel-title">Link diagnostics</div>
-    {_raw_json("diagnostics_json", diagnostics)}
-    <div class="panel-title">Proposed interactions (internal)</div>
-    {render_interaction_detail(interactions)}
-    <div class="panel-title">Scenario</div>
-    {_raw_json("scenario_json", parse_json(scenario_json, scenario_json))}
-    <div class="panel-title">Every move the tester made</div>
-    {render_timeline(result.get("trace_json"))}
-  </div>
-</details>
-"""
-
-
-def page_run(
-    *,
-    run: dict[str, Any],
-    result: dict[str, Any] | None,
-    observations: Sequence[dict[str, Any]],
-    evidence: Any,
-    diagnostics: Any,
-    hypothesis: dict[str, Any] | None,
-    interactions: Sequence[dict[str, Any]],
-    db_path: str,
-) -> str:
+def page_goldfish(payload: dict[str, Any], db_path: str) -> str:
+    run = payload["run"]
+    result = payload.get("result")
+    names = payload.get("card_names") or []
+    html = payload["html"]
     run_id = run.get("id")
-    result = result or {}
-    in_progress = not result
-    verdict = result.get("verdict") if result else "inconclusive"
-    kind = ""
-    if isinstance(evidence, dict):
-        kind = str(evidence.get("kind") or "")
-    raw_reason = str(evidence.get("reason") or "") if isinstance(evidence, dict) else ""
-    reason_plain = plain_reason(raw_reason, kind)
+    live = payload["live"]
+    seq = payload["seq"]
+    obs_cursor = payload["obs_cursor"]
+    title = " + ".join(names) if names else f"Run {run_id}"
+    head_cards = _card_links(names) if names else esc(title)
 
-    card_names = (
-        result.get("candidate_names")
-        or (hypothesis.get("card_names") if hypothesis else [])
-        or parse_json(result.get("card_names_json"), [])
-        or []
-    )
-    title = " + ".join(card_names) if card_names else f"Run {run_id}"
-
-    samples, per_step = build_samples(observations, result)
-    cycles = find_cycles(samples)
-    grown: dict[str, int] = {}
-    if cycles:
-        first = cycles[0]
-        grown = grew_between(
-            samples[first["start"]].get("resources") or {},
-            samples[first["end"]].get("resources") or {},
-        )
-    growth_names = _growth_names(grown)
-
-    # -- the five-second verdict -------------------------------------------
-    if in_progress:
-        headline = "Still testing."
-        sentence = (
-            "The tester is still working through this combo; the result will show "
-            "up here when it finishes."
-        )
-    else:
-        headline = verdict_headline(verdict)
-        if verdict_class(verdict) == "loops":
-            sentence = (
-                "The board came back to the same state while "
-                f"{growth_names or 'the same resources'} kept growing — so these "
-                "cards can repeat forever."
-            )
-        elif verdict_class(verdict) in {"no_loop", "refuted"}:
-            sentence = reason_plain or "The board never came back to the same state."
-        elif verdict_class(verdict) == "inconclusive":
-            sentence = reason_plain or "The tester couldn't be sure either way."
-        else:
-            sentence = raw_reason or "The tester hit a problem and stopped."
-
-    seeds = run.get("seeds") or parse_json(run.get("seeds_json"), []) or []
-    params = run.get("params") or parse_json(run.get("params_json"), {}) or {}
-    seeds_text = ", ".join(str(s) for s in seeds) if isinstance(seeds, list) else str(seeds)
-    params_text = pretty_json(params) if params else "—"
-
-    replay = run.get("replay") or ""
-    replay_html = (
-        '<div class="replay">'
-        f'<code id="replay-cmd">{esc(replay)}</code>'
-        '<button class="copy" type="button" data-copy="replay-cmd">copy</button>'
-        "</div>"
-        if replay
-        else '<p class="empty">This run has not finished yet, so there is nothing '
-        "to replay.</p>"
-    )
-
-    fallback_note = "" if per_step else (
-        '<p class="cycle-note"><strong>Older run.</strong> This one was recorded '
-        "before the tester saved a snapshot at every step, so turn and phase are "
-        "hidden and the graph is rebuilt from the saved summaries.</p>"
-    )
-
-    graph = render_graph(samples, verdict, raw_reason or kind, per_step=per_step)
-    board_html = render_observation_table(samples, per_step=per_step)
-    mech_html = render_mechanism_vs_executed(hypothesis, interactions, diagnostics)
-
+    rows = render_play_by_play(payload["events"], names)
     candidate_link = ""
     if (
-        result.get("candidate_kind") == "pair"
+        result
+        and result.get("candidate_kind") == "pair"
         and str(result.get("candidate_key", "")).isdigit()
     ):
         candidate_link = (
             f'<a href="/candidate/{esc(result.get("candidate_key"))}">'
-            "See this combo →</a>"
+            "See this pairing →</a>"
         )
 
-    cards_line = _card_links(card_names) if card_names else esc(title)
-    technical = _technical_run(
-        run=run,
-        result=result,
-        samples=samples,
-        per_step=per_step,
-        evidence=evidence,
-        diagnostics=diagnostics,
-        interactions=interactions,
-        raw_reason=raw_reason,
-        kind=kind,
-        seeds_text=seeds_text,
-        params_text=params_text,
-        scenario_json=run.get("scenario_json") or "{}",
-    )
-
+    summary_hidden = "" if html.get("summary") else " hidden"
     body = f"""
-<div class="crumbs"><a href="/">The Gallery</a> / {esc(title)}</div>
-<section class="hero verdict-hero {esc(verdict_class(verdict))}" style="--i:0">
-  <h1 class="verdict-title">{esc(headline)}</h1>
-  <p class="verdict-cards">{cards_line}</p>
-  <p class="verdict-sentence">{esc(sentence)}</p>
-  <p class="verdict-meta">
-    {_result_badge(verdict)}
-    {candidate_link}
-  </p>
+<section id="goldfish" data-run="{esc(run_id)}" data-seq="{esc(seq)}"
+         data-obs="{esc(obs_cursor)}" data-live="{str(bool(live)).lower()}">
+  <div class="crumbs"><a href="/">The Gallery</a> / \
+<a href="/goldfish">The Goldfish</a> / {esc(title)}</div>
+  <header class="gf-head">
+    <h1 class="gf-pair">{head_cards}</h1>
+    <div class="gf-status" id="gf-status">{html["status"]}</div>
+    {f'<div class="gf-links">{candidate_link}</div>' if candidate_link else ""}
+  </header>
+  <div id="gf-verdict">{html["verdict"]}</div>
+  <section class="panel gf-loop-panel" style="--i:1">
+    <div class="panel-title">The loop so far</div>
+    <div id="gf-loop">{html["loop"]}</div>
+    <div id="gf-counters">{html["counters"]}</div>
+  </section>
+  <div class="gf-grid">
+    <section class="panel gf-graph-panel" style="--i:3">
+      <div class="panel-title">How the loop turns</div>
+      <div id="gf-graph">{html["graph"]}</div>
+    </section>
+    <section class="panel gf-board-panel" style="--i:2">
+      <div class="panel-title">The board, rebuilt</div>
+      <p class="board-note"><strong>Not a board snapshot.</strong> There is no
+      per-permanent record in the data, so this is put back together from the
+      narration sentences. "Enters" adds a card, "leaves" takes it away (and we
+      assume it went to the graveyard), tapped and counters are read from the
+      words. Treat it as a close reading, not the engine's own view.</p>
+      <div id="gf-board">{html["board"]}</div>
+    </section>
+  </div>
+  <section class="panel gf-pb-panel" style="--i:4">
+    <div class="panel-title">Play by play
+      <span class="count-tag" id="gf-pb-count">{len(payload["events"])} moves</span>
+    </div>
+    <ol class="pb" id="pb-list">{rows}</ol>
+  </section>
+  <section class="panel gf-summary-panel" id="gf-summary-wrap"{summary_hidden}>
+    <div class="panel-title">The run</div>
+    <div id="gf-summary">{html["summary"]}</div>
+  </section>
+  <div class="lightbox" id="lightbox" hidden>
+    <button type="button" class="lb-close" id="lightbox-close">Close</button>
+    <img class="lb-img" id="lightbox-img" alt="" width="672" height="936">
+  </div>
+</section>
+"""
+    return layout(title, body, active="goldfish", db_path=db_path)
+
+
+def page_goldfish_index(runs: Sequence[dict[str, Any]], db_path: str) -> str:
+    """A list of runs, live ones first, so a reader can find a game happening."""
+    live = [run for run in runs if run.get("live")]
+    ended = [run for run in runs if not run.get("live")]
+
+    def row(run: dict[str, Any]) -> str:
+        cards = run.get("cards") or []
+        label = " + ".join(cards) if cards else f"Run {run.get('id')}"
+        status = (
+            '<span class="chip chip-playing">live now</span>'
+            if run.get("live")
+            else f'<span class="chip chip-{esc(_verdict_class(run.get("verdict")))}">'
+            f'{esc(_verdict_word(run.get("verdict")))}</span>'
+        )
+        passes = run.get("iterations")
+        meta = (
+            f"{passes} passes" if passes is not None else
+            f"{run.get('observation_count') or 0} samples"
+        )
+        return (
+            '<li class="run-row">'
+            f'<div class="run-cards">{card_link(cards[0]) if cards else esc(label)}'
+            + (f" + {card_link(cards[1])}" if len(cards) > 1 else "")
+            + "</div>"
+            f'<div class="run-meta">{status}<span class="faint">{esc(meta)}</span>'
+            f'<time>{esc(short_time(run.get("started_at")))}</time></div>'
+            f'<a class="run-open" href="/run/{esc(run.get("id"))}">watch →</a></li>'
+        )
+
+    live_html = "".join(row(run) for run in live) or (
+        '<li class="empty">Nothing is being tested right now. Queued pairings '
+        "start on their own.</li>"
+    )
+    ended_html = "".join(row(run) for run in ended[:40]) or (
+        '<li class="empty">No finished runs yet.</li>'
+    )
+    body = f"""
+<section class="hero" style="--i:0">
+  <h1>The Goldfish</h1>
+  <p class="lede">Watch a combo being played out in Magic. A live run shows its
+  moves as they happen, the board it is building, and — the question this whole
+  project asks — whether the board comes back around while something grows.</p>
 </section>
 <section class="panel" style="--i:1">
-  <div class="panel-title">What the tester did, step by step</div>
-  <p class="graph-caption">Each dot is a snapshot of the board. If the board
-  comes back to a state it was already in, the tester draws the loop.</p>
-  {fallback_note}
-  {graph}
-  {render_legend()}
-  {_cycle_note(cycles, verdict, reason_plain, growth_names, in_progress=in_progress)}
+  <div class="panel-title">Happening now</div>
+  <ul class="run-list">{live_html}</ul>
 </section>
 <section class="panel" style="--i:2">
-  <div class="panel-title">The board, step by step</div>
-  {board_html}
+  <div class="panel-title">Recently finished</div>
+  <ul class="run-list">{ended_html}</ul>
 </section>
-<section class="panel" style="--i:3">
-  <div class="panel-title">What we think this combo does</div>
-  {mech_html}
-</section>
-<section class="panel" style="--i:4">
-  <div class="panel-title">Run this test again</div>
-  {replay_html}
-</section>
-{technical}
 """
-    return layout(title, body, active="gallery", db_path=db_path)
+    return layout("The Goldfish", body, active="goldfish", db_path=db_path)
 
 
 # ---------------------------------------------------------------------------
@@ -573,10 +428,31 @@ def page_candidate(
     return layout(title, body, active="gallery", db_path=db_path)
 
 
+def _format_ts(value: Any) -> str:
+    if not value:
+        return "—"
+    return str(value)
+
+
+def _fmt_score(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    return f"{float(value):.3f}"
+
+
+def _meta(pairs: Sequence[tuple[str, Any]]) -> str:
+    cells = "".join(
+        f"<dt>{esc(key)}</dt><dd>{esc(value if value not in (None, '') else '—')}</dd>"
+        for key, value in pairs
+    )
+    return f'<dl class="meta">{cells}</dl>'
+
+
 __all__ = [
     "layout",
     "page_candidate",
     "page_gallery",
-    "page_run",
+    "page_goldfish",
+    "page_goldfish_index",
     "provenance_badge",
 ]

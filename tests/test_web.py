@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import sqlite3
 import threading
 import urllib.error
@@ -16,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from combo_discovery.corpus.names import normalize_card_name
 from combo_discovery.store import ExperimentStore
 from combo_discovery.web import theme as web_theme
 from combo_discovery.web.app import create_server
@@ -27,8 +29,12 @@ from combo_discovery.web.gallery import (
     card_role,
     pairing_idea,
 )
+from combo_discovery.web.goldfish import (
+    build_goldfish,
+    build_loop_graph,
+    reconstruct_board,
+)
 from combo_discovery.web.images import warm_images
-from combo_discovery.web.render import CYCLE_MARKER
 
 SIG_A = "a" * 64
 SIG_B = "b" * 64
@@ -85,7 +91,7 @@ def _seed_schema_words(conn: sqlite3.Connection) -> None:
         " mana_cost, type_line, oracle_text, effect_count, set_code, rarity)"
         " VALUES (?, 'imp1', 'sha', ?, ?, ?, ?, ?, 0, NULL, NULL)",
         [
-            (cid, name, name.lower(), mana, type_line, oracle)
+            (cid, name, normalize_card_name(name), mana, type_line, oracle)
             for cid, name, mana, type_line, oracle in CARDS
         ],
     )
@@ -215,10 +221,136 @@ def _start_server(db_path: Path):
     return srv
 
 
+# -- goldfish seeds ---------------------------------------------------------
+
+GF_KIKI = "Kiki-Jiki, Mirror Breaker"
+GF_EXARCH = "Deceiver Exarch"
+
+
+def _record_loop_run(store: ExperimentStore) -> int:
+    """A finished Kiki-Jiki + Deceiver Exarch loop, events and observations."""
+    run = store.start_witness_run(
+        proto_version=8,
+        policy_version="witness-v4",
+        scenario_json=PLAYING_SCENARIO,
+        seeds=[1],
+        candidate_key="42",
+        card_names=[GF_KIKI, GF_EXARCH],
+    )
+    store.record_witness_event(
+        run, "other", f"{GF_KIKI} enters the battlefield", turn=1, phase="MAIN1",
+        actor=GF_KIKI, detail={"from": "from=Hand;to=Battlefield"},
+    )
+    store.record_witness_event(
+        run, "other", f"{GF_EXARCH} enters the battlefield", turn=1, phase="MAIN1",
+        actor=GF_EXARCH, detail={"from": "from=Hand;to=Battlefield"},
+    )
+    store.record_witness_observation(
+        run, 0, turn=1, phase="MAIN1", signature=SIG_A,
+        resources={"tokens": 0, "permanents": 2, "mana": 48},
+    )
+    for index in (1, 2, 3):
+        store.record_witness_event(
+            run, "other", f"{GF_KIKI} becomes tapped", turn=1, phase="MAIN1",
+            actor=GF_KIKI, detail={"tapped": True},
+        )
+        store.record_witness_event(
+            run, "activate", f"{GF_KIKI} activates, targeting {GF_EXARCH}",
+            turn=1, phase="MAIN1", actor=GF_KIKI, target=GF_EXARCH,
+        )
+        store.record_witness_event(
+            run, "token", f"{GF_EXARCH} enters the battlefield", turn=1, phase="MAIN1",
+            actor=GF_EXARCH, detail={"from": "from=null;to=Battlefield"},
+        )
+        store.record_witness_event(
+            run, "copy", f"{GF_KIKI} copies {GF_EXARCH}", turn=1, phase="MAIN1",
+            actor=GF_KIKI, target=GF_EXARCH,
+        )
+        store.record_witness_event(
+            run, "trigger", f"{GF_EXARCH} triggers, targeting {GF_KIKI}",
+            turn=1, phase="MAIN1", actor=GF_EXARCH, target=GF_KIKI,
+        )
+        store.record_witness_event(
+            run, "untap", f"{GF_KIKI} untaps", turn=1, phase="MAIN1",
+            actor=GF_KIKI, detail={"tapped": False},
+        )
+        store.record_witness_event(
+            run, "iteration", f"Loop iteration {index}", turn=1, phase="MAIN1",
+            detail={"iteration": index},
+        )
+        store.record_witness_observation(
+            run, index, turn=1, phase="MAIN1", signature=SIG_A,
+            resources={"tokens": index, "permanents": 2 + index, "mana": 48},
+        )
+    store.record_witness_event(
+        run, "verdict", "Verdict: loops", turn=1, phase="MAIN1",
+        detail={"verdict": "loops", "iterations": 3},
+    )
+    store.record_witness_result(
+        run,
+        candidate_kind="pair",
+        candidate_key="42",
+        card_names=[GF_KIKI, GF_EXARCH],
+        verdict="loops",
+        iterations=3,
+        signature=[SIG_A, SIG_A, SIG_A, SIG_A],
+        resource_deltas=[{"tokens": 0}] * 4,
+        trace=[],
+        evidence={"kind": "existing_signature", "reason": "signature recurred"},
+    )
+    return run
+
+
+def _record_live_run(store: ExperimentStore) -> int:
+    """A run still in flight: narration streams, no result row."""
+    run = store.start_witness_run(
+        proto_version=8,
+        policy_version="witness-v4",
+        scenario_json=PLAYING_SCENARIO,
+        seeds=[7],
+        candidate_key="7",
+        card_names=["Splinter Twin", GF_EXARCH],
+    )
+    store.record_witness_event(
+        run, "play_land", "Mountain enters the battlefield", turn=1, phase="MAIN1",
+        actor="Mountain",
+    )
+    store.record_witness_event(
+        run, "other", "Splinter Twin enters the battlefield", turn=1, phase="MAIN1",
+        actor="Splinter Twin", detail={"from": "from=Hand;to=Battlefield"},
+    )
+    store.record_witness_observation(
+        run, 0, turn=1, phase="MAIN1", signature=SIG_B,
+        resources={"tokens": 0, "permanents": 2, "mana": 3},
+    )
+    return run
+
+
+
 @pytest.fixture
 def server(tmp_path: Path):
     db_path = tmp_path / "research.db"
     ids = _seed_db(db_path)
+    srv = _start_server(db_path)
+    try:
+        yield srv, ids, db_path
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        srv.store.close()
+
+
+@pytest.fixture
+def gf_server(tmp_path: Path):
+    """The Gallery seed plus a finished and a live Kiki-Jiki loop."""
+    db_path = tmp_path / "research.db"
+    ids = _seed_db(db_path)
+    store = ExperimentStore(db_path)
+    try:
+        ids["loop"] = _record_loop_run(store)
+        ids["live"] = _record_live_run(store)
+    finally:
+        store.close()
     srv = _start_server(db_path)
     try:
         yield srv, ids, db_path
@@ -244,6 +376,11 @@ def _tiles(column: dict) -> list[str]:
     return re.findall(r'<article class="tile.*?</article>', column["html"], re.S)
 
 
+def _text(body: str) -> str:
+    """Visible text of a document: tags stripped, entities decoded."""
+    return html.unescape(re.sub(r"<[^>]+>", "", body))
+
+
 # ---------------------------------------------------------------------------
 # The Gallery (home)
 # ---------------------------------------------------------------------------
@@ -262,9 +399,10 @@ def test_gallery_home_renders_board(server) -> None:
         assert heading in text, heading
     assert "Kiki-Jiki, Mirror Breaker" in text
     assert "scryfall.com/search" in text
-    # Shell: both destinations, Goldfish cue survives everywhere.
+    # Shell: both destinations; The Goldfish is now a real link, no badge.
     assert "The Goldfish" in text
-    assert "coming soon" in text
+    assert 'href="/goldfish"' in text
+    assert "coming soon" not in text
     assert "/api/gallery" in text
     # Narrow-width status tabs and their GET links.
     assert 'class="status-tabs"' in text
@@ -344,7 +482,8 @@ def test_gallery_pages_queued_in_sql(server) -> None:
     assert queued["page"] == 1 and queued["pages"] == 2
     assert queued["start"] == 1 and queued["end"] == PAGE_SIZE
     assert queued["next_href"].endswith("page=2")
-    assert "showing 1\u201312 of 15" in queued["html"]
+    assert "1\u201312 of 15" in queued["html"]
+    assert "col-head-page" in queued["html"]
     # The pager is in the column header, above the tiles.
     assert queued["html"].index("col-head-page") < queued["html"].index("board-body")
 
@@ -368,7 +507,7 @@ def test_gallery_pager_is_server_rendered(server) -> None:
     header_at = text.index("col-head-page", queued_start)
     body_at = text.index('data-body="queued"', queued_start)
     assert header_at < body_at
-    assert "showing 13\u201315 of 15" in text[header_at:body_at]
+    assert "13\u201315 of 15" in text[header_at:body_at]
     assert 'data-active="playing"' in text
     # Paging is a plain link, so it survives with JS disabled.
     assert "page=1" in text
@@ -393,9 +532,16 @@ def test_pager_header_and_count_formatter() -> None:
     }
     html_out = render_column(column)
     assert html_out.index("col-head-page") < html_out.index("board-body")
-    assert "showing 13\u201324 of 468,040" in html_out
-    assert "page 2 of 39,004" in html_out
+    assert "13\u201324 of 468,040" in html_out
+    assert "2/39,004" in html_out
     assert 'href="/?page=1"' in html_out and 'href="/?page=3"' in html_out
+
+    # A single-page column reads "showing all N", like its siblings.
+    one_page = dict(column, count=4, page=1, pages=1, start=1, end=4,
+                    showing=4, prev_href="", next_href="")
+    single = render_column(one_page)
+    assert "showing all 4" in single
+    assert "col-page-nav" not in single
 
     tabs = render_tabs(
         [
@@ -600,6 +746,254 @@ def test_warm_images_returns_seconds() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The Goldfish: watch a combo being tested
+# ---------------------------------------------------------------------------
+
+
+def test_goldfish_page_renders_the_run(server) -> None:
+    """A finished run on the base seed still renders the whole screen."""
+    srv, ids, _ = server
+    status, content_type, body = _get(srv.server_address[1], f"/run/{ids['loops']}")
+    assert status == 200
+    assert "text/html" in content_type
+    text = html.unescape(body)
+    assert "Loop found." in text
+    assert "The Goldfish" in text
+    assert f'data-run="{ids["loops"]}"' in text
+    assert "The board, rebuilt" in text
+    assert "How the loop turns" in text
+    assert "Play by play" in text
+    assert 'id="goldfish"' in text
+    # The Goldfish nav item is the active one and has no "coming soon" badge.
+    assert "coming soon" not in text
+    active = text[text.index('class="nav-item active"'):]
+    assert "The Goldfish" in active[:240]
+
+
+def test_goldfish_loop_screen_shows_loop_and_growth(gf_server) -> None:
+    srv, ids, _ = gf_server
+    port = srv.server_address[1]
+    status, _, body = _get(port, f"/run/{ids['loop']}")
+    assert status == 200
+    text = _text(body)
+    # 1. the play-by-play, in Magic words.
+    assert "Kiki-Jiki, Mirror Breaker copies Deceiver Exarch" in text
+    assert "Pass 3" in text
+    # 3. the hero pass counter and the growth sentence.
+    assert '<span class="pass-num">3</span>' in body
+    assert "Same board as pass 2, and 1 more permanent and 1 more token." in text
+    # counters are named values, never deltas like "Tokens +1".
+    assert 'data-resource="tokens"' in body
+    assert "Tokens +1" not in text
+    # 4. the verdict.
+    assert "The board came back to the same state while" in text
+    assert "piled up" in text
+    # 5. the loop graph: cards as nodes, actions on the edges, engine at hub.
+    assert "copies Deceiver Exarch" in text
+    assert "untaps Kiki-Jiki, Mirror Breaker" in text
+    assert "Kiki-Jiki, Mirror Breaker is the engine" in text
+    assert 'class="lg-node lg-hub"' in body
+    # 6. ended: no live flag, summary shown.
+    assert 'data-live="false"' in body
+    assert "The run" in text
+
+
+def test_goldfish_board_is_reconstructed(gf_server) -> None:
+    srv, ids, _ = gf_server
+    port = srv.server_address[1]
+    payload = build_goldfish(srv.store, ids["loop"])
+    assert payload is not None
+    board = payload["board"]
+    # Kiki + the original Exarch + three Exarch copy tokens, grouped by type.
+    assert board["permanents"] == 5
+    creatures = next(g for g in board["groups"] if g["key"] == "creature")
+    stacks = {p["name"]: p for p in creatures["perm"]}
+    kiki = stacks[GF_KIKI]
+    assert kiki["count"] == 1 and kiki["token"] is False
+    # Tapped is reconstructed from "becomes tapped"/"untaps": Kiki ends untapped.
+    assert kiki["tapped"] is False
+    exarch = [p for p in creatures["perm"] if p["name"] == GF_EXARCH]
+    assert sum(p["count"] for p in exarch) == 4
+    assert any(p["count"] == 1 and not p["copy"] for p in exarch)
+    assert any(p["count"] == 3 and p["token"] and p["copy"] for p in exarch)
+    html_body = _get(port, f"/run/{ids['loop']}")[2]
+    assert "chip-token" in html_body and "chip-copy" in html_body
+    assert "Not a board snapshot" in _text(html_body)
+
+
+def test_reconstruct_board_reads_other_by_its_text() -> None:
+    events = [
+        {"seq": 1, "kind": "play_land", "text": "Mountain enters the battlefield",
+         "actor": "Mountain", "detail": {"from": "from=Hand;to=Battlefield"}},
+        {"seq": 2, "kind": "token", "text": "Goblin enters the battlefield",
+         "actor": "Goblin", "detail": {"from": "from=null;to=Battlefield"}},
+        {"seq": 3, "kind": "copy", "text": "Kiki copies Goblin", "actor": "Kiki",
+         "target": "Goblin", "detail": {}},
+        {"seq": 4, "kind": "other", "text": "Mountain becomes tapped",
+         "actor": "Mountain", "detail": {"tapped": True}},
+        {"seq": 5, "kind": "other", "text": "Goblin gets counters",
+         "actor": "Goblin", "detail": {"old": 0, "new": 1}},
+        {"seq": 6, "kind": "untap", "text": "Mountain untaps", "actor": "Mountain",
+         "detail": {"tapped": False}},
+        {"seq": 7, "kind": "other", "text": "Goblin leaves the battlefield",
+         "actor": "Goblin", "detail": {}},
+    ]
+    board = reconstruct_board(events[:-1])
+    permanents = {p.name: p for p in board["permanents"]}
+    assert set(permanents) == {"Mountain", "Goblin"}
+    assert permanents["Mountain"].tapped is False
+    assert permanents["Goblin"].token is True
+    assert permanents["Goblin"].counters == 1
+    assert board["graveyard"] == {}
+
+    # A departure removes it and is recorded in the graveyard, but the stream
+    # does not say it went there — that assumption is documented on screen.
+    departed = reconstruct_board(events)
+    assert {p.name for p in departed["permanents"]} == {"Mountain"}
+    assert departed["graveyard"] == {"Goblin": 1}
+
+
+def test_build_loop_graph_reads_the_last_pass() -> None:
+    def action(kind, actor, target="", detail=None):
+        return {"kind": kind, "actor": actor, "target": target,
+                "text": f"{actor} {kind}s", "detail": detail or {}, "seq": 0}
+
+    pass_events = [
+        action("other", GF_KIKI), action("activate", GF_KIKI, GF_EXARCH),
+        action("token", GF_EXARCH), action("copy", GF_KIKI, GF_EXARCH),
+        action("trigger", GF_EXARCH, GF_KIKI), action("untap", GF_KIKI),
+    ]
+    events = [
+        *pass_events, {"kind": "iteration", "detail": {"iteration": 1}, "seq": 7},
+        *pass_events, {"kind": "iteration", "detail": {"iteration": 2}, "seq": 14},
+    ]
+    graph = build_loop_graph(events, {"resources": {"tokens": 9}})
+    assert graph["hub"] == GF_KIKI
+    assert graph["growth_node"] == GF_EXARCH
+    labels = [edge["label"] for edge in graph["edges"]]
+    assert labels == [
+        "copies Deceiver Exarch",
+        "triggers, targeting Kiki-Jiki, Mirror Breaker",
+        "untaps Kiki-Jiki, Mirror Breaker",
+    ]
+    # Never the internal vocabulary.
+    for edge in graph["edges"]:
+        for banned in ("signature", "Step ", "Tokens +", "back to the same board"):
+            assert banned not in edge["label"]
+
+
+def test_goldfish_live_run_says_live_and_polls(gf_server) -> None:
+    srv, ids, _ = gf_server
+    port = srv.server_address[1]
+    status, _, body = _get(port, f"/run/{ids['live']}")
+    assert status == 200
+    text = html.unescape(body)
+    assert 'data-live="true"' in text
+    assert "Still testing." in text
+    assert "Splinter Twin" in text
+    # The poll cursors are seeded so the first fetch is incremental.
+    assert 'data-seq="' in text and 'data-obs="' in text
+    assert "/events?after=" in body  # the JS poll target
+    assert "/board?events_after=" in body
+
+
+def test_run_events_endpoint_is_cursor_incremental(gf_server) -> None:
+    srv, ids, _ = gf_server
+    port = srv.server_address[1]
+    run = ids["loop"]
+    whole = _payload(port, f"/api/run/{run}/events?after=0")
+    assert whole["after"] == 0
+    assert whole["count"] == whole["total"] == 24
+    assert whole["cursor"] == whole["events"][-1]["seq"]
+    assert "copies" in whole["rows_html"]
+    assert "Deceiver Exarch" in whole["rows_html"]
+
+    # Past the cursor: nothing new.
+    empty = _payload(port, f"/api/run/{run}/events?after={whole['cursor']}")
+    assert empty["count"] == 0
+    assert empty["cursor"] == whole["cursor"]
+    assert empty["rows_html"] == ""
+
+    # A mid cursor returns only the rows after it.
+    mid = _payload(port, f"/api/run/{run}/events?after=5")
+    assert mid["count"] == 24 - 5
+    assert mid["events"][0]["seq"] == 6
+    assert mid["cursor"] == 24
+
+
+def test_run_observations_endpoint_is_cursor_incremental(gf_server) -> None:
+    srv, ids, _ = gf_server
+    port = srv.server_address[1]
+    run = ids["loop"]
+    whole = _payload(port, f"/api/run/{run}/observations?after=0")
+    assert whole["count"] == 4
+    assert whole["cursor"] == whole["observations"][-1]["id"]
+    assert whole["observations"][-1]["resources"]["tokens"] == 3
+    empty = _payload(port, f"/api/run/{run}/observations?after={whole['cursor']}")
+    assert empty["count"] == 0
+
+
+def test_run_board_endpoint_returns_fragments(gf_server) -> None:
+    srv, ids, _ = gf_server
+    port = srv.server_address[1]
+    payload = _payload(port, f"/api/run/{ids['loop']}/board")
+    assert payload["live"] is False
+    assert payload["seq"] == 24
+    for key in ("board", "graph", "loop", "counters", "verdict", "status", "summary"):
+        assert payload["html"][key]
+        assert key in payload["sig"]
+
+    # The cursors make the board call incremental too: past them, nothing new.
+    tail = _payload(port, f"/api/run/{ids['loop']}/board?events_after=24&obs_after=9999")
+    assert tail["new_events"] == 0 and tail["new_observations"] == 0
+    fresh = _payload(port, f"/api/run/{ids['loop']}/board?events_after=0&obs_after=0")
+    assert fresh["new_events"] == 24 and fresh["new_observations"] == 4
+
+
+def test_run_events_endpoint_404s_for_unknown_run(gf_server) -> None:
+    srv, _, _ = gf_server
+    with pytest.raises(urllib.error.HTTPError) as error:
+        _get(srv.server_address[1], "/api/run/999999/events")
+    assert error.value.code == 404
+
+
+def test_runs_api_includes_in_progress_with_names(gf_server) -> None:
+    srv, ids, _ = gf_server
+    payload = _payload(srv.server_address[1], "/api/runs")
+    by_id = {run["id"]: run for run in payload["runs"]}
+    live = by_id[ids["live"]]
+    assert live["live"] is True
+    assert live["verdict"] is None
+    assert live["cards"] == ["Splinter Twin", GF_EXARCH]
+    finished = by_id[ids["loop"]]
+    assert finished["live"] is False
+    assert finished["verdict"] == "loops"
+    assert finished["cards"] == [GF_KIKI, GF_EXARCH]
+
+
+def test_goldfish_index_lists_live_games(gf_server) -> None:
+    srv, ids, _ = gf_server
+    status, _, body = _get(srv.server_address[1], "/goldfish")
+    assert status == 200
+    text = html.unescape(body)
+    assert "Happening now" in text
+    assert "live now" in text
+    assert f"/run/{ids['live']}" in text
+    assert "Recently finished" in text
+    assert f"/run/{ids['loop']}" in text
+
+
+def test_goldfish_css_honours_reduced_motion() -> None:
+    from combo_discovery.web.assets import CSS
+
+    assert "@media (prefers-reduced-motion: reduce)" in CSS
+    # The loop graph's animation is a named keyframe the media query can stop.
+    assert "@keyframes flow" in CSS
+    assert "@keyframes halo" in CSS
+    assert "flex-wrap: nowrap" in CSS  # the pager never wraps
+
+
+# ---------------------------------------------------------------------------
 # deleted + retained routes
 # ---------------------------------------------------------------------------
 
@@ -629,7 +1023,7 @@ def test_run_detail_bridge(server) -> None:
     status, _, body = _get(srv.server_address[1], f"/run/{ids['loops']}")
     assert status == 200
     assert "Loop found." in body
-    assert CYCLE_MARKER in body
+    assert 'id="goldfish"' in body
 
 
 def test_candidate_bridge(server) -> None:
