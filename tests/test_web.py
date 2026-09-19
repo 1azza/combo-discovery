@@ -395,7 +395,7 @@ def test_gallery_home_renders_board(server) -> None:
     assert status == 200
     assert "text/html" in content_type
     text = html.unescape(body)
-    assert "The Gallery" in text
+    assert "Combos" in text
     assert 'id="gallery-board"' in text
     for heading in ("Queued", "Playing", "Loop found", "No loop", "Couldn't decide"):
         assert heading in text, heading
@@ -764,7 +764,7 @@ def test_goldfish_page_renders_the_run(server) -> None:
     assert f'data-run="{ids["loops"]}"' in text
     assert "The board, rebuilt" in text
     assert "How the loop turns" in text
-    assert "Play by play" in text
+    assert "Game Log" in text
     assert 'id="goldfish"' in text
     # The Goldfish nav item is the active one and has no "coming soon" badge.
     assert "coming soon" not in text
@@ -797,7 +797,7 @@ def test_goldfish_loop_screen_shows_loop_and_growth(gf_server) -> None:
     assert 'class="lg-node lg-hub"' in body
     # 6. ended: no live flag, summary shown.
     assert 'data-live="false"' in body
-    assert "The run" in text
+    assert "This goldfish run" in text
 
 
 def test_goldfish_board_is_reconstructed(gf_server) -> None:
@@ -1045,7 +1045,7 @@ def test_counters_are_board_first_and_label_the_engine_tallies() -> None:
     # The engine's own tallies are labelled as such and hidden behind a
     # disclosure, never presented as read off the board.
     assert '<details class="counter-raw">' in html_out
-    assert "Also reported by the engine — not read off the board" in html_out
+    assert "Also reported by the Rules Engine — not read off the board" in html_out
     engine = html_out.split('<div class="counters counters-engine">', 1)[1]
     assert 'data-resource="casts"' in engine
     assert 'data-resource="mana"' in engine

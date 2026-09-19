@@ -232,15 +232,16 @@ REASON_TEXT = (
     ),
     (
         "only policy-driven event counters grew",
-        "Nothing on the board changed — the tester was just going in circles.",
+        "Nothing on the board changed — the Combo Tester was just going in circles.",
     ),
     (
         "policy never matched an offered option",
-        "The tester didn't know which move to make here, so this combo hasn't been tested yet.",
+        "The Combo Tester didn't know which move to make here, so this combo "
+        "hasn't been tested yet.",
     ),
     (
         "need at least two post-baseline observations",
-        "The game ended before the tester could see enough.",
+        "The game ended before the Combo Tester could see enough.",
     ),
     (
         "no signature recurrence",
@@ -499,7 +500,7 @@ def render_graph(
 ) -> str:
     """Render the sequential state graph, cycles highlighted, as inline SVG."""
     if not samples:
-        return '<p class="empty">No observations recorded for this run.</p>'
+        return '<p class="empty">No Board Samples recorded for this run.</p>'
 
     vclass = verdict_class(verdict)
     cycles = find_cycles(samples)
@@ -640,7 +641,7 @@ def render_observation_table(
     include_signature: bool = False,
 ) -> str:
     if not samples:
-        return '<p class="empty">No observations recorded for this run.</p>'
+        return '<p class="empty">No Board Samples recorded for this run.</p>'
     columns = _resource_columns(samples)
     head = "<tr><th>Step</th><th>Turn</th><th>Phase</th>"
     if include_signature:
@@ -681,7 +682,7 @@ def render_observation_table(
 def render_signatures(samples: Sequence[dict[str, Any]]) -> str:
     """Full fingerprints, for the collapsed technical section."""
     if not samples:
-        return '<p class="empty">No observations recorded.</p>'
+        return '<p class="empty">No Board Samples recorded.</p>'
     items: list[str] = []
     for index, sample in enumerate(samples):
         baseline = index == 0 and sample.get("iteration") == 0

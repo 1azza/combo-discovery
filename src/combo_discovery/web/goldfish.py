@@ -447,8 +447,8 @@ def render_loop_hero(growth: dict[str, Any], live: bool) -> str:
     pass_now = growth["pass_now"]
     if not growth["observation_count"]:
         return (
-            '<p class="loop-waiting">Waiting for the first sample of the board. '
-            "The pass counter appears as soon as the tester looks.</p>"
+            '<p class="loop-waiting">Waiting for the first Board Sample. '
+            "The pass counter appears as soon as the Combo Tester looks.</p>"
         )
     if growth["same_board"]:
         if growth["grown"]:
@@ -462,9 +462,11 @@ def render_loop_hero(growth: dict[str, Any], live: bool) -> str:
                 "this pass."
             )
     elif growth["grown"]:
-        sentence = f"Still growing: {growth['growth_phrase']} since the last sample."
+        sentence = (
+            f"Still growing: {growth['growth_phrase']} since the last Board Sample."
+        )
     else:
-        sentence = "A fresh sample of the board; nothing has climbed yet."
+        sentence = "A fresh Board Sample; nothing has climbed yet."
     if live:
         state = (
             f'<span class="live"><span class="dot"></span> pass {pass_now} · '
@@ -478,7 +480,7 @@ def render_loop_hero(growth: dict[str, Any], live: bool) -> str:
         f'<span class="pass-word">{"pass" if pass_now == 1 else "passes"}</span></div>'
         f'<div class="loop-copy"><p class="loop-sentence">{sentence}</p>'
         f'<p class="loop-sub">{state}'
-        f'<span class="faint"> · {growth["observation_count"]} board samples</span>'
+        f'<span class="faint"> · {growth["observation_count"]} Board Samples</span>'
         "</p></div></div>"
     )
 
@@ -521,14 +523,14 @@ def render_counters(growth: dict[str, Any]) -> str:
     if board_keys:
         parts.append(
             '<p class="counter-note">Tracked on the board — rebuilt from the '
-            "narration</p>"
+            "Game Log</p>"
             f'<div class="counters counters-board">'
             f'{"".join(_counter_cell(k, resources[k]) for k in board_keys)}</div>'
         )
     if engine_keys:
         parts.append(
             '<details class="counter-raw">'
-            "<summary>Also reported by the engine — not read off the board"
+            "<summary>Also reported by the Rules Engine — not read off the board"
             "</summary>"
             f'<div class="counters counters-engine">'
             f'{"".join(_counter_cell(k, resources[k]) for k in engine_keys)}</div>'
@@ -975,7 +977,7 @@ def render_loop_graph(graph: dict[str, Any], live: bool) -> str:
     hub = graph.get("hub") or ""
     if not nodes or not steps:
         return (
-            '<p class="empty">No repeating action in the narration yet. '
+            '<p class="empty">No repeating action in the Game Log yet. '
             "The loop appears here once a pass repeats.</p>"
         )
 
@@ -1060,7 +1062,7 @@ def render_loop_graph(graph: dict[str, Any], live: bool) -> str:
     caption = ""
     if chain:
         caption = (
-            f'<p class="graph-caption loop-caption">{esc(hub)} is the engine. '
+            f'<p class="graph-caption loop-caption">{esc(hub)} is the engine card. '
             f"One pass, in order: {esc(chain)}, then it repeats.</p>"
         )
     return svg + _render_loop_list(graph, aria) + caption
@@ -1112,7 +1114,7 @@ def run_verdict(
                 "verdict": "error",
                 "headline": "Stopped early.",
                 "sentence": (
-                    "This run went quiet before a result was recorded. "
+                    "This goldfish run went quiet before a result was recorded. "
                     "Nothing here says the combo does or doesn't work."
                 ),
                 "word": "Stopped",
@@ -1122,8 +1124,8 @@ def run_verdict(
             "verdict": "inconclusive",
             "headline": "Still testing.",
             "sentence": (
-                "The tester is still working through this combo. The verdict shows "
-                "up here the moment it finishes."
+                "The Combo Tester is still working through this combo. The verdict "
+                "shows up here the moment it finishes."
             ),
             "word": "Testing",
         }
@@ -1154,15 +1156,15 @@ def run_verdict(
         sentence = reason_plain or "The board never came back to the same state."
     elif cls == "inconclusive":
         sentence = reason_plain or (
-            "The tester couldn't reach a verdict, and no reason was recorded — "
-            "so treat this as untested rather than safe."
+            "The Combo Tester couldn't reach a verdict, and no reason was recorded "
+            "— so treat this as untested rather than safe."
         )
     else:
         # An ``error`` verdict carries a raw exception in evidence; it belongs
         # in a log, not on a screen written for a Magic player.
         sentence = (
-            "The tester hit a problem and stopped before reaching a verdict, so "
-            "this run says nothing about whether the combo works."
+            "The Combo Tester hit a problem and stopped before reaching a verdict, "
+            "so this goldfish run says nothing about whether the combo works."
         )
 
     return {
@@ -1205,7 +1207,7 @@ def render_status(
         return (
             '<span class="live"><span class="dot"></span> live</span>'
             f'<span class="faint"> · watching · {event_count} moves · '
-            f"{observation_count} samples</span>"
+            f"{observation_count} Board Samples</span>"
         )
     if state == "stopped":
         return '<span class="live stale"><span class="dot"></span> stopped</span>'
@@ -1225,7 +1227,7 @@ def render_summary(
     seeds = run.get("seeds") or parse_json(run.get("seeds_json"), []) or []
     seeds_text = ", ".join(str(s) for s in seeds) if isinstance(seeds, list) else str(seeds)
     cards = _run_card_names(run, result)
-    title = " + ".join(cards) if cards else f"Run {run.get('id')}"
+    title = " + ".join(cards) if cards else f"Goldfish run {run.get('id')}"
     cells = [
         ("pairing", title),
         ("result", verdict_word((result or {}).get("verdict"))),
@@ -1278,7 +1280,7 @@ def render_board(board: dict[str, Any], groups: list[dict[str, Any]]) -> str:
     if not parts:
         parts.append(
             '<div class="board-zone"><p class="empty">No permanents named yet. '
-            "The board fills in as the narration arrives.</p></div>"
+            "The board fills in as the Game Log arrives.</p></div>"
         )
     if graveyard:
         items = "".join(

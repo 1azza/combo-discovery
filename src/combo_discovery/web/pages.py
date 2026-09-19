@@ -30,12 +30,12 @@ from .render import (
 )
 
 BRAND = "combo-discovery"
-TAGLINE = "combo loop tester"
+TAGLINE = "combo loop finder"
 
 #: (key, href or None, title, subtitle). ``None`` href = not shipped yet.
 NAV_ITEMS: tuple[tuple[str, str | None, str, str], ...] = (
-    ("gallery", "/", "The Gallery", "combos being checked"),
-    ("goldfish", "/goldfish", "The Goldfish", "watch a combo being tested"),
+    ("gallery", "/", "Combos", "pairings being checked"),
+    ("goldfish", "/goldfish", "The Goldfish", "watch a pairing being played out"),
 )
 
 
@@ -164,7 +164,7 @@ def page_gallery(payload: dict[str, Any], db_path: str) -> str:
     )
     body = f"""
 <section class="hero" style="--i:0">
-  <h1>The Gallery</h1>
+  <h1>Combos</h1>
   <p class="lede">Every pairing the machine thinks might loop, sorted by how
   promising it looks. Watch them move from queued, to on the table, to a result
   while it checks them.</p>
@@ -188,7 +188,7 @@ test. Columns page 12 at a time and refresh on their own.</p>
   <img class="lb-img" id="lightbox-img" alt="" width="672" height="936">
 </div>
 """
-    return layout("The Gallery", body, active="gallery", db_path=db_path)
+    return layout("Combos", body, active="gallery", db_path=db_path)
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +224,7 @@ def page_goldfish(payload: dict[str, Any], db_path: str) -> str:
     body = f"""
 <section id="goldfish" data-run="{esc(run_id)}" data-seq="{esc(seq)}"
          data-obs="{esc(obs_cursor)}" data-live="{str(bool(live)).lower()}">
-  <div class="crumbs"><a href="/">The Gallery</a> / \
+  <div class="crumbs"><a href="/">Combos</a> / \
 <a href="/goldfish">The Goldfish</a> / {esc(title)}</div>
   <header class="gf-head">
     <h1 class="gf-pair">{head_cards}</h1>
@@ -246,14 +246,14 @@ def page_goldfish(payload: dict[str, Any], db_path: str) -> str:
       <div class="panel-title">The board, rebuilt</div>
       <p class="board-note"><strong>Not a board snapshot.</strong> There is no
       per-permanent record in the data, so this is put back together from the
-      narration sentences. "Enters" adds a card, "leaves" takes it away (and we
+      Game Log. "Enters" adds a card, "leaves" takes it away (and we
       assume it went to the graveyard), tapped and counters are read from the
-      words. Treat it as a close reading, not the engine's own view.</p>
+      words. Treat it as a close reading, not the Rules Engine's own view.</p>
       <div id="gf-board">{html["board"]}</div>
     </section>
   </div>
   <section class="panel gf-pb-panel" style="--i:4">
-    <div class="panel-title">Play by play
+    <div class="panel-title">Game Log
       <span class="count-tag" id="gf-pb-count">{len(payload["events"])} moves</span>
     </div>
     <ol class="pb" id="pb-list">{rows}</ol>
@@ -261,7 +261,7 @@ def page_goldfish(payload: dict[str, Any], db_path: str) -> str:
       moves ↓</button>
   </section>
   <section class="panel gf-summary-panel" id="gf-summary-wrap"{summary_hidden}>
-    <div class="panel-title">The run</div>
+    <div class="panel-title">This goldfish run</div>
     <div id="gf-summary">{html["summary"]}</div>
   </section>
   <div class="lightbox" id="lightbox" hidden>
@@ -280,7 +280,7 @@ def page_goldfish_index(runs: Sequence[dict[str, Any]], db_path: str) -> str:
 
     def row(run: dict[str, Any]) -> str:
         cards = run.get("cards") or []
-        label = " + ".join(cards) if cards else f"Run {run.get('id')}"
+        label = " + ".join(cards) if cards else f"Goldfish run {run.get('id')}"
         status = (
             '<span class="chip chip-playing">live now</span>'
             if run.get("live")
@@ -290,7 +290,7 @@ def page_goldfish_index(runs: Sequence[dict[str, Any]], db_path: str) -> str:
         passes = run.get("iterations")
         meta = (
             f"{passes} passes" if passes is not None else
-            f"{run.get('observation_count') or 0} samples"
+            f"{run.get('observation_count') or 0} Board Samples"
         )
         return (
             '<li class="run-row">'
@@ -307,14 +307,15 @@ def page_goldfish_index(runs: Sequence[dict[str, Any]], db_path: str) -> str:
         "start on their own.</li>"
     )
     ended_html = "".join(row(run) for run in ended[:40]) or (
-        '<li class="empty">No finished runs yet.</li>'
+        '<li class="empty">No finished goldfish runs yet.</li>'
     )
     body = f"""
 <section class="hero" style="--i:0">
   <h1>The Goldfish</h1>
-  <p class="lede">Watch a combo being played out in Magic. A live run shows its
-  moves as they happen, the board it is building, and — the question this whole
-  project asks — whether the board comes back around while something grows.</p>
+  <p class="lede">Watch a pairing being played out in Magic. A live goldfish run
+  shows its moves as they happen, the board it is building, and — the question
+  this whole project asks — whether the board comes back around while something
+  grows.</p>
 </section>
 <section class="panel" style="--i:1">
   <div class="panel-title">Happening now</div>
@@ -405,7 +406,7 @@ def page_candidate(
 """
 
     body = f"""
-<div class="crumbs"><a href="/">The Gallery</a> / {esc(title)}</div>
+<div class="crumbs"><a href="/">Combos</a> / {esc(title)}</div>
 <section class="hero" style="--i:0">
   <h1 class="verdict-cards">{_card_links(names) if names else esc(title)}</h1>
   <p class="verdict-meta">{provenance_badge(badge_state)}</p>

@@ -159,7 +159,7 @@ class WebHandler(BaseHTTPRequestHandler):
             "Not found",
             '<section class="hero"><h1>Not found</h1>'
             '<p class="lede">That path does not exist in this console.</p>'
-            '<p><a href="/">← back to The Gallery</a></p></section>',
+            '<p><a href="/">← back to Combos</a></p></section>',
             active="gallery",
             db_path=self.db_path,
         )
