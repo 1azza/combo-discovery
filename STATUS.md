@@ -4,14 +4,51 @@ Last verified on the live harness and full test suite, 2026-09-12.
 
 The pipeline is **end-to-end and sound**: a headless rules oracle (Forge behind a
 gRPC harness), a card-effect corpus + interaction algebra, Commander Spellbook
-ground truth, and a witness verifier that plays candidate combos in the real
-engine. The verifier has been hardened through six concrete correctness fixes
-(five loop-judge false-positive classes plus one harness mana-read bug), each
-reproduced live and guarded by a regression matrix.
+ground truth, and a combo tester that plays candidate combos in the real
+engine. The Combo Tester and Loop Detector have been hardened through six
+concrete correctness fixes (five loop-detection false-positive classes plus one
+harness mana-read bug), each reproduced live and guarded by a regression matrix.
 
 Current focus: **trustworthy recall + candidate yield**. Recall on known combos
 is now measured (`scripts/known_recall.py`), and candidate novelty is probed by
 analogue transfer (`scripts/analogue_transfer.py`).
+
+## Vocabulary
+
+Prose uses plain, functional names. The system was previously described with
+metaphors; this table is the canonical mapping.
+
+| old name | new name | what it is |
+|---|---|---|
+| the Table | **Rules Engine** | the thing running the game (Forge behind the gRPC harness) |
+| the Scripts / card scripts | **Card Scripts** | the parsed Forge card-effect scripts |
+| the Index | **Ability Index** | the corpus of typed card effects and predicates |
+| the Map | **Interaction Graph** | the producer/consumer interaction edges between cards |
+| the Prospector | **Candidate Finder** | generates candidate pairings |
+| the Book | **Known Combos** | ground-truth combos (source: Commander Spellbook) |
+| the Pilot | **Combo Player** | the policy that plays a combo line out |
+| the Witness (plays a pairing out) | **Combo Tester** | drives a candidate pairing through the engine |
+| the Witness (decides whether it looped) | **Loop Detector** | judges recurrence + resource growth into a verdict |
+| observations / board samples | **Board Samples** | per-step snapshots of the board |
+| narration / events / the replay | **Game Log** | the recorded event stream for a Test Run |
+| a run / witness run | **Test Run** | one execution of a candidate pairing |
+| the Gauntlet | **Known-Combo Check** | checks a candidate against the known combos |
+| The Gallery (as a screen) | **Combos** | the user-facing list of pairings being checked |
+| The Goldfish | **The Goldfish** | kept — `goldfish` is real MTG vocabulary; one execution is a **goldfish run** |
+
+### Deliberate name mismatches
+
+The rename is documentation-only. These identifiers did **not** change, so prose
+must be mapped back to code by hand:
+
+- **DB tables:** `witness_runs` = Test Runs; `witness_results` = Test Results;
+  `witness_events` = Game Log; `witness_observations` = Board Samples;
+  `combo_hypotheses` = candidate pairings; `known_combos` = Known Combos;
+  `interactions` = Interaction Graph; `card_effects` / `card_predicates` =
+  Ability Index.
+- **CLI:** `combo-witness` (unchanged).
+- **Package:** `combo_discovery.witness` (unchanged).
+- **Web routes:** `/goldfish` and `/run/{id}` (unchanged).
 
 ## Verified
 
@@ -35,17 +72,17 @@ analogue transfer (`scripts/analogue_transfer.py`).
       `ManaAtom.COLORLESS` key (was `MagicColor.COLORLESS`, which hid 8 injected
       mana and made generic costs look free).
 - [x] PRIORITY decisions offer a synthetic `kind="pass"` option, so a client can
-      deliberately pass priority. The witness spin guard uses it to advance past
-      a no-op action — this is what lets `Fear of Missing Out + Helm of the Host`
-      reach combat within the default observation budget.
+      deliberately pass priority. The Combo Tester's spin guard uses it to advance
+      past a no-op action — this is what lets `Fear of Missing Out + Helm of the
+      Host` reach combat within the default Board Sample budget.
 
 ### Science layer
 
-- [x] Corpus: 33,688 Forge scripts parsed, 0 errors, 84,190 typed effects.
+- [x] Corpus: 33,688 Forge Card Scripts parsed, 0 errors, 84,190 typed effects.
 - [x] Predicate ontology + **interaction algebra** (ports / links / cycles /
       queries / budgets); 12 patterns. Fresh algebra pool after precision gates:
-      **3,472 hypotheses**, no illegal (Un-set/novelty) cards, no triggered copy
-      engines.
+      **3,472 candidate pairings**, no illegal (Un-set/novelty) cards, no triggered
+      copy engines.
 - [x] Ground truth: Commander Spellbook — 107,325 Vintage-legal variants,
       504,709 pairs (3,937 exact 2-card), 33,636 Scryfall oracle-id links.
 - [x] Evaluation: `known_pair` / `contained_in_known` / `unmatched` / `missed`
@@ -54,16 +91,16 @@ analogue transfer (`scripts/analogue_transfer.py`).
 - [x] Store schema v7, append-only (WAL, no UPDATE/DELETE).
 - [x] TUI (omarchy-styled): Corpus, Experiments, Candidates, Card Lab, Activity.
 - [x] **Web console** (`uv run combo-web`): a local, read-only, stdlib-only
-      server — a live feed of witness runs and a run page whose star is a
+      server — a live feed of Test Runs and a Test Run page whose star is a
       per-step **state graph** drawn from `witness_observations`, where a repeated
       board is drawn as a highlighted back-edge coloured by verdict. Wording is
       plain English for Magic players; internal detail lives in a collapsed
-      "Technical details" section. Store v7 streams per-step observations,
+      "Technical details" section. Store v7 streams per-step Board Samples,
       evidence and diagnostics live.
 
-### Witness verifier
+### Combo Tester and Loop Detector
 
-- [x] Scenario-driven witness search: inject a board, drive decisions with a
+- [x] Scenario-driven combo testing: inject a board, drive decisions with a
       choice-aware policy, detect structural recurrence + resource growth.
 - [x] **Seven false-positive / structural classes found and fixed** (each
       live-reproduced, each guarded by the acceptance matrix below):
@@ -82,8 +119,8 @@ analogue transfer (`scripts/analogue_transfer.py`).
          requires durable growth, so genuine loops are certified by the
          recurrence branch instead.
 - [x] Automatic abilities/triggers are credited to their link (the harness
-      already broadcasts every stack push as `SpellCast`), and observations are
-      sampled per trigger and at phase/turn boundaries, with a sticky duplicate
+      already broadcasts every stack push as `SpellCast`), and Board Samples are
+      taken per trigger and at phase/turn boundaries, with a sticky duplicate
       guard against the degenerate branch.
 - [x] Acceptance matrix (all live on the harness): Kiki + {Deceiver Exarch,
       Pestermite, Reptilian Recruiter, Bounding Krasis, Breaching Hippocamp,
@@ -95,7 +132,7 @@ analogue transfer (`scripts/analogue_transfer.py`).
 - [x] **Measured recall on known combos** (`scripts/known_recall.py`): over 133
       known exact 2-card copy/untap combos — **46% overall**, **55% on
       activated-engine combos**, **21% on triggered-engine combos** (up from
-      35% / 46% / 3% at v0.2.0). Undecided runs fell from 51 to 14.
+      35% / 46% / 3% at v0.2.0). Undecided Test Runs fell from 51 to 14.
 
 ### Candidate yield
 
@@ -107,12 +144,12 @@ analogue transfer (`scripts/analogue_transfer.py`).
       (`Splinter Twin + Giant-Sized Flying Ant`, a 2026-set card).
 - [x] Recent-engine sweeps (`scripts/recent_engines.py`): the copy class (3 recent
       engines) and the tap-cost class (101 engines) crossed with untappers, on an
-      interleaved fair sample — **0 loops in both**, 60 runs. The sweeps also
+      interleaved fair sample — **0 loops in both**, 60 Test Runs. The sweeps also
       exposed and fixed three generator leaks (mana lands, mana rocks with riders,
       and partner-outer sampling that tested one partner 30 times).
 - [x] Honest result: **no genuinely novel mechanic has been found.** Every
       near-miss was either documented elsewhere (Reddit / TappedOut / MTG
-      Salvation) or exposed as a verifier bug.
+      Salvation) or exposed as a Combo Tester bug.
 
 ### Search player (C)
 
@@ -120,7 +157,7 @@ analogue transfer (`scripts/analogue_transfer.py`).
       over PRIORITY decisions with snapshot/restore backtracking, replay-based
       branching for non-priority decisions, and a verdict-directed mode that aims
       at `detect_loop`'s verdict. Measured honestly: search itself changed no
-      verdicts. The recall gains that did land came from the verifier side —
+      verdicts. The recall gains that did land came from the Combo Tester side —
       trigger attribution, per-trigger and phase-boundary sampling, the zone-count
       resource split, and the PRIORITY pass option — not from search power.
 

@@ -1,4 +1,4 @@
-# Witness Search — Design & Feasibility
+# Combo Testing — Design & Feasibility
 
 Answer to: *"can we test games with a pre-configured board state, and drive a
 hypothesized combo line to see if it loops?"* — **Yes.** Forge already ships a
@@ -67,7 +67,7 @@ combat setup, scripted precast/stack states, planar/puzzle states.
   deep-copies the live game; restore re-applies `devModeSet` and
   `reorderOrderedZones`, and re-seeds `MyRandom`).
 
-## Witness search (v1)
+## Combo testing (v1)
 
 - **Driver:** the algebra's `Combo` object already carries ordered `links`
   (`kind`, `subkind`, `motif`, `src`/`dst` card names), `mechanism`,
@@ -79,7 +79,7 @@ combat setup, scripted precast/stack states, planar/puzzle states.
   `PRIORITY` pick the option matching the cursor link's ability; at
   targets/modes/cards/announce use the link's parameters; one pass = one loop
   iteration.
-- **Loop detection:** after each iteration, build a *witness signature* from
+- **Loop detection:** after each iteration, build a *structural signature* from
   FullState v2 that excludes monotonic resources but captures structure
   (battlefield names/tapped/counters, phase, active player, life, zone
   counts). A loop is `signature[i] == signature[j]` **and** a resource grew
@@ -116,16 +116,16 @@ TUI Candidate/Lab badge/action; `pool.map_witness`. Do not mutate
 
 ## Solved false-positive class: baseline-pair and cross-turn recurrence
 
-The verifier used to report `loops` for pairs that cannot loop. Live examples
+The Loop Detector used to report `loops` for pairs that cannot loop. Live examples
 (Kiki-Jiki + partner): Keldon Overseer, Elven Raft-Steerer, and — notably —
 **Firbolg Flutist**, which had been recorded as a genuine discovery before this
 bug was found.
 
-Root cause (from live runs, 2026-09-12; `combo-witness --json` + a driver that
-dumps per-observation `turn` and resources). Two independent traps:
+Root cause (from live Test Runs, 2026-09-12; `combo-witness --json` + a driver that
+dumps per-Board-Sample `turn` and resources). Two independent traps:
 
-1. **Baseline pair.** Observation 0 is sampled *before* the first iteration
-   completes. When the engine has not acted yet, observations 0 and 1 are
+1. **Baseline pair.** Board Sample 0 is taken *before* the first iteration
+   completes. When the engine has not acted yet, Board Samples 0 and 1 are
    bit-identical, and `detect_loop`'s degenerate branch certified `loops` from
    that pair alone. This fired on *every* candidate whose policy made no
    immediate progress, whether or not a loop existed. The earlier `turn` guard
@@ -142,7 +142,7 @@ relevant.
 
 Fix (in `detect_loop`):
 - ignore the pre-iteration baseline: a verdict needs >= 2 **post-baseline**
-  observations;
+  Board Samples;
 - require both endpoints of any recurrence (and the degenerate identical-hash
   check) to share a **known same turn**; an unknown turn (0) stays permissive.
 
@@ -182,8 +182,8 @@ They are still false positives, and the cards explain why: every extra-combat
 trigger in those pairs is gated to **once per turn** ("if it's the first combat
 phase of the turn" / "first time each turn"), so the chain is bounded, not
 infinite. The only thing growing across iterations was `casts` and
-`spells_resolved` — counters the *witness policy itself* drives by re-acting each
-pass — while the board stayed static and mana drained (40 -> 30).
+`spells_resolved` — counters the *combo-testing policy itself* drives by re-acting
+each pass — while the board stayed static and mana drained (40 -> 30).
 
 Fix: `GAME_STATE_GROWTH_KEYS = (mana, tokens, life, damage, permanents)`. A
 same-turn recurrence may only certify `loops` when at least one of these grows.
@@ -207,7 +207,7 @@ Residual limitations:
   false-negative class, chosen deliberately over shipping false positives.
 - Extra-combat loops backed by a genuinely unbounded extra-phase engine are not
   distinguishable yet, because `extra_phases` is not populated by the driver.
-- One completed iteration cannot certify a loop; runs with `--max-iterations 1`
+- One completed iteration cannot certify a loop; Test Runs with `--max-iterations 1`
   now return `inconclusive`.
 
 ## Remote optional triggers & tap/untap semantics
@@ -218,7 +218,7 @@ No new proto/decision type is needed for a combo trigger that is both
 
 - **Optional trigger.** The engine asks the *decider's* controller at
   resolution (`WrappedAbility.resolve` → `confirmTrigger`). `RemoteController`
-  answers `true` for a remote player, so the witness player always takes its own
+  answers `true` for a remote player, so the Combo Player always takes its own
   "you may" trigger. There is no CONFIRM decision type in protocol v7 and none
   is required — the policy cannot decline a confirmation, which is the correct
   conservative default for a loop-closing ETB.
@@ -241,7 +241,7 @@ tap) and refutes every such combo.
 ## Effort & risks
 
 **v1 ≈ 5–6 half-days:** proto+stubs 0.5; sync apply + marker/hash 0.5–1;
-runner/service handshake 1; Python scenario + witness + loop detector 1.5–2;
+runner/service handshake 1; Python scenario + combo tester + loop detector 1.5–2;
 store + tests 1; TUI/CLI 0.5–1; plus debugging against real combos.
 
 **Top risks:**
@@ -261,12 +261,12 @@ store + tests 1; TUI/CLI 0.5–1; plus debugging against real combos.
 7. **No structured Spellbook steps** — re-import required if step-following is
    wanted; v1 drives from ontology links.
 8. **Harness limits** — max 32 live snapshot tokens per game and one active
-   game per process constrain parallel witness search.
+   game per process constrain parallel combo testing.
 
-## Measured witness recall on KNOWN combos (Lever 0)
+## Measured Combo Tester recall on known combos (Lever 0)
 
 Instrument: `uv run python scripts/known_recall.py --mode home`. It runs the real
-verifier on Commander Spellbook's **exact 2-card** combos and splits the outcome
+Combo Tester on Commander Spellbook's **exact 2-card** combos and splits the outcome
 by engine type, so "we could not test it" is separated from "we tested it and
 said no". Measured 2026-09-12 over the 133 resolvable known combos in the
 copy/untap class (a copy engine plus an untapper):
@@ -281,13 +281,13 @@ Progression across the fixes: 32% -> 35% (activated/static copy engines, life ou
 of the signature) -> 43% (credit automatic trigger events to links, sample per
 trigger) -> **46%** (move monotonic zone counts into resources; surface a
 `pass` option at PRIORITY so the spin guard can advance past a no-op action).
-Triggered-engine recall more than doubled (9% -> 21%) and undecided runs fell from
+Triggered-engine recall more than doubled (9% -> 21%) and undecided Test Runs fell from
 51 to 14. The residual triggered gap is condition setup and combos that genuinely
 do not loop.
 
 Readings:
 
-- On its single best class the verifier confirms **about half of known combos**.
+- On its single best class the Combo Tester confirms **about half of known combos**.
 - **Triggered engines are effectively undriveable** (3%): the policy only acts on
   offered decisions, so attack/ETB/loyalty copy engines stall. Generator output
   now refuses to compose copy loops around them.
@@ -300,8 +300,8 @@ Readings:
   Ghired's granted ability needs "target token you control that entered this
   turn" and the scenario stages no token.
 
-Implication: the recall ceiling is the **player + scenario staging**, not the
-loop judge. Fixing the false negatives and the staging gaps raises trustworthy
+Implication: the recall ceiling is the **Combo Player + scenario staging**, not
+the Loop Detector. Fixing the false negatives and the staging gaps raises trustworthy
 yield without any search/ML work.
 
 ## Analogue transfer (Lever 1)
@@ -309,7 +309,7 @@ yield without any search/ML work.
 Instrument: `uv run python scripts/analogue_transfer.py`. It takes known
 activated copy engines (Kiki-Jiki, Splinter Twin), enumerates cards with the same
 *functional* ETB-untap shape as the known combo partners, drops pairs already in
-Spellbook, and witness-verifies the rest. It deliberately leans on where
+Spellbook, and combo-tests the rest. It deliberately leans on where
 Spellbook lags: functional near-reprints and recent sets.
 
 Result (2026-09-12): 2 engines x 39 partners = **49 uncatalogued analogue pairs,
@@ -331,14 +331,14 @@ Spellbook lags most.
 
 Takeaway: the method reliably produces uncatalogued pairs (4/49), but most are
 known in another form or documented in community threads. Genuine *novel
-mechanics* still require the search/player work.
+mechanics* still require the search and Combo Player work.
 
 ## Fourth false-positive class: mana-consuming recurrences
 
 Found by widening the engines in the analogue run. `Orthion, Hero of
 Lavabrink` (`{1}{R}, {T}: Create a token that's a copy of another target
 creature you control`) with any ETB untapper recurs in-turn with tokens growing,
-so the judge certified `loops`. But the untapper untaps **Orthion**, not the
+so the Loop Detector certified `loops`. But the untapper untaps **Orthion**, not the
 lands: every pass costs mana, so the "loop" is bounded by the starting pool
 (observed mana 40 -> 39 -> 38 ...).
 
@@ -352,7 +352,7 @@ Live: `Orthion + Pestermite` `loops` -> `inconclusive`; the genuine loops
 false-positive matrix are unchanged.
 
 **Resolved:** `The Jolly Balloon Man` also costs `{1}` to activate
-(`Cost$ 1 T` in its Forge script, versus `Cost$ 1 R T` for Orthion) yet its runs
+(`Cost$ 1 T` in its Forge script, versus `Cost$ 1 R T` for Orthion) yet its Test Runs
 reported mana constant at 40 and verified as `loops`, while Orthion's pool
 drained. Root cause found: the harness's FullState mana reader used
 `MagicColor.COLORLESS` (0) while the engine stores colorless mana at
@@ -366,7 +366,7 @@ summing both keys. `The Jolly Balloon Man` now reports 48 and drains per pass ->
 
 Goal: a goal-directed player that finds a legal decision sequence producing a
 loop, since the scripted policy only follows a fixed recipe. Built additively in
-`src/combo_discovery/search.py`; the witness driver and the harness are untouched.
+`src/combo_discovery/search.py`; the Combo Tester driver and the harness are untouched.
 
 | milestone | what | status |
 |---|---|---|
@@ -375,7 +375,7 @@ loop, since the scripted policy only follows a fixed recipe. Built additively in
 | M3 | `witness_with_search` fallback + `known_recall --search` | done, **measured +0** |
 | M4a | harness snapshot/restore for *non-priority* decisions | **not bounded** — priority has an "ask me again" contract (empty list); the non-priority callbacks have none and fall back to an abort NO-OP, so a real fix needs engine-level re-entrancy |
 | M4a' | `search_by_replay` — hybrid replay branching: branch at a non-priority decision by replaying the game from the start with one substituted answer (the harness is deterministic) | done, **0/7 payoff** |
-| M4b | `search_for_loops` — make the judge's verdict the objective: verify the baseline, then one sequence per recorded variant; first `loops` wins, else the strongest verdict | done, **0/7 loops** |
+| M4b | `search_for_loops` — make the Loop Detector's verdict the objective: verify the baseline, then one sequence per recorded variant; first `loops` wins, else the strongest verdict | done, **0/7 loops** |
 
 Measured findings (the 70-pair recall slice unless noted):
 
@@ -385,11 +385,11 @@ Measured findings (the 70-pair recall slice unless noted):
   twice" objective was reached in the *baseline* by 2 of them — so the objective,
   not the branching, was the problem.
 - M4b (verdict-directed) still found **0/7 loops**; the failures are
-  driver/observation reasons ("need at least two post-baseline observations",
+  driver/Board Sample reasons ("need at least two post-baseline Board Samples",
   counter-only growth, policy-never-matched), i.e. those pairs do not loop on the
   injected board, or need conditions/objects the scenario does not provide.
 
-Conclusion: the search machinery is built and aimed at the judge, but it cannot
+Conclusion: the search machinery is built and aimed at the Loop Detector, but it cannot
 manufacture a loop that is not there. The blocked recall on the triggered class is
 a property of the candidate set and of scenario staging, not of search power.
 

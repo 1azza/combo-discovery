@@ -200,10 +200,10 @@ Legend:
 - `[ ]` Generate candidate triples and larger combinations
 - `[ ]` Build minimal test decks
 - `[ ]` Build shell/accelerant templates
-- `[ ]` Implement scripted witness policies
-- `[ ]` Implement greedy/backtracking witness search
+- `[ ]` Implement scripted combo-testing policies
+- `[ ]` Implement greedy/backtracking combo testing
 - `[ ]` Implement MCTS after snapshot/restore is complete
-- `[ ]` Produce minimal witness action sequences
+- `[ ]` Produce minimal combo-test action sequences
 - `[ ]` Run counterfactual ablations for each card
 - `[ ]` Classify verified, refuted, and inconclusive candidates
 
@@ -227,7 +227,7 @@ Legend:
 - `[ ]` Add prompt manifests and model metadata
 - `[ ]` Baseline: oracle-text combo proposals
 - `[ ]` Ablation: ontology-grounded combo proposals
-- `[ ]` Candidate refinement from failed witness searches
+- `[ ]` Candidate refinement from failed Test Runs
 - `[ ]` LLM adjudication of verified novel candidates
 - `[ ]` Track token usage and cost per experiment
 - `[ ]` Publish cached prompts/responses where licensing permits

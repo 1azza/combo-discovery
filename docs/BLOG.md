@@ -17,10 +17,10 @@ The project has three parts:
    open-source Magic rules engine. We run it headless behind a gRPC harness, so a
    Python program can start games, inspect state, inject a starting board, and
    answer decisions. Same seed → byte-identical game, every time.
-2. **A generator.** We parse 33,688 Forge card scripts into 84,190 typed effects,
+2. **A generator.** We parse 33,688 Forge Card Scripts into 84,190 typed effects,
    project them into a predicate ontology, and search for pairs of cards whose
    effects can compose into a loop.
-3. **A verifier ("witness search").** For a candidate pair, we set up a board,
+3. **A Combo Tester ("combo testing").** For a candidate pair, we set up a board,
    drive the line with a scripted policy, and look for a game state that recurs
    with something growing — i.e. a real loop, not a plausible story.
 
@@ -31,18 +31,18 @@ to decide whether something is already known.
 ## The part that was actually hard: telling a loop from a story
 
 The generator is easy to make *plausible*. Proving it is not. Early on, the
-verifier confidently called things "infinite" that weren't. We found and fixed
+Loop Detector confidently called things "infinite" that weren't. We found and fixed
 **five** distinct false-positive classes, each reproduced live on the engine:
 
 | # | Bug | The tell |
 |---|---|---|
-| 1 | the pre-iteration **baseline pair** was compared to itself | observations 0 and 1 were bit-identical because *nothing had happened yet* |
+| 1 | the pre-iteration **baseline pair** was compared to itself | Board Samples 0 and 1 were bit-identical because *nothing had happened yet* |
 | 2 | a **cross-turn recurrence** counted as a loop | a creature that untaps each turn looked "repeating" — normal play, advances the turn every pass |
-| 3 | growth in the **policy's own counters** counted as a loop | a static board the pilot kept poking grew `casts`, not resources |
+| 3 | growth in the **policy's own counters** counted as a loop | a static board the Combo Player kept poking grew `casts`, not resources |
 | 4 | **life totals** were part of the "structure" | a combat loop damages the opponent every pass, so the structure never recurred and a real loop (`Combat Celebrant + Kiki-Jiki`) was rejected |
 | 5 | a **mana-consuming recurrence** counted as infinite | the copy ability costs mana, the untapper untaps the engine, not the lands — the loop is bounded by the pool (`Orthion, Hero of Lavabrink`) |
 
-A sixth bug lived in the **harness**, not the judge: the FullState reader reported
+A sixth bug lived in the **harness**, not the **Loop Detector**: the FullState reader reported
 colorless mana under the wrong key, so eight injected mana were invisible. The
 engine's AI prefers to spend invisible mana on generic costs, which made a `{1}`
 activation look free — a bounded burst masqueraded as an infinite loop.
@@ -73,15 +73,15 @@ The near-misses are equally instructive:
 Our own rule — **never call something new unless two independent sources agree**
 — refused all three. That rule did more for the result than any cleverness.
 
-## The real bottleneck: the pilot
+## The real bottleneck: the Combo Player
 
-The verifier only acts when the engine offers it a decision. That works
+The Combo Player only acts when the engine offers it a decision. That works
 beautifully for one family of combos — tap this, choose a target, untap that
 (Kiki-Jiki, Splinter Twin) — and fails for everything else. If a combo's key step
 is an *automatic* trigger (`when this attacks`, `on your upkeep`), there is no
-menu option to click, and the pilot sits still.
+menu option to click, and the Combo Player sits still.
 
-We measured this rather than guessing. Running the verifier against **known**
+We measured this rather than guessing. Running the Combo Tester against **known**
 combos (`scripts/known_recall.py`), over 133 exact two-card copy/untap combos:
 
 | engine type | n | confirmed | recall |
@@ -90,19 +90,19 @@ combos (`scripts/known_recall.py`), over 133 exact two-card copy/untap combos:
 | triggered (attack/ETB/loyalty) | 34 | 1 | **3%** |
 | all | 133 | 47 | **35%** |
 
-So even on its home turf the verifier confirms under half of combos we *know* are
-real, and it is nearly blind to triggered engines. And that biases discovery:
-the combos the pilot *can* play are the textbook shapes — the ones the community
-figured out years ago. The unknown ones are more likely to be unusual shapes, so
-the current architecture is pointed away from the frontier.
+So even on its home turf the Combo Tester confirms under half of combos we *know*
+are real, and it is nearly blind to triggered engines. And that biases discovery:
+the combos the Combo Player *can* play are the textbook shapes — the ones the
+community figured out years ago. The unknown ones are more likely to be unusual
+shapes, so the current architecture is pointed away from the frontier.
 
-That is why the honest next step is teaching the pilot to *play* — advance turns,
+That is why the honest next step is teaching the Combo Player to *play* — advance turns,
 attack, order the stack, search for a line — rather than adding more candidates.
 A bigger pile of untestable candidates doesn't help.
 
 ## What the result means
 
-A first-generation symbolic generator plus a rules-accurate verifier reliably
+A first-generation symbolic generator plus a rules-accurate Combo Tester reliably
 finds **database gaps** — real combos nobody has written down in the catalogue —
 but not **new mechanics**. And the two-source rule means most "finds" evaporate
 on contact with the community. The pipeline's real value so far is the
@@ -117,7 +117,7 @@ loop, and exactly which family of false positives it is dodging.
 cd forge-gui-desktop && java -Djava.awt.headless=true \
   -jar ../forge-harness/target/forge-harness-2.0.15-SNAPSHOT.jar --port 50051
 
-# measure verifier recall on known combos
+# measure Combo Tester recall on known combos
 uv run python scripts/known_recall.py --mode home
 
 # probe uncatalogued functional analogues of known combo partners
@@ -129,7 +129,7 @@ uv run pytest -q      # 546 passed, 1 skipped
 
 ## Limitations
 
-- **Recall is the player**, not the judge: triggered engines and any line needing
+- **Recall is the Combo Player**, not the Loop Detector: triggered engines and any line needing
   combat/phase navigation are out of reach.
 - **Net-neutral loops** (repeat forever with no surplus, e.g.
   `Palinchron + Molten Echoes`) are rejected, because the same "a resource must
@@ -143,9 +143,9 @@ uv run pytest -q      # 546 passed, 1 skipped
 
 ## The search player, and what it taught us
 
-We then built the "goal-directed pilot": a bounded search over legal decisions
-that branches with snapshot/restore, replays a candidate sequence through the
-verifier, and can aim directly at the judge's verdict. It works — positive
+We then built the "goal-directed Combo Player": a bounded search over legal
+decisions that branches with snapshot/restore, replays a candidate sequence
+through the Combo Tester, and can aim directly at the Loop Detector's verdict. It works — positive
 controls still return `loops` — but measured over the known-combo slice it
 **changed no verdicts**:
 
@@ -157,35 +157,36 @@ controls still return `loops` — but measured over the known-combo slice it
 The honest conclusion is not "search doesn't work" but **"search is not the
 bottleneck."** Those candidates do not loop on the injected board, or they need
 conditions the scenario does not provide (delirium wants a graveyard; soulbond
-wants pairing). The blocked recall comes from *what we ask the verifier to test*
-and *what the board provides* — not from search power.
+wants pairing). The blocked recall comes from *what we ask the Combo Tester to
+test* and *what the board provides* — not from search power.
 
 ## What actually moved the needle
 
-The recall gains came from the **verifier side**, not search:
+The recall gains came from the **Combo Tester side**, not search:
 
 - **Automatic triggers are credited to the combo step** (the harness already
-  broadcasts every stack push), and observations are sampled per trigger and at
+  broadcasts every stack push), and Board Samples are taken per trigger and at
   phase/turn boundaries — so a triggered line is no longer invisible.
 - **Monotonic zone counts left the structural signature.** `Fear of Missing Out`
   discards on every token copy, so the graveyard grew every iteration and the
   "structure" never recurred. `graveyard`/`library`/`hand` are now resources,
   like tokens and mana.
 - **The client can pass priority.** The harness now offers a `pass` option, so the
-  spin guard advances the pilot past a no-op action instead of burning the whole
-  observation budget on it.
+  spin guard advances the Combo Player past a no-op action instead of burning the
+  whole Board Sample budget on it.
 
 Together: triggered-engine recall 3% -> **21%**, overall 35% -> **46%**, activated
-46% -> **55%**, and undecided runs fell from 51 to 14 — with no false positive
-reintroduced.
+46% -> **55%**, and undecided Test Runs fell from 51 to 14 — with no false
+positive reintroduced.
 
 ## What we built to see it
 
-A local web console (`combo-web`) renders every run as a state graph: nodes are
-sampled boards, a repeated board is drawn as a highlighted back-edge, coloured by
-the verdict and labelled with what grew — *"the board came back to the same state
-while Tokens and Permanents kept growing."* All the jargon sits in a collapsed
-*Technical details* section, so a Magic player can read a run in five seconds.
+A local web console (`combo-web`) renders every Test Run as a state graph: nodes
+are Board Samples, a repeated board is drawn as a highlighted back-edge, coloured
+by the verdict and labelled with what grew — *"the board came back to the same
+state while Tokens and Permanents kept growing."* All the jargon sits in a
+collapsed *Technical details* section, so a Magic player can read a Test Run in
+five seconds.
 
 And when we widened the generator — recent copy engines, recent tap-cost engines,
 crossed with untappers on a fair interleaved sample — the answer was the same:
@@ -196,7 +197,7 @@ testing one partner thirty times).
 ## Future work
 
 1. **Candidate quality** — new-card focus and more drivable engine archetypes.
-   With the verifier measuring 46%, this is now the limit.
+   With the Combo Tester measuring 46%, this is now the limit.
 2. **Staging** — soulbond pairing is not expressible in the scenario format (it
    needs engine work); a token that "entered this turn" would unlock Ghired.
 3. **Search correctness** — replay matches answers positionally; match them by

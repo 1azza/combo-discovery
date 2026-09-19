@@ -253,7 +253,7 @@
   <section class="hero wrap" aria-labelledby="page-title">
     <p class="eyebrow">Direction &amp; plan</p>
     <h1 id="page-title">Where this is going</h1>
-    <p class="lede">From a candidate pool to a <strong>confirmed, publishable</strong> set of novel combos — with a trustworthy verifier, an independent second source, ranked search at scale, and a reproducible public artifact.</p>
+    <p class="lede">From a candidate pool to a <strong>confirmed, publishable</strong> set of novel combos — with a trustworthy Loop Detector, an independent second source, ranked search at scale, and a reproducible public artifact.</p>
     <p class="stamp">
       <span class="chip"><b>commit</b> 2b5918d</span>
       <span class="chip"><b>protocol</b> v7</span>
@@ -269,7 +269,7 @@
     <figure>
       <div class="fig-frame">
         <svg viewBox="0 0 560 730" role="img" aria-labelledby="figE-t">
-          <title id="figE-t">Goal pipeline from candidate to confirmed combo: mechanism audit, then two AND-ed gates (in-engine witness verification and an independent second source), then confirmed novel, human review and publishing. The verifier-hardening step is marked as the current position.</title>
+          <title id="figE-t">Goal pipeline from candidate to confirmed combo: mechanism audit, then two AND-ed gates (in-engine combo testing and an independent second source), then confirmed novel, human review and publishing. The Loop Detector hardening step is marked as the current position.</title>
 
           <!-- candidate -->
           <rect class="sv-panel" x="40" y="44" width="420" height="64" rx="9"/>
@@ -291,7 +291,7 @@
 
           <rect class="sv-gate-current" x="56" y="258" width="184" height="116" rx="8"/>
           <text class="t-label t-accent" x="68" y="282">GATE 1</text>
-          <text class="t-head" x="68" y="303">in-engine witness</text>
+          <text class="t-head" x="68" y="303">in-engine combo test</text>
           <text class="t-small" x="68" y="321">SetupScenario + loop detection</text>
           <text class="t-small" x="68" y="339">must return loops</text>
           <text class="t-label t-accent" x="68" y="362">CURRENT · HARDENING</text>
@@ -332,7 +332,7 @@
           <text class="t-sub" x="58" y="689">public, reproducible artifact</text>
         </svg>
       </div>
-      <figcaption><b>Diagram E — candidate to confirmed.</b> The two gates are joined by an implicit AND: engine verification alone is not enough, and an independent source that cannot be exercised in-engine is not enough either. The system currently sits at <span class="em">Gate 1</span>, hardening the verifier.</figcaption>
+      <figcaption><b>Diagram E — candidate to confirmed.</b> The two gates are joined by an implicit AND: engine verification alone is not enough, and an independent source that cannot be exercised in-engine is not enough either. The system currently sits at <span class="em">Gate 1</span>, hardening the Loop Detector.</figcaption>
     </figure>
   </section>
 
@@ -371,7 +371,7 @@
           <text class="t-label" x="36" y="310">PHASE 5</text>
           <text class="t-head" x="118" y="310">Candidate discovery</text>
           <rect class="sv-chip-part" x="420" y="296" width="104" height="22" rx="11"/><text class="t-chip-a" x="472" y="311" text-anchor="middle">IN PROGRESS</text>
-          <text class="t-desc" x="36" y="336">algebra + witness; verifier hardening in progress at Tier 1</text>
+          <text class="t-desc" x="36" y="336">algebra + combo testing; Loop Detector hardening in progress at Tier 1</text>
 
           <!-- 6 -->
           <rect class="sv-panel" x="20" y="368" width="520" height="82" rx="9"/>
@@ -387,7 +387,7 @@
           <text class="t-head" x="118" y="488">Model integration</text>
           <rect class="sv-chip-plan" x="420" y="474" width="104" height="22" rx="11"/><text class="t-chip-plan" x="472" y="489" text-anchor="middle">PLANNED</text>
           <text class="t-desc" x="36" y="514">GLM-5.3-flash provider · request/response caching · prompt manifests · oracle-text baseline</text>
-          <text class="t-desc" x="36" y="532">ontology-grounded ablation · refinement from failed witness searches</text>
+          <text class="t-desc" x="36" y="532">ontology-grounded ablation · refinement from failed Test Runs</text>
           <text class="t-desc" x="36" y="550">LLM adjudication of verified novel candidates · token/cost tracking · publish prompts</text>
 
           <!-- 8 -->
@@ -415,7 +415,7 @@
         <span class="pill partial">in progress</span>
         <span class="pill planned">planned</span>
       </div>
-      <figcaption><b>Diagram F — roadmap.</b> Phases 0–4 are foundation; phase 5 is where the work is. Everything from phase 6 on is planned and depends on a verifier that can be trusted.</figcaption>
+      <figcaption><b>Diagram F — roadmap.</b> Phases 0–4 are foundation; phase 5 is where the work is. Everything from phase 6 on is planned and depends on a Loop Detector that can be trusted.</figcaption>
     </figure>
   </section>
 
@@ -426,13 +426,13 @@
     <figure>
       <div class="fig-frame">
         <svg viewBox="0 0 560 500" role="img" aria-labelledby="figG-t">
-          <title id="figG-t">Three blockers to fix: trustworthy verifier, second source Tier B, and scale plus rank, each with its concrete plan and acceptance condition.</title>
+          <title id="figG-t">Three blockers to fix: trustworthy Loop Detector, second source Tier B, and scale plus rank, each with its concrete plan and acceptance condition.</title>
 
           <!-- 1 -->
           <rect class="sv-panel" x="20" y="44" width="520" height="170" rx="9"/>
           <circle class="sv-badge" cx="44" cy="70" r="13"/>
           <text class="t-num" x="44" y="74" text-anchor="middle">1</text>
-          <text class="t-title" x="68" y="75">Trustworthy verifier</text>
+          <text class="t-title" x="68" y="75">Trustworthy Loop Detector</text>
           <text class="t-sub" x="36" y="104">cast-faithful staging (cast the card with the correct conditions), or</text>
           <text class="t-sub" x="36" y="122">per-link "expected to surface" gates, or a stricter same-turn rule;</text>
           <text class="t-sub" x="36" y="140">fallback verdict inconclusive · reason unverifiable_staging.</text>
@@ -458,23 +458,23 @@
           <text class="t-sub" x="36" y="438">run ranked top-N discovery using the algebra's precision@10 ordering.</text>
         </svg>
       </div>
-      <figcaption><b>Diagram G — the fix path.</b> Blocker 1 changes what the verifier is allowed to call a loop. Blockers 2 and 3 only become meaningful once blocker 1 holds.</figcaption>
+      <figcaption><b>Diagram G — the fix path.</b> Blocker 1 changes what the Loop Detector is allowed to call a loop. Blockers 2 and 3 only become meaningful once blocker 1 holds.</figcaption>
     </figure>
   </section>
 
   <section class="sec wrap" aria-labelledby="s-h">
     <div class="sec-head"><span class="sec-no">04</span><h2 id="s-h">Milestones</h2></div>
-    <p class="sec-sub">The order milestones have to land in, from a verifier you can trust to a tagged public release.</p>
+    <p class="sec-sub">The order milestones have to land in, from a Loop Detector you can trust to a tagged public release.</p>
 
     <figure>
       <div class="fig-frame">
         <svg viewBox="0 0 560 300" role="img" aria-labelledby="figH-t">
-          <title id="figH-t">Milestone strip: verifier trustworthy, pool rebuilt, ranked batch at scale, Tier-B source live, about fifty candidates human-reviewed, blog and tagged release.</title>
+          <title id="figH-t">Milestone strip: Loop Detector trustworthy, pool rebuilt, ranked batch at scale, Tier-B source live, about fifty candidates human-reviewed, blog and tagged release.</title>
 
           <!-- row 1 -->
           <rect class="sv-panel" x="20" y="56" width="160" height="72" rx="9"/>
           <circle class="sv-badge-teal" cx="40" cy="78" r="11"/><text class="t-num-teal" x="40" y="82" text-anchor="middle">1</text>
-          <text class="t-sub" x="100" y="92" text-anchor="middle">Verifier</text>
+          <text class="t-sub" x="100" y="92" text-anchor="middle">Loop Detector</text>
           <text class="t-sub" x="100" y="108" text-anchor="middle">trustworthy</text>
 
           <rect class="sv-panel" x="200" y="56" width="160" height="72" rx="9"/>
@@ -511,7 +511,7 @@
           <line class="sv-line-strong" x1="200" y1="232" x2="182" y2="232" marker-end="url(#ar)"/>
         </svg>
       </div>
-      <figcaption><b>Diagram H — milestones.</b> The sequence matters: a trustworthy verifier unlocks the pool rebuild, which unlocks ranked search at scale and the second source, which together unlock human review and a release.</figcaption>
+      <figcaption><b>Diagram H — milestones.</b> The sequence matters: a trustworthy Loop Detector unlocks the pool rebuild, which unlocks ranked search at scale and the second source, which together unlock human review and a release.</figcaption>
     </figure>
   </section>
 
@@ -542,7 +542,7 @@
       <div class="card">
         <p class="k">Risk 05</p>
         <h3>One game per process</h3>
-        <p>A single active game per harness process constrains parallel witness search. Snapshots also cap at 32 live tokens.</p>
+        <p>A single active game per harness process constrains parallel combo testing. Snapshots also cap at 32 live tokens.</p>
       </div>
       <div class="card">
         <p class="k">Risk 06</p>

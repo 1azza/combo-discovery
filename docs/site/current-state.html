@@ -302,7 +302,7 @@
       <div class="card">
         <p class="k">Science · Python</p>
         <h3>Corpus to candidates</h3>
-        <p>Imports the card corpus and ground truth, builds the predicate ontology and interaction algebra, evaluates proposals, analyses motifs, runs witness search, and presents results in the review TUI.</p>
+        <p>Imports the card corpus and ground truth, builds the predicate ontology and interaction algebra, evaluates proposals, analyses motifs, runs combo testing, and presents results in the review TUI.</p>
       </div>
     </div>
   </section>
@@ -314,7 +314,7 @@
     <figure>
       <div class="fig-frame">
         <svg viewBox="0 0 560 990" role="img" aria-labelledby="figA-t">
-          <title id="figA-t">Master pipeline: eight stages tapped into the research.db store bus, from the Forge harness through corpus, ground truth, ontology, evaluation, motifs, witness search and human review.</title>
+          <title id="figA-t">Master pipeline: eight stages tapped into the research.db store bus, from the Forge harness through corpus, ground truth, ontology, evaluation, motifs, combo testing and human review.</title>
 
           <!-- store bus -->
           <rect class="sv-panel-2" x="20" y="42" width="64" height="908" rx="10"/>
@@ -339,7 +339,7 @@
           <text class="t-num" x="132" y="200" text-anchor="middle">2</text>
           <text class="t-title" x="158" y="193">Corpus import</text>
           <text class="t-label" x="528" y="193" text-anchor="end">IMPORT</text>
-          <text class="t-sub" x="158" y="213">in · Forge card scripts   →   out · typed effect rows</text>
+          <text class="t-sub" x="158" y="213">in · Forge Card Scripts   →   out · typed effect rows</text>
           <text class="t-cmd" x="158" y="245">combo-import-cards</text>
           <line class="sv-line-strong" x1="324" y1="264" x2="324" y2="278" marker-end="url(#ar)"/>
 
@@ -392,7 +392,7 @@
           <rect class="sv-panel" x="108" y="730" width="432" height="92" rx="9"/>
           <circle class="sv-badge" cx="132" cy="756" r="13"/>
           <text class="t-num" x="132" y="760" text-anchor="middle">7</text>
-          <text class="t-title" x="158" y="753">Witness search</text>
+          <text class="t-title" x="158" y="753">Combo testing</text>
           <text class="t-label" x="528" y="753" text-anchor="end">VERIFICATION</text>
           <text class="t-sub" x="158" y="773">in · candidate + scenario   →   out · in-engine loop verdict</text>
           <text class="t-cmd" x="158" y="805">combo-witness --candidate &lt;id&gt;</text>
@@ -480,18 +480,18 @@
           <text class="t-cmd" x="280" y="573" text-anchor="middle">engine vocabulary · 28 normalized event types</text>
         </svg>
       </div>
-      <figcaption><b>Diagram B — the gRPC boundary.</b> Requests carry decisions and answers one way; responses carry decision prompts, events and state the other. <b>Snapshot</b>, <b>Restore</b> and <b>SetupScenario</b> are the three RPCs that make witness search possible. The engine's raw log text is mapped onto a fixed vocabulary of <b>28 normalized event types</b>.</figcaption>
+      <figcaption><b>Diagram B — the gRPC boundary.</b> Requests carry decisions and answers one way; responses carry decision prompts, events and state the other. <b>Snapshot</b>, <b>Restore</b> and <b>SetupScenario</b> are the three RPCs that make combo testing possible. The engine's raw log text is mapped onto a fixed vocabulary of <b>28 normalized event types</b>.</figcaption>
     </figure>
   </section>
 
   <section class="sec wrap" aria-labelledby="s-c">
-    <div class="sec-head"><span class="sec-no">03</span><h2 id="s-c">Witness search inner loop</h2></div>
+    <div class="sec-head"><span class="sec-no">03</span><h2 id="s-c">Combo testing inner loop</h2></div>
     <p class="sec-sub">This is the part that turns a hypothesis into an engine-backed answer. A candidate pair is injected into a live game, driven with a choice-aware policy, and watched for structural recurrence plus growth.</p>
 
     <figure>
       <div class="fig-frame">
         <svg viewBox="0 0 560 800" role="img" aria-labelledby="figC-t">
-          <title id="figC-t">Witness search inner loop: candidate pair, scenario build, SetupScenario RPC, decision driving, event observation, loop detection, and the five possible verdicts, with an iteration arrow back to decision driving.</title>
+          <title id="figC-t">Combo testing inner loop: candidate pair, scenario build, SetupScenario RPC, decision driving, event observation, loop detection, and the five possible verdicts, with an iteration arrow back to decision driving.</title>
 
           <!-- 1 -->
           <rect class="sv-panel" x="20" y="56" width="420" height="66" rx="9"/>
@@ -549,7 +549,7 @@
           <text class="t-label t-accent" transform="rotate(-90 520 504)" x="520" y="504" text-anchor="middle">ITERATE · ONE PASS = ONE LOOP ITERATION</text>
         </svg>
       </div>
-      <figcaption><b>Diagram C — witness search inner loop.</b> Injection <b>places</b> a scenario; it does not cast. That distinction is the source of the false positives in section 06. A loop is only certified when the structure recurs <em>and</em> a tracked resource grows <em>and</em> the recurrence survives the same-turn guard.</figcaption>
+      <figcaption><b>Diagram C — combo testing inner loop.</b> Injection <b>places</b> a scenario; it does not cast. That distinction is the source of the false positives in section 06. A loop is only certified when the structure recurs <em>and</em> a tracked resource grows <em>and</em> the recurrence survives the same-turn guard.</figcaption>
     </figure>
   </section>
 
@@ -560,7 +560,7 @@
     <figure>
       <div class="fig-frame">
         <svg viewBox="0 0 560 840" role="img" aria-labelledby="figD-t">
-          <title id="figD-t">Map of the research.db tables grouped into corpus, ground truth Tier A, Tier B, ontology and candidates, experiments and trajectory, evaluation, motif, and witness clusters.</title>
+          <title id="figD-t">Map of the research.db tables grouped into corpus, ground truth Tier A, Tier B, ontology and candidates, experiments and trajectory, evaluation, motif, and Test Run clusters.</title>
 
           <!-- Corpus -->
           <rect class="sv-panel" x="20" y="52" width="520" height="98" rx="9"/>
@@ -619,9 +619,9 @@
           <rect class="sv-chip" x="27" y="672" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="687" text-anchor="middle">motif_runs</text>
           <rect class="sv-chip" x="155" y="672" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="687" text-anchor="middle">motif_enrichment</text>
 
-          <!-- Witness -->
+          <!-- Test Runs -->
           <rect class="sv-panel" x="20" y="724" width="520" height="70" rx="9"/>
-          <text class="t-label" x="34" y="748">WITNESS</text>
+          <text class="t-label" x="34" y="748">TEST RUNS</text>
           <rect class="sv-chip" x="27" y="756" width="122" height="22" rx="4"/><text class="t-chip" x="88" y="771" text-anchor="middle">witness_runs</text>
           <rect class="sv-chip" x="155" y="756" width="122" height="22" rx="4"/><text class="t-chip" x="216" y="771" text-anchor="middle">witness_results</text>
 
@@ -660,7 +660,7 @@
     <div class="statrow">
       <h3>Stored candidates</h3>
       <div class="stat-grid">
-        <div class="stat"><span class="n">447,171</span><span class="l">combo hypotheses</span></div>
+        <div class="stat"><span class="n">447,171</span><span class="l">candidate pairings</span></div>
       </div>
     </div>
 
@@ -699,7 +699,7 @@
     <h3>Motif enrichment</h3>
     <p>Known pairs are strongly predicted by motifs: the copy/untap motif shows a lift of <b>328</b>, cross-motifs range from <b>18 to 1094</b>, with <b>p ≈ 0</b>. Crucially, false positives are also enriched. The problem is therefore the composition rules that combine motifs, not the motif vocabulary itself.</p>
 
-    <h3>Witness search, live</h3>
+    <h3>Combo testing, live</h3>
     <div class="grid-2">
       <div>
         <p><span class="pill ok">loops</span> Genuine cycles verified this session, all with Kiki-Jiki:</p>
@@ -728,11 +728,11 @@
 
   <section class="sec wrap" aria-labelledby="s-limits">
     <div class="sec-head"><span class="sec-no">06</span><h2 id="s-limits">What does not work yet</h2></div>
-    <p class="sec-sub">Stated plainly, because a verifier you cannot trust is worse than no verifier.</p>
+    <p class="sec-sub">Stated plainly, because a Loop Detector you cannot trust is worse than no Loop Detector.</p>
 
     <ol class="problems">
       <li>
-        <h3>Witness false positives (open)</h3>
+        <h3>Loop Detector false positives (open)</h3>
         <p>Kiki-Jiki + Keldon Overseer and Kiki-Jiki + Elven Raft-Steerer are reported <code class="ic">loops</code> but cannot legitimately loop. Scenario injection <em>places</em> the card without <em>casting</em> it, so cast-conditional (<code class="ic">Card.Self + kicked</code>) and landfall triggers fire wrongly.</p>
         <p class="why">live diagnosis: link_hits=[0, 4] — the untap link never executed, yet state recurred and a traced resource grew. Until fixed, <code class="ic">loops</code> verdicts for cast-conditional or landfall cards are unverified.</p>
       </li>
@@ -746,7 +746,7 @@
       </li>
       <li>
         <h3>No scale run yet</h3>
-        <p>Only a small discovery batch has been executed. Two witness runs are persisted in this database.</p>
+        <p>Only a small discovery batch has been executed. Two Test Runs are persisted in this database.</p>
       </li>
       <li>
         <h3>Engine limits</h3>
