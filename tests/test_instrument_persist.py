@@ -8,6 +8,7 @@ result/evidence) rather than the helpers in isolation.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 from pathlib import Path
 
@@ -231,3 +232,82 @@ def test_analogue_parallel_candidate_matches_serial(tmp_path, monkeypatch):
         assert built == serial_by_pair[(engine, partner)]
         # The parity hazard: the parallel path must not stage oracle texts.
         assert built.oracle_texts == ()
+
+
+def _seed_known_combo(db) -> None:
+    conn = sqlite3.connect(db)
+    for normalized in ("kiki-jiki, mirror breaker", "zealous conscripts"):
+        conn.execute(
+            "INSERT INTO known_combo_cards (combo_id, role, raw_name,"
+            " normalized_name, import_id) VALUES (1, 'use', ?, ?, 'imp1')",
+            (normalized, normalized),
+        )
+    conn.commit()
+    conn.close()
+
+
+def test_known_recall_manifest_in_json_and_run_notes(tmp_path, monkeypatch):
+    """The corpus manifest is recoverable from the JSON *and* the run rows."""
+    db = tmp_path / "research.db"
+    ExperimentStore(db).close()
+    _seed_cards(db)
+    _seed_known_combo(db)
+    monkeypatch.setattr(kr, "ForgeEnvClient", _FakeHarness)
+    out = tmp_path / "recall_manifest.json"
+
+    rc = kr.main(
+        ["--db", str(db), "--mode", "home", "--start", "0", "--count", "3",
+         "--out", str(out), "--persist", "--note", "unit-test"]
+    )
+    assert rc == 0
+
+    payload = json.loads(out.read_text())
+    manifest = payload["manifest"]
+    assert manifest["mode"] == "home"
+    assert manifest["start"] == 0
+    assert manifest["count"] == 1  # only one known combo was seeded
+    assert manifest["total_available"] == 1
+    assert manifest["note"] == "unit-test"
+    assert manifest["wall_seconds"] is not None
+    assert manifest["run_rows_annotated"] == 1
+    assert manifest["recall"]["n"] == 1
+    assert payload["results"]
+
+    store = ExperimentStore(db)
+    try:
+        runs = store.witness_runs()
+    finally:
+        store.close()
+    assert len(runs) == 1
+    # The run row's notes now carry the same manifest (minus the annotation count).
+    notes = json.loads(runs[0]["notes"])
+    assert notes["mode"] == "home"
+    assert notes["count"] == 1
+    assert notes["note"] == "unit-test"
+    assert "run_rows_annotated" not in notes
+
+
+def test_annotate_run_notes_only_touches_new_empty_rows(tmp_path):
+    db = tmp_path / "research.db"
+    store = ExperimentStore(db)
+    try:
+        old = store.start_witness_run(candidate_key="1", notes="keep me")
+        target = store.start_witness_run(candidate_key="1", notes="")
+        already = store.start_witness_run(candidate_key="1", notes="already set")
+        other = store.start_witness_run(candidate_key="2", notes="")
+    finally:
+        store.close()
+
+    updated = kr._annotate_run_notes(str(db), ["1"], "MANIFEST", min_run_id=old)
+    assert updated == 1  # only the empty, newer row with the matching key
+
+    store = ExperimentStore(db)
+    try:
+        runs = {r["id"]: r for r in store.witness_runs()}
+    finally:
+        store.close()
+    assert runs[old]["notes"] == "keep me"
+    assert runs[target]["notes"] == "MANIFEST"
+    assert runs[already]["notes"] == "already set"
+    assert runs[other]["notes"] == ""
+
