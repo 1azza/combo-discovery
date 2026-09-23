@@ -110,6 +110,43 @@ _STALE_DECISION_MARKERS = (
 # option/candidate message. Both are deterministic policy bugs.
 _POLICY_ERROR_PHRASES = ("must use", "is not among")
 
+# FAILED_PRECONDITION / GameNotActiveError detail texts (lower-cased
+# substrings) that mean the harness refused to *start* a new game because a
+# previous one is still active or its engine thread did not terminate.  These
+# are harness-state failures — a retry with ``force_stop_active=True`` (and, if
+# needed, a harness process restart) can clear them — never a property of the
+# combo under test.  Verified against forge-harness's ForgeEnvService:
+#   "a game is already active (game_id=...); stop it first"
+#   "previous game thread (game_id=...) did not terminate; refusing to start a
+#    new game"
+START_REFUSAL_MARKERS = (
+    "did not terminate",
+    "already active",
+    "refusing to start",
+    "refusing to reseed",
+    "previous game",
+    "stop it first",
+)
+
+
+def is_start_refusal(error: object) -> bool:
+    """True when ``error`` (an exception or a message) is a harness *start*
+    refusal rather than a combo verdict or a policy bug.
+
+    Matches the two FAILED_PRECONDITION shapes the harness emits from
+    StartGame: a leftover game is still active, or the previous game's engine
+    thread did not terminate (the determinism guard keeps the poisoned runner
+    registered and refuses every later StartGame until process restart).  The
+    message from a run wrapped by the witness driver keeps the original text
+    (``"GameNotActiveError: FAILED_PRECONDITION: previous game thread ..."``),
+    so a plain substring match works on both an exception and a recorded
+    ``error`` string.
+    """
+    if error is None:
+        return False
+    text = str(error).lower()
+    return any(marker in text for marker in START_REFUSAL_MARKERS)
+
 
 def _is_stale_decision_detail(details: str) -> bool:
     """True if a decision-call INVALID_ARGUMENT detail describes a stale/resolved

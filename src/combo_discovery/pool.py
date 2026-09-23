@@ -69,6 +69,7 @@ from .env import (
     HarnessTimeoutError,
     ProtocolMismatchError,
     StaleDecisionError,
+    is_start_refusal,
 )
 from .runner import GameResult, run_game
 
@@ -320,10 +321,15 @@ class WorkerPool:
                 max_turns=max_turns, timeout_seconds=timeout_seconds,
                 store=store, run_id=run_id,
             )
-        except GameNotActiveError:
+        except GameNotActiveError as e:
             # A worker left with an active game (crashed client, leftover
             # game) rejects StartGame with FAILED_PRECONDITION. One forced
-            # stop, then retry once.
+            # stop, then retry once. A GameNotActiveError that is NOT a start
+            # refusal (e.g. a mid-game lifecycle error) is not recovered by
+            # starting a new game, so it propagates and is handled as a normal
+            # job failure by the caller.
+            if not is_start_refusal(e):
+                raise
             logger.warning(
                 "worker at %s has a leftover active game; retrying seed %d "
                 "with force_stop_active=True",
@@ -501,6 +507,34 @@ class WorkerPool:
                 self._revive_fail_counts[idx] = 0
             return False
         self._revive_fail_counts[idx] = 0
+        return True
+
+    def restart_worker(self, index: int) -> bool:
+        """Force-kill and respawn the owned harness at ``index``.
+
+        A start refusal of the "previous game thread did not terminate" kind is
+        deliberately unrecoverable in-process: the harness keeps the poisoned
+        runner registered and refuses every later StartGame until the process
+        restarts (its determinism guard).  Used by the batch path, which leases
+        its own clients outside this pool's rotation, to recover such a port.
+
+        Returns True when a process was respawned; False when this pool does
+        not own the harness process (an external, pre-running harness cannot be
+        restarted from here).  ``ProtocolMismatchError`` and unexpected errors
+        from the caller's reconnect are the caller's to handle; this method only
+        manages the process.
+        """
+        if not self._owns_process(index):
+            return False
+        cmd_template = self._cmd_template
+        assert cmd_template is not None  # implied by _owns_process
+        self._kill_proc(self._procs[index])
+        self._procs[index] = self._spawn(cmd_template, self.base_port + index)
+        self._revive_fail_counts[index] = 0
+        logger.warning(
+            "restarted harness on port %d after a start refusal",
+            self.base_port + index,
+        )
         return True
 
     def close(self) -> None:

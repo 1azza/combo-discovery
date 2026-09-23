@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import Counter
 
 import pytest
 
 from combo_discovery import batch
+from combo_discovery.env import GameNotActiveError
 from combo_discovery.generated import forge_env_pb2 as pb
 from combo_discovery.store import ExperimentStore
 from combo_discovery.witness import WitnessResult
@@ -267,3 +269,216 @@ def test_batch_persist_streams_witness_events(monkeypatch, tmp_path):
     assert "copy" in kinds
     assert "untap" in kinds
     assert runs[0]["candidate_key"] == f"{KIKI}+{DECEIVER}"
+
+
+# ---------------------------------------------------------------------------
+# Stale-game recovery: a start refusal is retried, not recorded as an error
+# ---------------------------------------------------------------------------
+
+REFUSAL = (
+    "FAILED_PRECONDITION: previous game thread (game_id=57) did not terminate; "
+    "refusing to start a new game"
+)
+
+
+def _force_flags(kwargs) -> bool:
+    return bool(kwargs.get("start_game_kwargs", {}).get("force_stop_active"))
+
+
+def test_start_refusal_is_retried_and_records_real_verdict(monkeypatch):
+    """First attempt hits the 'previous game did not terminate' refusal; the
+    forced-stop retry succeeds, so the task records its real verdict."""
+    monkeypatch.setattr(batch, "ForgeEnvClient", FakeClient)
+    calls = {"n": 0}
+    forces: list[bool] = []
+
+    def fake_run_witness(client, scenario, policy, **kwargs):
+        calls["n"] += 1
+        forces.append(_force_flags(kwargs))
+        if calls["n"] == 1:
+            raise GameNotActiveError(REFUSAL)
+        return WitnessResult(
+            verdict="loops",
+            scenario=scenario,
+            iterations=2,
+            evidence={"diagnostics": {"executed_actions": 2}},
+        )
+
+    monkeypatch.setattr(batch, "run_witness", fake_run_witness)
+    stats: dict = {}
+
+    records = batch.run_batch([("e0", "p0")], workers=1, decks=DECKS, stats=stats)
+
+    assert records[0]["verdict"] == "loops"
+    assert not records[0]["error"]
+    # First attempt normal, retry with force_stop_active=True.
+    assert forces == [False, True]
+    assert stats["recovered"] == 1
+    assert stats["unrecovered"] == 0
+
+
+def test_error_verdict_refusal_is_retried(monkeypatch):
+    """The witness driver swallows a start refusal into an error verdict; that
+    shape is detected and retried too."""
+    monkeypatch.setattr(batch, "ForgeEnvClient", FakeClient)
+    calls = {"n": 0}
+
+    def fake_run_witness(client, scenario, policy, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return WitnessResult(
+                verdict="error",
+                scenario=scenario,
+                iterations=0,
+                error=REFUSAL,
+                evidence={"error": f"GameNotActiveError: {REFUSAL}"},
+            )
+        return WitnessResult(
+            verdict="no_loop",
+            scenario=scenario,
+            iterations=1,
+            evidence={"diagnostics": {"executed_actions": 1}},
+        )
+
+    monkeypatch.setattr(batch, "run_witness", fake_run_witness)
+    stats: dict = {}
+
+    records = batch.run_batch([("e0", "p0")], workers=1, decks=DECKS, stats=stats)
+
+    assert records[0]["verdict"] == "no_loop"
+    assert calls["n"] == 2
+    assert stats["recovered"] == 1
+
+
+def test_bad_port_retired_and_queue_continues(monkeypatch):
+    """A port that keeps refusing is retired; every task still gets a verdict
+    from a live port, so one stuck harness cannot consume the rest of the queue."""
+    monkeypatch.setattr(batch, "ForgeEnvClient", FakeClient)
+    by_port: Counter = Counter()
+
+    def fake_run_witness(client, scenario, policy, **kwargs):
+        by_port[client.port] += 1
+        if client.port == 50051:
+            raise GameNotActiveError(REFUSAL)
+        return WitnessResult(
+            verdict="loops",
+            scenario=scenario,
+            iterations=1,
+            evidence={"diagnostics": {"executed_actions": 1}},
+        )
+
+    monkeypatch.setattr(batch, "run_witness", fake_run_witness)
+    stats: dict = {}
+    pairs = [(f"e{i}", f"p{i}") for i in range(6)]
+
+    records = batch.run_batch(pairs, workers=2, decks=DECKS, stats=stats)
+
+    assert [r["verdict"] for r in records] == ["loops"] * 6
+    assert stats["retired_ports"] == [50051]
+    assert stats["unrecovered"] == 0
+    # The poisoned port is used only for its bounded attempts, never the queue.
+    assert by_port[50051] <= batch.MAX_ATTEMPTS_PER_PORT
+
+
+def test_all_ports_bad_records_errors_without_hanging(monkeypatch):
+    """When every port is poisoned the batch stops (bounded), recording errors
+    rather than spinning forever."""
+    monkeypatch.setattr(batch, "ForgeEnvClient", FakeClient)
+
+    def fake_run_witness(client, scenario, policy, **kwargs):
+        raise GameNotActiveError(REFUSAL)
+
+    monkeypatch.setattr(batch, "run_witness", fake_run_witness)
+    stats: dict = {}
+    pairs = [(f"e{i}", f"p{i}") for i in range(4)]
+
+    records = batch.run_batch(pairs, workers=2, decks=DECKS, stats=stats)
+
+    assert len(records) == 4
+    assert all(r["verdict"] == "error" for r in records)
+    assert stats["unrecovered"] == 4
+
+
+def test_recovery_stats_shape(monkeypatch):
+    monkeypatch.setattr(batch, "ForgeEnvClient", FakeClient)
+    monkeypatch.setattr(batch, "run_witness", make_fake_run_witness())
+    stats: dict = {}
+
+    batch.run_batch(PAIRS, workers=2, decks=DECKS, stats=stats)
+
+    assert stats == {
+        "recovered": 0,
+        "recovery_attempts": 0,
+        "recovery_failures": 0,
+        "unrecovered": 0,
+        "retired_ports": [],
+    }
+
+
+def test_recovered_task_persists_real_verdict_not_error(monkeypatch, tmp_path):
+    """A recovered task leaves exactly one run row with its real verdict — no
+    orphan error row from the refused first attempt."""
+    path = tmp_path / "recovered.sqlite"
+    ExperimentStore(path).close()  # create the schema
+    monkeypatch.setattr(batch, "ForgeEnvClient", FakeClient)
+    monkeypatch.setattr(batch, "_load_card_meta", lambda db: {})
+    calls = {"n": 0}
+
+    def fake_run_witness(client, scenario, policy, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise GameNotActiveError(REFUSAL)
+        return WitnessResult(
+            verdict="no_loop",
+            scenario=scenario,
+            iterations=1,
+            evidence={"diagnostics": {"executed_actions": 1}},
+        )
+
+    monkeypatch.setattr(batch, "run_witness", fake_run_witness)
+
+    records = batch.run_batch(
+        [("e0", "p0")], workers=1, decks=DECKS, db=path, persist=True
+    )
+
+    assert records[0]["verdict"] == "no_loop"
+    store = ExperimentStore(path)
+    runs = store.witness_runs()
+    results = store.witness_results(runs[0]["id"])
+    store.close()
+    assert len(runs) == 1
+    assert [r["verdict"] for r in results] == ["no_loop"]
+
+
+def test_retry_does_not_change_verdict(monkeypatch):
+    """Determinism: a retried pair gets the same verdict a clean first attempt
+    would have produced."""
+    monkeypatch.setattr(batch, "ForgeEnvClient", FakeClient)
+
+    def fake_run_witness(client, scenario, policy, **kwargs):
+        index = _pair_index(client, kwargs)
+        return WitnessResult(
+            verdict="loops" if index % 2 == 0 else "no_loop",
+            scenario=scenario,
+            iterations=index + 1,
+            evidence={"diagnostics": {"executed_actions": index}},
+        )
+
+    monkeypatch.setattr(batch, "run_witness", fake_run_witness)
+    clean = batch.run_batch(PAIRS, workers=2, decks=DECKS)
+
+    refusals = {"n": 0}
+
+    def flaky_run_witness(client, scenario, policy, **kwargs):
+        # Refuse once per client, then fall through to the deterministic verdict.
+        if _force_flags(kwargs):
+            return fake_run_witness(client, scenario, policy, **kwargs)
+        refusals["n"] += 1
+        raise GameNotActiveError(REFUSAL)
+
+    monkeypatch.setattr(batch, "run_witness", flaky_run_witness)
+    recovered = batch.run_batch(PAIRS, workers=2, decks=DECKS)
+
+    assert [r["verdict"] for r in recovered] == [r["verdict"] for r in clean]
+    assert refusals["n"] == 4  # one refused first attempt per pair
+
