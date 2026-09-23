@@ -12,6 +12,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
 from test_witness import FakeWitnessClient
 
 from combo_discovery import cards as cards_mod
@@ -244,6 +245,116 @@ def _seed_known_combo(db) -> None:
         )
     conn.commit()
     conn.close()
+
+
+#: Oracle shapes for the engine-class filter tests: an activated copy engine, a
+#: triggered copy engine, an untapper, and a card with no copy engine at all.
+_ACT_ORACLE = (
+    "{t}: create a token that's a copy of target nonlegendary creature you control."
+)
+_TRIG_ORACLE = (
+    "whenever this creature attacks, create a token that's a copy of target creature."
+)
+_UNTAP_ORACLE = "{t}: untap target creature."
+_PLAIN_ORACLE = "when this enters, you gain 1 life."
+
+
+def _seed_engine_class_cards(db) -> None:
+    """Four known 2-card combos spanning activated / triggered / none."""
+    _seed_cards(db)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO cards (import_id, file_sha256, name, normalized_name,"
+        " type_line, oracle_text) VALUES ('imp1', 'x', ?, ?, ?, ?)",
+        ("Combat Celebrant", "combat celebrant", "Creature — Human Warrior", _TRIG_ORACLE),
+    )
+    conn.execute(
+        "INSERT INTO cards (import_id, file_sha256, name, normalized_name,"
+        " type_line, oracle_text) VALUES ('imp1', 'x', ?, ?, ?, ?)",
+        ("Grizzly Bears", "grizzly bears", "Creature — Bear", _PLAIN_ORACLE),
+    )
+    combos = {
+        1: ["kiki-jiki, mirror breaker", "zealous conscripts"],
+        2: ["combat celebrant", "zealous conscripts"],
+        3: ["kiki-jiki, mirror breaker", "grizzly bears"],
+        4: ["grizzly bears", "grizzly bears"],
+    }
+    for combo_id, names in combos.items():
+        for normalized in names:
+            conn.execute(
+                "INSERT INTO known_combo_cards (combo_id, role, raw_name,"
+                " normalized_name, import_id) VALUES (?, 'use', ?, ?, 'imp1')",
+                (combo_id, normalized, normalized),
+            )
+    conn.commit()
+    conn.close()
+
+
+def test_parse_engine_classes_accepts_all_and_lists():
+    assert kr._parse_engine_classes("all") == ("activated", "triggered", "none")
+    assert kr._parse_engine_classes("") == ("activated", "triggered", "none")
+    assert kr._parse_engine_classes("activated") == ("activated",)
+    assert kr._parse_engine_classes("activated,triggered") == (
+        "activated", "triggered",
+    )
+    assert kr._parse_engine_classes(" triggered , none ") == ("triggered", "none")
+    with pytest.raises(ValueError):
+        kr._parse_engine_classes("bogus")
+
+
+def test_select_pairs_filters_by_engine_class():
+    oracle = {
+        "act": _ACT_ORACLE,
+        "trig": _TRIG_ORACLE,
+        "untap": _UNTAP_ORACLE,
+        "plain": _PLAIN_ORACLE,
+    }
+    pairs = [
+        (1, "act", "untap"),
+        (2, "trig", "untap"),
+        (3, "act", "plain"),
+        (4, "plain", "plain"),
+    ]
+
+    selected, totals = kr._select_pairs(
+        pairs, oracle, mode="all", engine_classes=("activated", "triggered")
+    )
+    assert selected == [(1, "act", "untap"), (2, "trig", "untap"), (3, "act", "plain")]
+    assert totals == {"activated": 2, "triggered": 1, "none": 1}
+
+    # mode=home keeps only the copy-engine + untapper pairs.
+    selected, _ = kr._select_pairs(
+        pairs, oracle, mode="home", engine_classes=kr.ENGINE_CLASSES
+    )
+    assert selected == [(1, "act", "untap"), (2, "trig", "untap")]
+
+    selected, _ = kr._select_pairs(pairs, oracle, mode="all", engine_classes=("none",))
+    assert selected == [(4, "plain", "plain")]
+
+
+def test_known_recall_engine_class_filter_in_manifest(tmp_path, monkeypatch):
+    db = tmp_path / "research.db"
+    ExperimentStore(db).close()
+    _seed_engine_class_cards(db)
+    monkeypatch.setattr(kr, "ForgeEnvClient", _FakeHarness)
+    out = tmp_path / "recall_class.json"
+
+    rc = kr.main(
+        ["--db", str(db), "--mode", "all", "--engine-class", "activated",
+         "--start", "0", "--count", "10", "--out", str(out), "--persist"]
+    )
+    assert rc == 0
+
+    payload = json.loads(out.read_text())
+    manifest = payload["manifest"]
+    assert manifest["engine_class"] == "activated"
+    assert manifest["engine_classes"] == ["activated"]
+    assert manifest["class_totals"] == {"activated": 2, "triggered": 1, "none": 1}
+    assert manifest["count"] == 2
+    assert {r["combo_id"] for r in payload["results"]} == {1, 3}
+    assert all(r["engine"] == "activated" for r in payload["results"])
+    assert manifest["run_rows_annotated"] == 2
+
 
 
 def test_known_recall_manifest_in_json_and_run_notes(tmp_path, monkeypatch):

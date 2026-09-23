@@ -12,9 +12,16 @@ The point is to separate two very different failures:
   actively says a real combo does not loop);
 * ``inconclusive`` -> we never got a verdict (stall, staging gap, undriveable).
 
+The corpus can be narrowed by engine class with ``--engine-class``.  ``all``
+(the default) keeps every class, exactly as before; ``activated``/``triggered``/
+``none`` keep one class, and a comma-separated list (e.g.
+``activated,triggered``) keeps several, so the whole meaningful population can
+be swept in one run instead of a uniform slice that is mostly ``none``.
+
 Usage:
     uv run python scripts/known_recall.py --mode home --start 0 --count 20
     uv run python scripts/known_recall.py --mode all  --start 0 --count 50
+    uv run python scripts/known_recall.py --mode all --engine-class activated,triggered
 """
 
 from __future__ import annotations
@@ -66,6 +73,62 @@ def _is_home_class(a: str, b: str, oracle: dict[str, str]) -> bool:
         (_is_copy(oracle.get(a, "")) and _is_untap(oracle.get(b, "")))
         or (_is_copy(oracle.get(b, "")) and _is_untap(oracle.get(a, "")))
     )
+
+
+#: The engine classes a known 2-card combo can fall into.  ``all`` is not a
+#: class but the selector's "no filter" value; ``none`` is the residual class
+#: where no copy engine applies (the Combo Tester cannot drive these).
+ENGINE_CLASSES = ("activated", "triggered", "none")
+
+
+def _parse_engine_classes(value: str) -> tuple[str, ...]:
+    """Parse ``--engine-class`` into the classes to keep.
+
+    ``all`` (the default) keeps every class, so the unfiltered corpus is
+    unchanged.  A comma-separated list keeps only those classes, which lets the
+    meaningful ``activated`` + ``triggered`` population be swept in one run.
+    Raises :class:`ValueError` on an unknown class so ``argparse`` can report it.
+    """
+    parts = [p.strip().lower() for p in value.split(",") if p.strip()]
+    if not parts or "all" in parts:
+        return ENGINE_CLASSES
+    unknown = [p for p in parts if p not in ENGINE_CLASSES]
+    if unknown:
+        raise ValueError(
+            f"unknown engine class(es): {', '.join(unknown)}; choose from "
+            f"{', '.join(ENGINE_CLASSES)} or all"
+        )
+    return tuple(dict.fromkeys(parts))
+
+
+def _select_pairs(
+    pairs: list[tuple[int, str, str]],
+    oracle: dict[str, str],
+    *,
+    mode: str,
+    engine_classes: tuple[str, ...],
+) -> tuple[list[tuple[int, str, str]], dict[str, int]]:
+    """Filter known 2-card pairs by ``mode`` and engine class.
+
+    Returns ``(selected, class_totals)``.  ``class_totals`` counts the
+    *resolvable* corpus by engine class before the mode/class filter, so the
+    manifest can state the whole population each class was drawn from rather
+    than only the slice that happened to run.
+    """
+    totals: Counter[str] = Counter()
+    selected: list[tuple[int, str, str]] = []
+    for combo_id, a, b in pairs:
+        if a not in oracle or b not in oracle:
+            continue
+        kind = _engine_kind(a, b, oracle)
+        totals[kind] += 1
+        if mode == "home" and not _is_home_class(a, b, oracle):
+            continue
+        if kind not in engine_classes:
+            continue
+        selected.append((combo_id, a, b))
+    selected.sort()
+    return selected, dict(totals)
 
 
 def _known_2card_pairs(conn: sqlite3.Connection) -> list[tuple[int, str, str]]:
@@ -164,6 +227,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="localhost")
     parser.add_argument("--port", type=int, default=50051)
     parser.add_argument("--mode", choices=("home", "all"), default="home")
+    parser.add_argument(
+        "--engine-class", default="all",
+        help=(
+            "keep only combos whose copy engine is this class: activated, "
+            "triggered, none, or all (default: all = no class filter).  A "
+            "comma-separated list (e.g. activated,triggered) keeps several."
+        ),
+    )
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--count", type=int, default=20)
     parser.add_argument("--decks", default=",".join(DEFAULT_DECKS))
@@ -211,19 +282,22 @@ def main(argv: list[str] | None = None) -> int:
         for r in conn.execute("select normalized_name, name from cards")
     }
 
-    selected = []
-    for combo_id, a, b in _known_2card_pairs(conn):
-        if a not in oracle or b not in oracle:
-            continue
-        if args.mode == "home" and not _is_home_class(a, b, oracle):
-            continue
-        selected.append((combo_id, a, b))
-    selected.sort()
+    try:
+        engine_classes = _parse_engine_classes(args.engine_class)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    selected, class_totals = _select_pairs(
+        _known_2card_pairs(conn),
+        oracle,
+        mode=args.mode,
+        engine_classes=engine_classes,
+    )
     batch = selected[args.start:args.start + args.count]
     total_available = len(selected)
     print(
-        f"mode={args.mode} total={total_available} "
-        f"running {args.start}..{args.start + len(batch)}"
+        f"mode={args.mode} engine_class={args.engine_class} "
+        f"total={total_available} running {args.start}..{args.start + len(batch)}"
     )
 
     out_path = Path(args.out) if args.out else Path(
@@ -239,6 +313,9 @@ def main(argv: list[str] | None = None) -> int:
     manifest: dict = {
         "script": "known_recall",
         "mode": args.mode,
+        "engine_class": args.engine_class,
+        "engine_classes": list(engine_classes),
+        "class_totals": class_totals,
         "start": args.start,
         "count": len(batch),
         "requested_count": args.count,
@@ -459,6 +536,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"manifest: mode={manifest['mode']} start={manifest['start']} "
         f"count={manifest['count']} total_available={manifest['total_available']} "
+        f"engine_class={manifest['engine_class']} "
         f"workers={manifest['workers']} spawn={manifest['spawn']} "
         f"run_rows_annotated={manifest['run_rows_annotated']}"
     )
