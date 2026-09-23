@@ -82,13 +82,21 @@ is an *automatic* trigger (`when this attacks`, `on your upkeep`), there is no
 menu option to click, and the Combo Player sits still.
 
 We measured this rather than guessing. Running the Combo Tester against **known**
-combos (`scripts/known_recall.py`), over 133 exact two-card copy/untap combos:
+combos (`scripts/known_recall.py`) over the whole drivable engine-class
+population — all 422 activated and triggered exact two-card combos (the 3509
+`none`-class combos are not drivable), with `--mode all --engine-class
+activated,triggered --workers 4 --spawn` (engine commit `4f577da7`), as of
+2026-09-23:
 
-| engine type | n | confirmed | recall |
-|---|---|---|---|
-| activated (`{T}`-cost copy) | 99 | 46 | **46%** |
-| triggered (attack/ETB/loyalty) | 34 | 1 | **3%** |
-| all | 133 | 47 | **35%** |
+| engine type | n | confirmed | recall | 95% CI |
+|---|---|---|---|---|
+| activated (`{T}`-cost copy) | 163 | 44 | **27.0%** | 20.8–34.3 |
+| triggered (attack/ETB/loyalty) | 259 | 6 | **2.3%** | 1.1–5.0 |
+| all (activated + triggered) | 422 | 50 | **11.8%** | 9.1–15.3 |
+
+For reference, the earlier home-set measurement — 133 copy/untap combos at the
+`28b1e12` step, before `7b3e465` — read 46% / 55% / 21%; `WITNESS_SEARCH.md`
+explains why the current figures are lower by design.
 
 So even on its home turf the Combo Tester confirms under half of combos we *know*
 are real, and it is nearly blind to triggered engines. And that biases discovery:
@@ -175,9 +183,16 @@ The recall gains came from the **Combo Tester side**, not search:
   spin guard advances the Combo Player past a no-op action instead of burning the
   whole Board Sample budget on it.
 
-Together: triggered-engine recall 3% -> **21%**, overall 35% -> **46%**, activated
-46% -> **55%**, and undecided Test Runs fell from 51 to 14 — with no false
-positive reintroduced.
+Together, at the time these landed (measured at the `28b1e12` step, before
+`7b3e465`): triggered-engine recall 3% -> **21%**, overall 35% -> **46%**,
+activated 46% -> **55%**, and undecided Test Runs fell from 51 to 14 — with no
+false positive reintroduced.
+
+That is historical. Commit `7b3e465` ("a degenerate pair must show durable growth
+— a stall is not a loop") deliberately tightened the Loop Detector, so 18 loops
+previously certified on the home set are now `no_loop` and the current figures
+are lower **by design, not by regression**. `inconclusive` stayed identical at
+14, which is the evidence that staging did not regress.
 
 ## What we built to see it
 
@@ -197,7 +212,12 @@ testing one partner thirty times).
 ## Future work
 
 1. **Candidate quality** — new-card focus and more drivable engine archetypes.
-   With the Combo Tester measuring 46%, this is now the limit.
+   With the Combo Tester measuring **11.8% overall** (27.0% activated, 2.3%
+   triggered) over the drivable engine-class population, this is now the limit.
+   And that figure is a **lower bound**: Commander Spellbook includes
+   non-infinite combos, and 51 of the activated misses are Kiki-Jiki + a
+   mutate/value partner, where the token copy genuinely does not untap Kiki and
+   `no_loop` is the correct verdict.
 2. **Staging** — soulbond pairing is not expressible in the scenario format (it
    needs engine work); a token that "entered this turn" would unlock Ghired.
 3. **Search correctness** — replay matches answers positionally; match them by
