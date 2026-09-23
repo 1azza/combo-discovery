@@ -265,44 +265,92 @@ store + tests 1; TUI/CLI 0.5–1; plus debugging against real combos.
 
 ## Measured Combo Tester recall on known combos (Lever 0)
 
-Instrument: `uv run python scripts/known_recall.py --mode home`. It runs the real
-Combo Tester on Commander Spellbook's **exact 2-card** combos and splits the outcome
-by engine type, so "we could not test it" is separated from "we tested it and
-said no". Measured 2026-09-12 over the 133 resolvable known combos in the
-copy/untap class (a copy engine plus an untapper):
+Instrument: `uv run python scripts/known_recall.py`. It runs the real Combo
+Tester on Commander Spellbook's **exact 2-card** combos and splits the outcome by
+engine type, so "we could not test it" is separated from "we tested it and said
+no".
 
-| engine | n | loops | refuted/no_loop | inconclusive | recall |
-|---|---|---|---|---|---|
-| all | 133 | 61 | 58 | 14 | **46%** |
-| activated (`{T}`-cost copy) | 99 | 54 | 38 | 7 | **55%** |
-| triggered (attack/ETB/loyalty) | 34 | 7 | 20 | 7 | **21%** |
+### Current measurement (2026-09-23)
 
-Progression across the fixes: 32% -> 35% (activated/static copy engines, life out
-of the signature) -> 43% (credit automatic trigger events to links, sample per
-trigger) -> **46%** (move monotonic zone counts into resources; surface a
-`pass` option at PRIORITY so the spin guard can advance past a no-op action).
-Triggered-engine recall more than doubled (9% -> 21%) and undecided Test Runs fell from
-51 to 14. The residual triggered gap is condition setup and combos that genuinely
-do not loop.
+Conditions, so the run is reproducible:
 
-Readings:
+- **Command:** `uv run python scripts/known_recall.py --mode all
+  --engine-class activated,triggered --workers 4 --spawn --persist`
+- **Corpus:** 3931 resolvable exact 2-card known combos. Engine-class
+  population: **activated 163, triggered 259, none 3509**. The sweep covered
+  **all 422** activated + triggered combos; the 3509 `none`-class combos are
+  excluded because the Combo Tester cannot drive them.
+- **Run:** 4 harness workers, wall time **184 s**.
+- **Engine commit:** `4f577da7b2a9074f9f66544aaf99405e38cf5ac3` (protocol v7).
 
-- On its single best class the Combo Tester confirms **about half of known combos**.
-- **Triggered engines are effectively undriveable** (3%): the policy only acts on
-  offered decisions, so attack/ETB/loyalty copy engines stall. Generator output
-  now refuses to compose copy loops around them.
-- **17 known combos are still actively `refuted`/`no_loop`** — real false
-  negatives, each a concrete, diagnosable target. Most reduce to engines that
-  cannot be driven (triggered) or loops with no net resource growth (e.g.
-  `Palinchron + Molten Echoes`).
-- The largest single cluster is **staging, not logic**: 22 `Ghired, Mirror of the
-  Wilds` pairs return `inconclusive` with exactly 2 executed actions because
-  Ghired's granted ability needs "target token you control that entered this
-  turn" and the scenario stages no token.
+| engine | n | loops | refuted/no_loop | inconclusive | recall | 95% CI |
+|---|---|---|---|---|---|---|
+| activated (`{T}`-cost copy) | 163 | 44 | 111 | 8 | **27.0%** | [20.8, 34.3] |
+| triggered (attack/ETB/loyalty) | 259 | 6 | 182 | 71 | **2.3%** | [1.1, 5.0] |
+| all (activated + triggered) | 422 | 50 | 293 | 79 | **11.8%** | [9.1, 15.3] |
 
-Implication: the recall ceiling is the **Combo Player + scenario staging**, not
-the Loop Detector. Fixing the false negatives and the staging gaps raises trustworthy
-yield without any search/ML work.
+### Why this is lower than the previously documented 46 / 55 / 21
+
+The figures `46% overall / 55% activated / 21% triggered` were measured at the
+`28b1e12` step ("move monotonic zone counts into resources; surface a synthetic
+pass option at PRIORITY"). Commit `7b3e465` ("a degenerate pair must show
+durable growth - a stall is not a loop") landed **2 h 22 min later** and
+deliberately tightened the Loop Detector. The current numbers are therefore
+**not a like-for-like comparison** and must not be read as a regression.
+
+Like-for-like on the same 133 `home` combos the old table used (a copy engine
+plus an untapper):
+
+| | loops | refuted/no_loop | inconclusive |
+|---|---|---|---|
+| documented at `28b1e12` | 61 | 58 | 14 |
+| current (2026-09-23) | **43** | **76** | **14** |
+
+`inconclusive` is **identical at 14**, so staging still reaches a decision at the
+same rate. What changed is that **18 recurrences that grow no tracked resource
+are no longer certified `loops`** — exactly the precision/recall trade `7b3e465`
+was written to make. This is a deliberate trade, not lost capability.
+
+Historical progression, kept for the record (all measured before `7b3e465`):
+32% -> 35% (activated/static copy engines, life out of the signature) -> 43%
+(credit automatic trigger events to links, sample per trigger) -> **46%** (move
+monotonic zone counts into resources; surface a `pass` option at PRIORITY so the
+spin guard can advance past a no-op action). Over that span triggered-engine
+recall rose 9% -> 21% and undecided Test Runs fell 51 -> 14.
+
+### Caveat: the recall denominator is contaminated
+
+The metric assumes every known combo *should* certify `loops`, but Commander
+Spellbook includes **non-infinite** combos (synergies and value lines). A
+`no_loop` verdict on one of those is **correct**, not a miss. Concrete evidence
+from this run: of the 111 activated misses, **51 are Kiki-Jiki + a mutate/value
+partner** (Archipelagore, Migratory Greathorn, Lore Drakkis, Boneyard Lurker,
+Necropanther, Sea-Dasher Octopus, ...), where the token copy genuinely does not
+untap Kiki, so the loop cannot close and `no_loop` is the right answer.
+
+Recall against Spellbook is therefore a **lower bound** on verifier quality.
+Separating "should be infinite" from "known synergy" in the corpus is
+**outstanding work**; until then, read these percentages as a floor, not an
+accuracy figure.
+
+### Readings and the actionable gap
+
+- **Triggered engines remain effectively undriveable: 6 / 259 (2.3%).** The
+  scripted policy only acts on decisions it is offered, so attack/ETB/loyalty
+  copy engines stall. The current run does not soften this; generator output
+  still refuses to compose copy loops around them.
+- **Actionable staging gap — `Ghired, Mirror of the Wilds`:** 22 combos, all
+  `no_loop`, **18 of them stalling after exactly 2 executed actions**. Ghired's
+  granted ability needs "target token you control that entered this turn" and
+  the scenario stages no token, so the line never starts. This is a staging gap,
+  not a logic failure; supplying the token is the concrete next fix.
+- Other activated miss clusters: Kiki-Jiki non-untapping partners (see caveat),
+  `Orthion, Hero of Lavabrink` (12, mana-consuming recurrence), `Splinter Twin`
+  (10). Across the activated misses the recorded reasons are "no signature
+  recurrence" (62), "signature recurred but no tracked resource grew" (45), and
+  "recurrence only across turns" (4).
+- Implication unchanged: the recall ceiling is the **Combo Player + scenario
+  staging**, not the Loop Detector.
 
 ## Analogue transfer (Lever 1)
 

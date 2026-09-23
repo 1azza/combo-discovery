@@ -129,10 +129,17 @@ must be mapped back to code by hand:
       → `loops`; Combat Celebrant + Kiki → `loops`; Keldon Overseer / Elven
       Raft-Steerer / Firbolg Flutist → not loops; Aurelia + Genji Glove →
       `inconclusive`.
-- [x] **Measured recall on known combos** (`scripts/known_recall.py`): over 133
-      known exact 2-card copy/untap combos — **46% overall**, **55% on
-      activated-engine combos**, **21% on triggered-engine combos** (up from
-      35% / 46% / 3% at v0.2.0). Undecided Test Runs fell from 51 to 14.
+- [x] **Measured recall on known combos** (`scripts/known_recall.py`,
+      2026-09-23, engine `4f577da7`): all **422** activated + triggered known
+      exact 2-card combos (`--mode all --engine-class activated,triggered
+      --workers 4 --spawn --persist`, 184 s wall) — **27.0% activated** (44/163),
+      **2.3% triggered** (6/259), **11.8% overall** (50/422). This supersedes the
+      earlier 46% / 55% / 21%, which was measured at `28b1e12`; `7b3e465` later
+      tightened the Loop Detector, so the drop is a precision/recall trade
+      (inconclusive identical at 14 on the same 133 home combos), not a
+      regression. Recall is a **lower bound**: Spellbook includes non-infinite
+      combos (e.g. 51 activated misses are Kiki-Jiki + a non-untapping
+      mutate/value partner, where `no_loop` is correct).
 
 ### Candidate yield
 
@@ -170,7 +177,7 @@ must be mapped back to code by hand:
 ## Known Gaps
 
 - [ ] **Recall ceiling is the candidate set / staging, not search.** The
-      scripted policy is trigger-blind (triggered-engine recall 9%), and a
+      scripted policy is trigger-blind (triggered-engine recall 2.3%), and a
       goal-directed search player was built and measured — it changed no
       verdicts, because those candidates do not loop on the injected board or
       need conditions/objects the scenario does not provide.
