@@ -24,7 +24,7 @@ from typing import Any
 
 from . import vocabulary as vocab
 from .budget import SearchBudget
-from .extractor import CardPredicate
+from .extractor import CardContext, CardPredicate
 from .patterns.base import CardView
 from .ports import AbilitySig, Port
 from .restrictions import Restriction, engine_can_copy, restriction_matches_card
@@ -138,15 +138,48 @@ def _mana_covers(produced: Port, required: Port) -> bool:
     return not need or need <= have
 
 
-def ports_enable(produced: Port, consumed: Port, consumer: AbilitySig) -> bool:
-    """Does ``produced`` structurally cover ``consumed``?"""
+def host_context(producer: AbilitySig, consumer: AbilitySig) -> CardContext | None:
+    """Context a target-shaped port is matched against.
+
+    An Aura/Equipment's granted ability lives on the permanent it is attached
+    to, so when the consumer is an attachment engine and the producer is a
+    creature it could host, match targets against the producer's card instead of
+    the attachment's (which would never match "target creature").
+    """
+    context = consumer.card_context()
+    if context is None:
+        return None
+    type_line = (context.type_line or "").lower()
+    if "aura" in type_line or "equipment" in type_line:
+        producer_context = producer.card_context()
+        if producer_context is not None and producer_context.is_creature:
+            return producer_context
+    return context
+
+
+def ports_enable(
+    produced: Port, consumed: Port, consumer: AbilitySig,
+    *, host: CardContext | None = None,
+) -> bool:
+    """Does ``produced`` structurally cover ``consumed``?
+
+    ``host`` overrides the context a target-shaped port is matched against.  An
+    attachment's granted ability lives on the permanent it is attached to, so
+    for an Aura/Equipment engine the caller passes the host's context (see
+    :func:`host_context`).
+    """
     if produced.kind == "mana" and consumed.kind == "mana":
         return _mana_covers(produced, consumed)
     if produced.kind == "untap" and consumed.kind == "tap":
-        context = consumer.card_context()
+        context = host or consumer.card_context()
         if context is None:  # pragma: no cover - defensive
             return False
         return restriction_matches_card(produced.restriction, context).status == "compatible"
+    if produced.kind == "copy_permanent" and consumed.kind == "tap":
+        # A fresh token arrives untapped, so a copy engine re-arms the copied
+        # card's tap-cost activated ability (Kiki-Jiki + an untapper).  Guarded
+        # by copy_accepts so only a legally copyable card qualifies.
+        return copy_accepts(produced, consumer)
     if produced.kind == "token" and consumed.kind == "sacrifice":
         if consumed.params.get("self"):
             return False
@@ -230,6 +263,22 @@ def link_re_trigger(engine: AbilitySig, listener: AbilitySig) -> Link | None:
     # explicit recursion link, which this model does not assume.
     if _is_one_shot(engine):
         return None
+    # A fresh token arrives untapped, so a copy engine re-arms the copied card's
+    # tap-cost activated ability even when the listener has no trigger
+    # (Kiki-Jiki + an untapper).  Activated/static engines only, matching the
+    # copy-trigger rule below.
+    if engine.triggers_on is None and listener.triggers_on is None:
+        tap = next((c for c in listener.consumes if c.kind == "tap"), None)
+        if tap is not None:
+            for produced in engine.produces:
+                if produced.kind == "copy_permanent" and copy_accepts(produced, listener):
+                    return Link(
+                        "re_trigger", "copy_activation", engine, listener,
+                        matched=[(produced, tap)],
+                        motif=link_motif(produced, tap),
+                        evidence=[_evidence(engine, produced),
+                                  _evidence(listener, tap)],
+                    )
     trigger = listener.triggers_on
     if trigger is None:
         return None
@@ -295,7 +344,8 @@ def link_enables(producer: AbilitySig, consumer: AbilitySig) -> Link | None:
     matched: list[tuple[Port, Port]] = []
     for produced in producer.produces:
         for consumed in consumer.consumes:
-            if ports_enable(produced, consumed, consumer):
+            if ports_enable(produced, consumed, consumer,
+                            host=host_context(producer, consumer)):
                 matched.append((produced, consumed))
     if not matched:
         return None
@@ -391,6 +441,14 @@ def _closure_rank(sig: AbilitySig) -> int:
     """Prefer listener/engine abilities that can close a resource loop."""
     if any(p.kind in ("untap", "mana", "token", "counters") for p in sig.produces):
         return 0
+    # A reanimation/flicker listener returns a permanent to the battlefield, so
+    # it can close a sacrifice loop (Animate Dead + Worldgorger Dragon).
+    if any(
+        p.kind == "zone_move"
+        and str(p.params.get("to") or "").lower() == "battlefield"
+        for p in sig.produces
+    ):
+        return 0
     return 1
 
 
@@ -483,8 +541,20 @@ def build_links(
         for listener in listener_index.get(kind, ()):
             if _closure_rank(listener) == 0:
                 closure_listeners.append(listener)
-                for port in listener.produces:
-                    listener_producers.setdefault(port.kind, []).append(listener)
+            # Index every listener's outputs: an engine that spends a resource
+            # can be closed by any listener producing it, whatever its rank.
+            for port in listener.produces:
+                listener_producers.setdefault(port.kind, []).append(listener)
+    # A fresh copy re-arms the copied card's tap-cost activated ability, so an
+    # activated tap ability is a re-trigger listener too (Kiki-Jiki + untapper).
+    activation_listeners: list[AbilitySig] = []
+    for sig in sigs:
+        if sig.triggers_on is None and any(c.kind == "tap" for c in sig.consumes):
+            activation_listeners.append(sig)
+            if _closure_rank(sig) == 0:
+                closure_listeners.append(sig)
+                for port in sig.produces:
+                    listener_producers.setdefault(port.kind, []).append(sig)
 
     re_triggers: list[Link] = []
     for engine in sigs:
@@ -505,12 +575,24 @@ def build_links(
                     for listener in listener_producers.get(kind, ()):
                         unique.setdefault(listener.key, listener)
             else:
+                # An engine with no inputs (Animate Dead) closes through a
+                # listener that re-enters it, not through a resource it spends,
+                # so the "feeds a consumed resource" pruning cannot apply.  Fall
+                # back to the full trigger-listener set, bounded below by
+                # max_retrigger.
                 unique = {s.key: s for s in closure_listeners}
+                for kind in sorted(_RE_TRIGGER_LISTENER_KINDS):
+                    for listener in listener_index.get(kind, ()):
+                        unique.setdefault(listener.key, listener)
+                for listener in activation_listeners:
+                    unique.setdefault(listener.key, listener)
         else:
             unique = {}
             for kind in sorted(_RE_TRIGGER_LISTENER_KINDS):
                 for listener in listener_index.get(kind, ()):
                     unique.setdefault(listener.key, listener)
+            for listener in activation_listeners:
+                unique.setdefault(listener.key, listener)
         ordered = sorted(
             unique.values(),
             key=lambda s: (_closure_rank(s), s.card_name, s.ability_ref),
@@ -635,6 +717,7 @@ __all__ = [
     "_RE_TRIGGER_LISTENER_KINDS",
     "build_links",
     "copy_accepts",
+    "host_context",
     "link_enables",
     "link_hostile",
     "link_motif",

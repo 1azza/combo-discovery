@@ -69,6 +69,7 @@ from .links import (
     LinkOptions,
     _port_satisfies_gate,
     build_links,
+    host_context,
     link_hostile,
     ports_enable,
 )
@@ -361,7 +362,8 @@ def _resource_closed(abilities: Sequence[AbilitySig]) -> bool:
     for consumer in abilities:
         for consumed in consumer.consumes:
             if not any(
-                ports_enable(produced, consumed, consumer)
+                ports_enable(produced, consumed, consumer,
+                             host=host_context(producer, consumer))
                 for producer in abilities
                 for produced in producer.produces
             ):
@@ -439,6 +441,7 @@ def _mechanism(cards: Sequence[int], links: Sequence[Link], graph: Graph) -> str
         if link.kind == "re_trigger":
             verb = {
                 "copy": "copies",
+                "copy_activation": "copies (re-arming)",
                 "combat": "adds an extra combat for",
                 "reanimate": "reanimates",
                 "flicker": "flickers",
